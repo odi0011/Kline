@@ -82,6 +82,7 @@ export function LiquidGlass({
     let cancelled = false;
 
     (async () => {
+      const t0 = performance.now();
       const mapUrl = await generateDisplacementBlobUrl({
         width: size.w,
         height: size.h,
@@ -116,6 +117,11 @@ export function LiquidGlass({
           frost,
         }),
       });
+      // 诊断探针：观测构建次数/尺寸/耗时（定位大面板构建循环）
+      if (typeof window !== "undefined") {
+        window.__lgBuilds = window.__lgBuilds || [];
+        window.__lgBuilds.push({ w: size.w, h: size.h, ms: Math.round(performance.now() - t0) });
+      }
     })();
 
     return () => {

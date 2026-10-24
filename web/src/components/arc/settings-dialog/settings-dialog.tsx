@@ -6,6 +6,7 @@ import { X, Palette, Wallet, Activity, Image as ImageIcon, Plus } from "lucide-r
 import Input from "@/components/arc/input/input"
 import ColorPicker from "@/components/arc/color-picker/color-picker"
 import MorphSelect from "@/components/arc/morph-select/morph-select"
+import { LiquidGlass } from "@/components/ui/liquid-glass"
 import CoinAvatar from "@/components/ui/coin-avatar"
 import styles from "./settings-dialog.module.css"
 
@@ -188,6 +189,8 @@ export function SettingsDialog({ open, onClose, settings, updateSetting, account
             exit={{ opacity: 0, y: 10, scale: 0.98 }}
             transition={spring}
             onClick={(e) => e.stopPropagation()}>
+            <LiquidGlass radius={16} scale={28} aberration={0} frost={5} tint={0.5}
+              style={{ position: "absolute", inset: 0 }} />
             <header className={styles.head}>
               <h2 className={styles.title}>设置</h2>
               <button type="button" className={styles.close} onClick={onClose} aria-label="关闭设置">

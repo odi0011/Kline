@@ -9,22 +9,21 @@
   place-items: center;
 }
 
-/* 玻璃面板：与玻璃圆钮/玻璃菜单同款的毛玻璃材质 */
+/* 玻璃面板：材质由 <LiquidGlass> 层提供（absolute inset 0），这里只管尺寸/边框/投影 */
 .panel {
   width: min(780px, calc(100vw - 32px));
   height: min(540px, calc(100vh - 48px));
   display: flex;
   flex-direction: column;
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.78);
-  -webkit-backdrop-filter: blur(24px) saturate(160%);
-  backdrop-filter: blur(24px) saturate(160%);
   border: 1px solid rgba(255, 255, 255, 0.8);
   box-shadow: 0 24px 64px rgba(16, 24, 40, 0.28);
   overflow: hidden;
 }
 
 .head {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -47,7 +46,13 @@
 }
 .close:hover { background: rgba(255, 255, 255, 0.9); }
 
-.body { flex: 1; display: flex; min-height: 0; }
+.body {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
 
 /* 左侧菜单：与玻璃菜单（GlassMenu）的行样式一致 */
 .nav {
