@@ -99,8 +99,13 @@ export function WalletStack({ accounts = [], label = "账户", onSelectedChange,
         {accounts.map((a, i) => {
           const isSel = selected === a.name
           // 收起位由 React 的 style.top 管理（motion 可能在挂载/动画结束时清掉自己写的内联
-          // transform/height，若静态位置依赖 animate 值会回落错位）；motion 只动相对位移 y
-          const collapsedY = Math.max(-12, STACK_BOTTOM_LINE - CARD_H - (n - 1 - i) * STACK_GAP)
+          // transform/height，若静态位置依赖 animate 值会回落错位）；motion 只动相对位移 y。
+          // 背面卡间距压缩到前卡顶边与区域顶边之间的余量里（账户多间距自动变细），
+          // 保证收起时整叠不超出整行高度，且最前一张卡底边始终对齐形态卡底线。
+          const frontTop = STACK_BOTTOM_LINE - CARD_H
+          const back = n - 1 - i
+          const strip = back > 0 ? Math.min(STACK_GAP, frontTop / back) : STACK_GAP
+          const collapsedY = Math.max(0, frontTop - back * strip)
           const expandedY = i * (CARD_H + 12) + (isSel && i > selIdx ? 96 : 0)
           const y = expanded ? expandedY - collapsedY : 0
           return (
