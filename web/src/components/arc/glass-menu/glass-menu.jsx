@@ -119,6 +119,11 @@ export function GlassMenu({
     </div>
   )
 
+  // 子菜单渲染时按 id 取最新的菜单项：勾选态/禁用态/计数随父级状态刷新
+  // （setSub 存的是旧对象快照，直接用它会导致二级面板勾选后不更新）
+  const flatItems = groups.flatMap((g) => g.items)
+  const subItem = sub ? flatItems.find((it) => it.id === sub.id) || sub : null
+
   return (
     <div ref={rootRef} className={className} style={{ position: "relative", ...style }}>
       <motion.button
@@ -150,7 +155,7 @@ export function GlassMenu({
               ...panelStyle,
             }}
           >
-            {sub && (
+            {subItem && (
               <div
                 onClick={() => setSub(null)}
                 style={{
@@ -159,10 +164,10 @@ export function GlassMenu({
                   cursor: "pointer", fontSize: 12.5, color: "#5b6472",
                 }}
               >
-                <ChevronLeft size={15} /> {sub.label}
+                <ChevronLeft size={15} /> {subItem.label}
               </div>
             )}
-            {sub && sub.searchable && (
+            {subItem && subItem.searchable && (
               <div
                 style={{
                   display: "flex", alignItems: "center", gap: 8, height: 32,
@@ -181,19 +186,19 @@ export function GlassMenu({
                     fontSize: 12.5, color: "#1c2333",
                   }}
                 />
-                {sub.hint && (
-                  <span style={{ fontSize: 11, color: "#8b949e", whiteSpace: "nowrap" }}>{sub.hint}</span>
+                {subItem.hint && (
+                  <span style={{ fontSize: 11, color: "#8b949e", whiteSpace: "nowrap" }}>{subItem.hint}</span>
                 )}
               </div>
             )}
-            {sub ? (
+            {sub && subItem ? (
               (() => {
                 const q = subQuery.trim().toLowerCase()
-                const rows = q ? sub.items.filter((it) => it.label.toLowerCase().includes(q)) : sub.items
+                const rows = q ? subItem.items.filter((it) => it.label.toLowerCase().includes(q)) : subItem.items
                 return (
                   <>
                     {rows.map(renderRow)}
-                    {sub.searchable && rows.length === 0 && (
+                    {subItem.searchable && rows.length === 0 && (
                       <div style={{ padding: 10, fontSize: 12, color: "#a0a8b4", textAlign: "center" }}>
                         无匹配
                       </div>
