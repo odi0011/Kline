@@ -184,6 +184,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     quant.enabled = bool(cfg.get("quant", {}).get("enabled", True))
     quant.broadcast_fn = lambda obj: asyncio.create_task(hub.broadcast(obj))
     hub.quant_fn = quant.snapshot
+    hub.quant_signal_fn = lambda msg: quant.on_signal({
+        "symbol": msg.get("symbol"), "direction": msg.get("direction"),
+        "pattern": msg.get("pattern"), "name_zh": msg.get("name_zh"),
+    })
 
     def on_evt(sym, iv, candle, closed, history):
         if closed:

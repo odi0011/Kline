@@ -33,6 +33,7 @@ class BroadcastHub:
         self.settings_fn = None           # 当前可编辑设置（main 注入）
         self.on_settings = None           # 客户端下发设置时的回调：应用+持久化，返回新设置
         self.quant_fn = None              # 量化快照（main 注入）
+        self.quant_signal_fn = None       # 测试用：注入量化信号（main 注入）
 
     # ---- 聚合器回调（与 PatternEngine 并联） ----
 
@@ -108,6 +109,9 @@ class BroadcastHub:
                         new_settings = self.on_settings(msg.get("settings") or {})
                         await ws.send(json.dumps({"type": "settings", "settings": new_settings},
                                                  separators=(",", ":")))
+                    elif mtype == "test_quant_signal" and self.quant_signal_fn:
+                        self.quant_signal_fn(msg)
+                        print(f"[quant] 收到测试信号: {msg.get('symbol')} {msg.get('direction')}")
                     elif mtype == "query_bar" and self.query_fn:
                         sym, iv = msg.get("symbol"), msg.get("interval")
                         ot = int(msg.get("open_time") or 0)
