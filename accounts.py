@@ -14,14 +14,19 @@ BASE = "https://testnet.binancefuture.com"
 
 
 def signed_request(api_key: str, api_secret: str, path: str, params: dict | None = None,
-                   timeout: int = 8):
+                   timeout: int = 8, method: str = "GET"):
     params = dict(params or {})
     params["timestamp"] = int(time.time() * 1000)
     params["recvWindow"] = 10000
     qs = urllib.parse.urlencode(params)
     sig = hmac.new(api_secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
     url = f"{BASE}{path}?{qs}&signature={sig}"
-    req = urllib.request.Request(url, headers={"X-MBX-APIKEY": api_key})
+    # 下单/撤单类必须 POST；查询类用 GET（币安对 POST 参数走 body 校验）
+    data = None
+    if method.upper() == "POST":
+        data = b""
+    req = urllib.request.Request(url, data=data, headers={"X-MBX-APIKEY": api_key},
+                                 method=method.upper())
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 

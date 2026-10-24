@@ -116,10 +116,12 @@ class QuantEngine:
         return math.floor(qty / step) * step
 
     def _place_order(self, api_key, api_secret, symbol, side, qty, reduce_only=False) -> dict:
-        params = {"symbol": symbol.upper(), "side": side, "type": "MARKET", "quantity": qty}
+        params = {"symbol": symbol.upper(), "side": side, "type": "MARKET",
+                  "quantity": qty, "newOrderRespType": "RESULT"}
         if reduce_only:
             params["reduceOnly"] = "true"
-        r = signed_request(api_key, api_secret, "/fapi/v1/order", params)
+        # 下单必须 POST（GET 会被路由到查询订单接口，报 -1102）
+        r = signed_request(api_key, api_secret, "/fapi/v1/order", params, method="POST")
         self.stats["orders"] += 1
         return r
 
