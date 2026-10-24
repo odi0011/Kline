@@ -72,6 +72,8 @@ export interface NotificationProps
   status?: NotificationStatus;
   /** Custom leading icon. Defaults to the icon associated with `status`. */
   icon?: IconComponent;
+  /** 直接渲染在头部的自定义节点（如币种图标）：提供时替代默认圆底+icon 结构 */
+  leading?: ReactNode;
   /** Avatar leading visual. When set, it takes precedence over `icon`. */
   avatar?: NotificationAvatar;
   /** Optional small BoardUI action buttons rendered below the message. */
@@ -192,6 +194,7 @@ export function Notification({
   timestamp,
   status = "neutral",
   icon,
+  leading,
   avatar,
   actions,
   dismissible = true,
@@ -254,7 +257,9 @@ export function Notification({
           className={cx(styles.card, className)}
           {...props}
         >
-          {avatar ? (
+          {leading ? (
+            leading
+          ) : avatar ? (
             <NotificationAvatarVisual {...avatar} />
           ) : (
             <span className={cx(styles.visual, styles.status[status])}>
