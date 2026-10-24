@@ -1,0 +1,106 @@
+.wrap {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid rgba(28, 35, 51, 0.08);
+  border-top: 2px solid rgba(28, 35, 51, 0.12);
+}
+
+.head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.title { margin: 0; font-size: 14px; font-weight: 700; color: #1c2333; flex: none; }
+.state {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+  padding: 2px 8px; border-radius: 8px;
+  background: rgba(28, 35, 51, 0.08); color: var(--text-muted, #8b949e);
+}
+.state[data-on] { background: #16a34a; color: #fff; }
+.meta { font-size: 10.5px; color: var(--text-muted, #8b949e); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.toggle {
+  margin-left: auto; flex: none;
+  height: 26px; padding: 0 12px; border-radius: 8px;
+  border: 1px solid rgba(28, 35, 51, 0.14);
+  background: transparent; color: var(--text-secondary, #5b6472);
+  font-size: 11.5px; font-weight: 600; cursor: pointer; font-family: inherit;
+}
+.toggle[data-on] { color: #b91c1c; border-color: rgba(185, 28, 28, 0.3); }
+.toggle:hover { background: rgba(28, 35, 51, 0.05); }
+
+/* 流程条：信号 → 决策 → 下单 → 平仓 → 胜负 */
+.flow {
+  display: flex; align-items: stretch; gap: 0;
+  padding: 8px 10px; border-radius: 10px;
+  background: rgba(28, 35, 51, 0.04);
+  border: 1px solid rgba(28, 35, 51, 0.06);
+}
+.flowStep {
+  flex: 1; display: flex; align-items: baseline; gap: 6px;
+  position: relative; justify-content: center;
+}
+.flowLabel { font-size: 10px; color: var(--text-muted, #8b949e); }
+.flowVal { font-size: 15px; font-weight: 700; color: #1c2333; font-variant-numeric: tabular-nums; }
+.flowVal b { font-weight: 700; }
+.win { color: #16a34a; }
+.loss { color: #dc2626; }
+.flowArrow { position: absolute; right: -6px; top: 50%; transform: translateY(-50%); color: rgba(28, 35, 51, 0.2); }
+
+.grid3 { display: flex; gap: 10px; flex: 1; min-height: 0; }
+.col {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 10px; border-radius: 10px;
+  background: rgba(28, 35, 51, 0.03);
+  border: 1px solid rgba(28, 35, 51, 0.05);
+}
+.colHead { display: flex; align-items: baseline; justify-content: space-between; }
+.colTitle { font-size: 11px; font-weight: 600; color: var(--text-secondary, #5b6472); letter-spacing: 0.4px; }
+.colHint { font-size: 10px; color: var(--text-muted, #8b949e); }
+.winRate { font-size: 10px; font-weight: 700; color: var(--accent-deep, #b45309); }
+
+.scroll {
+  flex: 1; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: 3px;
+  scrollbar-width: none; -ms-overflow-style: none;
+}
+.scroll::-webkit-scrollbar { display: none; }
+
+/* 决策流水行 */
+.evRow {
+  display: flex; align-items: center; gap: 5px;
+  padding: 3px 6px; border-radius: 6px;
+  font-size: 11px; color: #1c2333;
+  background: rgba(255, 255, 255, 0.7);
+  min-width: 0;
+}
+.evIcon { flex: none; color: var(--text-muted, #8b949e); }
+.evRow[data-kind="open"] .evIcon { color: #16a34a; }
+.evRow[data-kind="close"] .evIcon { color: #2563eb; }
+.evRow[data-kind="skip"] .evIcon { color: #d97706; }
+.evRow[data-kind="error"] .evIcon { color: #dc2626; }
+.evTime { flex: none; font-size: 10px; color: var(--text-muted, #8b949e); font-variant-numeric: tabular-nums; }
+.evLabel { flex: none; font-size: 10px; font-weight: 700; padding: 0 4px; border-radius: 4px; background: rgba(28, 35, 51, 0.07); }
+.evText { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.evAcct { flex: none; font-size: 9.5px; color: var(--text-muted, #8b949e); }
+.evPnl { flex: none; font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* 持仓行 */
+.posRow, .tradeRow {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 7px; border-radius: 7px;
+  background: rgba(255, 255, 255, 0.78);
+  font-size: 11.5px;
+}
+.posSym { font-weight: 700; letter-spacing: 0.2px; flex: none; }
+.posSide { flex: none; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 6px; }
+.posSide[data-side="long"] { background: #16a34a; color: #fff; }
+.posSide[data-side="short"] { background: #dc2626; color: #fff; }
+.posQty { flex: none; color: var(--text-secondary, #5b6472); font-variant-numeric: tabular-nums; }
+.posPnl { margin-left: auto; flex: none; font-weight: 700; font-variant-numeric: tabular-nums; display: inline-flex; align-items: baseline; gap: 4px; }
+.posPnl em { font-style: normal; font-size: 9.5px; font-weight: 600; opacity: 0.75; }
+.tTime { flex: none; font-size: 10px; color: var(--text-muted, #8b949e); font-variant-numeric: tabular-nums; }
+.tReason { flex: 1; min-width: 0; font-size: 10px; color: var(--text-muted, #8b949e); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tHold { flex: none; font-size: 9.5px; color: var(--text-muted, #8b949e); }
+
+.empty { font-size: 11px; color: var(--text-muted, #8b949e); padding: 10px 4px; text-align: center; }

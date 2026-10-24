@@ -148,6 +148,14 @@ body {
   flex: 0 0 auto;
 }
 
+/* 第三行：自动量化交易（决策流水/持仓/平仓记录） */
+.row3 {
+  display: flex;
+  gap: var(--gap);
+  flex: 0 0 auto;
+  height: 264px;
+}
+
 .combo-card {
   flex: 0 0 30%;
   min-width: 0;

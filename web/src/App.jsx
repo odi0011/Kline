@@ -13,6 +13,7 @@ import { AnimatedCounter } from '@/components/arc/animated-counter/animated-coun
 import CoinAvatar from '@/components/ui/coin-avatar'
 import SettingsDialog from '@/components/arc/settings-dialog/settings-dialog'
 import AccountPanel from '@/components/arc/account-panel/account-panel'
+import QuantPanel from '@/components/arc/quant-panel/quant-panel'
 import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins, Settings } from 'lucide-react'
 
 const WS_PORT = 8765
@@ -63,6 +64,7 @@ export default function App() {
   const [patternsEnabled, setPatternsEnabled] = useState(null)  // null = 未从服务端加载
   const [livePreview, setLivePreview] = useState(true)
   const [srvAccounts, setSrvAccounts] = useState(null)          // 服务端账户列表（含密钥）
+  const [quantSnap, setQuantSnap] = useState(null)              // 量化引擎快照
   const liveRef = useRef(null)
   const cardsViewportRef = useRef(null)
   const equityRef = useRef({})                       // 账户名 → [{t, bal, upnl}] 权益采样
@@ -158,8 +160,9 @@ export default function App() {
       }
       if (Array.isArray(s.accounts)) setSrvAccounts(s.accounts)
     })
+    const offQuant = live.on('quant', (m) => setQuantSnap(m.snapshot))
     live.connect()
-    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); live.close() }
+    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); live.close() }
   }, [])
 
   // 命中时：滚动到最新命中的形态卡片
@@ -381,6 +384,10 @@ export default function App() {
         </div>
       <div className="row2">
         <AccountPanel account={frontAccount} series={frontSeries} chartColors={chartColors} />
+      </div>
+      <div className="row3">
+        <QuantPanel snapshot={quantSnap} chartColors={chartColors}
+          onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
       </div>
       </aside>
 

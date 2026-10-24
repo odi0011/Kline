@@ -19,6 +19,7 @@ from feed.demo import DemoSource
 from feed.source import BinanceFuturesStream
 from notify.notifier import Notifier
 from patterns.base import get_enabled
+from quant import QuantEngine
 from server.hub import BroadcastHub
 from storage import Storage
 from accounts import fetch_account
@@ -92,6 +93,9 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         hub.on_hit(hit)
         storage.save_hit(hit)
         hub.stats_dirty = True          # 触发 pattern_stats 广播
+        if hit.mode == "confirmed":
+            quant.on_signal({"symbol": hit.symbol, "direction": hit.direction,
+                             "pattern": hit.pattern, "name_zh": hit.name_zh})
 
     engine = PatternEngine(enabled, notify_with_lag,
                            live_preview=bool(pcfg.get("live_preview", True)))
@@ -115,6 +119,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             "patterns": {"enabled": [p.key for p in engine.patterns],
                          "live_preview": engine.live_preview,
                          "all": list(pbase.all_patterns().keys())},
+            "quant": {"enabled": quant.enabled},
             "ui": cfg.get("ui", {}),
         }
 
@@ -147,6 +152,9 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             if "live_preview" in patterns:
                 engine.live_preview = bool(patterns["live_preview"])
                 cfg.setdefault("patterns", {})["live_preview"] = bool(patterns["live_preview"])
+        if "quant" in s and isinstance(s["quant"], dict):
+            quant.set_enabled(bool(s["quant"].get("enabled", True)))
+            cfg.setdefault("quant", {})["enabled"] = quant.enabled
         ui = s.get("ui")
         if isinstance(ui, dict):
             cur = cfg.setdefault("ui", {})
@@ -159,6 +167,23 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     hub.settings_fn = current_settings
     hub.on_settings = apply_settings
+
+    # 量化引擎：确认信号驱动开仓、5s 持仓监控、5 分钟自审计、全程记录
+    iv0 = intervals[0]
+
+    def _price_fn(symbol):
+        agg = aggs.get((symbol, iv0))
+        if not agg:
+            return None
+        if agg.current is not None:
+            return agg.current.close
+        hist = list(agg.history)
+        return hist[-1].close if hist else None
+
+    quant = QuantEngine(accts_box, config_path, price_fn=_price_fn)
+    quant.enabled = bool(cfg.get("quant", {}).get("enabled", True))
+    quant.broadcast_fn = lambda obj: asyncio.create_task(hub.broadcast(obj))
+    hub.quant_fn = quant.snapshot
 
     def on_evt(sym, iv, candle, closed, history):
         if closed:
@@ -217,11 +242,20 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         print(f"[web] 未找到 {dist}，前端未构建（npm run build 后自动可用）")
 
     async def sweep():
+        qtick = 0
         while True:
             await asyncio.sleep(0.5)
             now = KlineAggregator.now_ms()
             for agg in aggs.values():
                 agg.sweep(now)
+            try:
+                quant.manage()                       # 止损/止盈监控（每 5 秒）
+                qtick += 1
+                if qtick % 10 == 0:                  # 约 5 秒广播一次量化快照
+                    asyncio.create_task(hub.broadcast({"type": "quant", "snapshot": quant.snapshot()}))
+                quant.audit()                        # 5 分钟自审计（引擎内部自限流）
+            except Exception as e:
+                print(f"[quant] 运行异常: {e}")
 
     async def supervisor():
         if mode == "demo":

@@ -86,6 +86,9 @@ export class LiveClient {
     } else if (m.type === 'settings') {
       this.settings = m.settings
       this._emitKey('settings', m)
+    } else if (m.type === 'quant') {
+      this.quant = m.snapshot
+      this._emitKey('quant', m)
     } else if (m.type === 'stats') {
       this.listeners.stats.forEach((f) => f(m))
     }

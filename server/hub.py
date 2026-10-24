@@ -32,6 +32,7 @@ class BroadcastHub:
         self.stats_dirty = False
         self.settings_fn = None           # 当前可编辑设置（main 注入）
         self.on_settings = None           # 客户端下发设置时的回调：应用+持久化，返回新设置
+        self.quant_fn = None              # 量化快照（main 注入）
 
     # ---- 聚合器回调（与 PatternEngine 并联） ----
 
@@ -92,6 +93,9 @@ class BroadcastHub:
                                          separators=(",", ":")))
             if self.settings_fn:
                 await ws.send(json.dumps({"type": "settings", "settings": self.settings_fn()},
+                                         separators=(",", ":")))
+            if self.quant_fn:
+                await ws.send(json.dumps({"type": "quant", "snapshot": self.quant_fn()},
                                          separators=(",", ":")))
             async for raw in ws:
                 try:
