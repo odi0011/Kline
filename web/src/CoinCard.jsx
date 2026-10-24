@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, HistogramSeries, ColorType } from 'lightweight-charts'
 import { AnimatedCounter } from '@/components/arc/animated-counter/animated-counter'
 import CoinAvatar from '@/components/ui/coin-avatar'
+import { PATTERN_META } from './patterns_meta.js'
 
 const rgba = (hex, a) => {
   const h = hex.replace('#', '')
@@ -18,7 +19,8 @@ const fmtCross = (t) => {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
 }
 
-export default function CoinCard({ symbol, intervals, settings, live, chartColors, hitActive, onHoverHits }) {
+export default function CoinCard({ symbol, intervals, settings, live, chartColors, activeHit, onHoverHits }) {
+  const hitActive = !!activeHit
   const boxRef = useRef(null)
   const chgRef = useRef(null)
   const chartRef = useRef(null)
@@ -29,6 +31,8 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
   const intervalRef = useRef(settings.interval)
   const settingsRef = useRef(settings)
   const hitUntilRef = useRef(0)
+  const hitBarsRef = useRef(1)
+  const hitDirRef = useRef('neutral')
   const onHoverHitsRef = useRef(onHoverHits)
   const ccRef = useRef(chartColors)
   ccRef.current = chartColors
@@ -51,8 +55,49 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
     chgRef.current.className = `chg ${pct >= 0 ? 'up' : 'down'}`
   }
 
-  // 命中期间：最新K线用色相循环的流彩颜色（动态/弥散/科幻）
-  const sciFiColor = (t, shift = 0) => `hsl(${Math.floor((t / 12 + shift) % 360)} 95% 58%)`
+  // 水墨映射：方向定墨色（青碧墨/赤墨/灰墨），参与形态的 N 根一起染色，
+  // 逐根错相呼吸 → 水墨扩散层次，不再单色来回跳
+  const INK = {
+    bullish: { hue: 168, sat: 60 },
+    bearish: { hue: 348, sat: 62 },
+    neutral: { hue: 218, sat: 36 },
+  }
+  const inkColor = (k, count, t) => {
+    const ink = INK[hitDirRef.current] || INK.neutral
+    const hue = (ink.hue + (k - (count - 1) / 2) * 16 + 360) % 360
+    const breath = 0.5 + 0.5 * Math.sin(t / 260 + k * 1.15)
+    const light = 30 + breath * 17
+    const sat = ink.sat + breath * 9
+    const color = `hsl(${hue.toFixed(0)} ${sat.toFixed(0)}% ${light.toFixed(0)}%)`
+    return { color, vol: `hsl(${hue.toFixed(0)} ${sat.toFixed(0)}% ${light.toFixed(0)}% / 0.35)` }
+  }
+
+  const paintHit = () => {
+    const bars = live.store[symbol]?.[intervalRef.current]?.bars || []
+    const nBars = bars.length
+    const count = Math.min(hitBarsRef.current, nBars)
+    const t = Date.now()
+    for (let k = 0; k < count; k++) {
+      const bar = bars[nBars - 1 - k]
+      if (!bar) continue
+      const { color, vol } = inkColor(k, count, t)
+      candleRef.current?.update({ time: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close, color, borderColor: color, wickColor: color })
+      volRef.current?.update({ time: bar.time, value: bar.volume, color: vol })
+    }
+  }
+
+  const paintNormal = (count) => {
+    const bars = live.store[symbol]?.[intervalRef.current]?.bars || []
+    const nBars = bars.length
+    const cc = ccRef.current
+    for (let k = 0; k < Math.min(count, nBars); k++) {
+      const bar = bars[nBars - 1 - k]
+      if (!bar) continue
+      const up = bar.close >= bar.open
+      candleRef.current?.update({ time: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close })
+      volRef.current?.update({ time: bar.time, value: bar.volume, color: up ? rgba(cc.up, 0.3) : rgba(cc.down, 0.3) })
+    }
+  }
 
   const applyLiveBar = () => {
     const bars = live.store[symbol]?.[intervalRef.current]?.bars || []
@@ -60,16 +105,12 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
     if (!last || !candleRef.current) return
     const baseBar = { time: last.time, open: last.open, high: last.high, low: last.low, close: last.close }
     const cc = ccRef.current
-    const t = Date.now()
-    if (t < hitUntilRef.current) {
-      const c = sciFiColor(t)
-      const w = sciFiColor(t, 45)
-      candleRef.current.update({ ...baseBar, color: c, borderColor: c, wickColor: w })
-      volRef.current?.update({ time: last.time, value: last.volume, color: c })
-    } else {
-      candleRef.current.update(baseBar)
-      volRef.current?.update({ time: last.time, value: last.volume, color: last.close >= last.open ? rgba(cc.up, 0.3) : rgba(cc.down, 0.3) })
+    if (Date.now() < hitUntilRef.current) {
+      paintHit()
+      return
     }
+    candleRef.current.update(baseBar)
+    volRef.current?.update({ time: last.time, value: last.volume, color: last.close >= last.open ? rgba(cc.up, 0.3) : rgba(cc.down, 0.3) })
   }
 
   const drawBar = (b) => {
@@ -218,23 +259,27 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chartColors.up, chartColors.down])
 
-  // 命中动画：图标放大由 CSS 类控制；流彩K线用定时循环驱动（成交稀疏时也持续变色）
+  // 命中特效：参与形态的 N 根K线一起触发水墨映射（逐根错相呼吸）；
+  // 到期恢复普通配色；hover 记录仍只落在最后一根K线上
   useEffect(() => {
-    if (hitActive) {
+    if (activeHit) {
+      hitBarsRef.current = PATTERN_META[activeHit.pattern]?.bars || 1
+      hitDirRef.current = activeHit.direction || 'neutral'
       hitUntilRef.current = Date.now() + 9500
-      applyLiveBar()
+      paintHit()
       const timer = setInterval(() => {
         if (Date.now() >= hitUntilRef.current) {
           clearInterval(timer)
-          applyLiveBar()               // 到期恢复正常配色
+          hitUntilRef.current = 0
+          paintNormal(hitBarsRef.current)
         } else {
-          applyLiveBar()
+          paintHit()
         }
       }, 90)
       return () => clearInterval(timer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hitActive])
+  }, [activeHit])
 
   const decimals = tick ? (tick.price >= 1000 ? 1 : tick.price >= 1 ? 3 : 4) : 2
 

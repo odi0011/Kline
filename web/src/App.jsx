@@ -2,14 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { LiveClient } from './live.js'
 import CoinCard from './CoinCard.jsx'
 import PatternGlyph from './PatternGlyph.jsx'
-import { PATTERN_META, coinGradient } from './patterns_meta.js'
+import { PATTERN_META } from './patterns_meta.js'
 import { Notification, NotificationViewport } from '@/components/base/notification/notification'
 import { Card } from '@/components/arc/card/card'
 import { ScrollArea } from '@/components/arc/scroll-area/scroll-area'
 import { GlassMenu } from '@/components/arc/glass-menu/glass-menu'
 import { WalletStack } from '@/components/arc/wallet-stack/wallet-stack'
 import { ComboChartCard } from '@/components/base/combo-chart-card/combo-chart-card'
-import { NoiseBackground } from '@/components/ui/noise-background'
 import { Badge } from '@/components/base/badges/badge'
 import { AnimatedCounter } from '@/components/arc/animated-counter/animated-counter'
 import CoinAvatar from '@/components/ui/coin-avatar'
@@ -38,7 +37,7 @@ function loadSettings() {
 }
 
 const STATUS_BY_DIR = { bullish: 'success', bearish: 'error', neutral: 'information' }
-const DIR_LABEL = { bullish: '上涨', bearish: '下跌', neutral: '其他' }
+const DIR_LABEL = { bullish: '上涨', bearish: '下跌', neutral: '变盘' }
 const fmtPrice = (p) => (p >= 1000 ? p.toFixed(1) : p >= 1 ? p.toFixed(3) : p.toPrecision(4))
 
 // 账户收益图模拟数据（布局用，后续可接测试盘收益记录）
@@ -289,7 +288,7 @@ export default function App() {
                 settings={{ ...settings, interval: defaultIv }}
                 live={liveRef.current}
                 chartColors={chartColors}
-                hitActive={hits.some((h) => h.symbol === s)}
+                activeHit={hits.find((h) => h.symbol === s)}
                 onHoverHits={(hs, sym) => {
                   setHoverPattern(hs.length ? { pattern: hs[0].pattern, symbol: sym } : null)
                   if (hs.length) scrollToPattern(hs[0].pattern)
@@ -320,27 +319,15 @@ export default function App() {
                   const decided = st.wins + st.losses
                   const winPct = decided > 0 ? Math.round((st.wins / decided) * 100) : null
                   const tier = decided > 0 ? (winPct >= 50 ? 'hi' : winPct >= 10 ? 'mid' : 'low') : null
-                  const gradBase = active ? active.symbol : 'btcusdt'
                   return (
                     <div className={`pattern-card ${active ? 'hit' : ''}`} data-key={key} key={key}>
-                      {active ? (
-                        <NoiseBackground className="pn-content" containerClassName="pn-container"
-                          gradientColors={coinGradient(gradBase)} noiseIntensity={0.3} speed={0.09}>
-                          <Card title={<span className="pc-title">{p.name}
-                            <span className="cnt-mini" title={`累计触发 ${st.count} 次`}>
-                              <AnimatedCounter value={st.count} decimals={0} />
-                            </span>
-                          </span>}
-                            description={p.desc} media={<PatternGlyph candles={p.candles} />} />
-                        </NoiseBackground>
-                      ) : (
-                        <Card title={<span className="pc-title">{p.name}
-                          <span className="cnt-mini" title={`累计触发 ${st.count} 次`}>
-                            <AnimatedCounter value={st.count} decimals={0} />
-                          </span>
-                        </span>}
-                          description={p.desc} media={<PatternGlyph candles={p.candles} />} />
-                      )}
+                      {active && <div className={`pn-hit-bg ${active.direction || p.dir}`} aria-hidden />}
+                      <Card title={<span className="pc-title">{p.name}
+                        <span className="cnt-mini" title={`累计触发 ${st.count} 次`}>
+                          <AnimatedCounter value={st.count} decimals={0} />
+                        </span>
+                      </span>}
+                        description={p.desc} media={<PatternGlyph candles={p.candles} />} />
                       <div className="badges">
                         <Badge className={`dir-badge ${p.dir}`}>{DIR_LABEL[p.dir]}</Badge>
                         {tier && <Badge className={`win-badge ${tier}`}>胜{winPct}%</Badge>}
