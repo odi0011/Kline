@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 import threading
 from collections import defaultdict
@@ -36,6 +37,24 @@ def start_static(dist_dir: str, port: int) -> None:
 
         def log_message(self, *args):
             pass
+
+        def translate_path(self, path):
+            # 畸形/恶意路径（含非法转义、NUL 字节等）会让标准实现抛 ValueError，
+            # 这里兜底为根路径，避免异常日志污染并防止目录穿越
+            try:
+                p = super().translate_path(path)
+            except Exception:
+                return os.path.join(dist_dir, "index.html")
+            base = os.path.abspath(dist_dir)
+            if not os.path.abspath(p).startswith(base):
+                return os.path.join(base, "index.html")
+            return p
+
+        def handle_one_request(self):
+            try:
+                super().handle_one_request()
+            except (ValueError, AttributeError, ConnectionError):
+                self.close_connection = True
 
         def end_headers(self):
             # index/icons 不缓存（部署后普通刷新即见新版）；带内容哈希的 assets 永久缓存
@@ -239,7 +258,6 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     await hub.start()
 
     dist = "web/dist"
-    import os
     if os.path.isdir(dist):
         start_static(dist, int(cfg.get("web_port", 8000)))
     else:
