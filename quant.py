@@ -55,6 +55,7 @@ class QuantEngine:
         self.broadcast_fn = None           # main 注入：asyncio.create_task(hub.broadcast(obj))
         self._err_dedupe: dict[str, int] = {}
         self._mark_cache: dict[str, tuple] = {}
+        self._unsupported: set[str] = set()   # 未开通合约权限的币种（如 TradFi 需签协议）
         self._lock = threading.Lock()
         self._warned_dupes = False
         self._step_sizes: dict[str, float] = {}
@@ -193,6 +194,18 @@ class QuantEngine:
         self.stats["orders"] += 1
         return r
 
+    def _mark_unsupported(self, symbol: str, err: Exception) -> bool:
+        """识别"该合约未开通"类错误（如 TradFi 永续需先签协议 -4411），
+        标记后不再对该币种下单，避免反复失败刷日志。返回是否属于此类。"""
+        msg = str(err)
+        if "-4411" in msg or "TradFi" in msg:
+            self._unsupported.add(symbol)
+            self._event("system",
+                        f"{symbol} 未开通合约权限（TradFi 协议未签署），已加入跳过列表不再尝试",
+                        symbol=symbol)
+            return True
+        return False
+
     # ---------- 状态 ----------
 
     def _st(self, name: str) -> dict:
@@ -236,6 +249,9 @@ class QuantEngine:
     def _decide_open(self, name, a, symbol, side, direction, price, hit):
         st = self._st(name)
         now = _now_ms()
+        # 风控 0：该合约未开通权限（如 TradFi 需签协议）→ 不再尝试
+        if symbol in self._unsupported:
+            return
         # 风控 1：该账户已有该币种持仓
         if symbol in st["positions"]:
             self._event("skip", "已有该币种持仓", account=name, symbol=symbol)
@@ -265,6 +281,9 @@ class QuantEngine:
             r = self._place_order(a["api_key"], a["api_secret"], symbol, side, qty)
         except Exception as e:
             self.stats["errors"] += 1
+            if self._mark_unsupported(symbol, e):
+                st["cooldown"][symbol] = now
+                return
             self._event("error", f"下单失败({name}/{symbol}): {e}", symbol=symbol)
             st["cooldown"][symbol] = now
             return
@@ -512,6 +531,7 @@ class QuantEngine:
             "positions": positions,
             "trades": self.trades[-20:],
             "accounts": list(self.state.keys()),
+            "unsupported": sorted(self._unsupported),
         }
 
 
