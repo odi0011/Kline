@@ -316,12 +316,11 @@ export default function App() {
       {/* 形态信号通知：左上角 */}
       <NotificationViewport position="top-left">
         {hits.map((h) => {
-          const base = h.symbol.replace(/usdt$/, "")
           return (
             <Notification
               key={h.id}
               status={STATUS_BY_DIR[h.direction] || 'information'}
-              avatar={{ src: `icons/${base}.svg`, alt: base }}
+              icon={<CoinAvatar symbol={h.symbol} size={40} />}
               title={`${h.symbol.toUpperCase()} · ${h.interval}  ${h.name_zh} ${h.direction === 'bullish' ? '↑' : h.direction === 'bearish' ? '↓' : '◆'}`}
               description={`${h.mode === 'live' ? '盘中预警' : '收线确认'} @ ${fmtPrice(h.price)}`}
               timestamp={fmtTime(h.ts)}

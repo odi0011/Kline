@@ -1,15 +1,21 @@
 import { useEffect, useState } from "react"
 
-/* 币种头像：优先用 public/icons/{base}.svg，没有就用确定性色相的字母圆牌兜底
-   （TSLA/XAU/XAG 这类新上币种没有现成 icon）。色相由币种名逐字符编码，稳定不变。 */
+/* 币种头像：依次尝试 public/icons/{base}.svg → {base}.png → 确定性色相字母圆牌。
+   色相由币种名逐字符编码，稳定不变（仅当两种格式的 icon 文件都不存在时才会走到）。 */
 export default function CoinAvatar({ symbol, size = 22, className = "" }) {
   const base = symbol.replace(/usdt$/i, "").toUpperCase()
-  const [ok, setOk] = useState(true)
-  useEffect(() => { setOk(true) }, [symbol])
-  if (ok) {
+  const [stage, setStage] = useState(0)   // 0=svg 1=png 2=字母兜底
+  useEffect(() => { setStage(0) }, [symbol])
+  if (stage === 0) {
     return (
       <img className={className} src={`icons/${base}.svg`} alt={base} width={size} height={size}
-        onError={() => setOk(false)} />
+        onError={() => setStage(1)} />
+    )
+  }
+  if (stage === 1) {
+    return (
+      <img className={className} src={`icons/${base}.png`} alt={base} width={size} height={size}
+        onError={() => setStage(2)} />
     )
   }
   let hue = 0
