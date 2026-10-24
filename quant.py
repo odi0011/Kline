@@ -56,7 +56,9 @@ class QuantEngine:
         self._step_sizes: dict[str, float] = {}
         self._log_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant.log")
         self._trades_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant-trades.json")
+        self._pos_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant-positions.json")
         self._load_trades()
+        self._load_positions()
         self._event("system", "量化引擎启动", enabled=True)
 
     # ---------- 记录 ----------
@@ -87,6 +89,31 @@ class QuantEngine:
                 json.dump(self.trades[-500:], f, ensure_ascii=False, indent=1)
         except Exception:
             pass
+
+    def _save_positions(self):
+        """未平仓持仓落盘：重启/部署后恢复 entry 价与开仓时间，避免依赖审计补记。"""
+        try:
+            data = {name: st["positions"] for name, st in self.state.items() if st.get("positions")}
+            with open(self._pos_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=1)
+        except Exception:
+            pass
+
+    def _load_positions(self):
+        try:
+            if not os.path.exists(self._pos_path):
+                return
+            with open(self._pos_path, encoding="utf-8") as f:
+                data = json.load(f)
+            for name, poss in (data or {}).items():
+                if isinstance(poss, dict):
+                    st = self._st(name)
+                    st["positions"] = poss
+            n = sum(len(v.get("positions", {})) for v in self.state.values())
+            if n:
+                self._event("system", f"恢复未平仓持仓 {n} 个（含 entry 价与开仓时间）")
+        except Exception as e:
+            self._event("error", f"持仓状态恢复失败: {e}")
 
     # ---------- 交易所辅助 ----------
 
@@ -209,6 +236,7 @@ class QuantEngine:
         st["positions"][symbol] = pos
         st["cooldown"][symbol] = now
         self.stats["decisions"] += 1
+        self._save_positions()
         self._event("open", f"确认信号开仓: {hit.get('name_zh')}", account=name, symbol=symbol,
                     side=side, qty=qty, entry=pos["entry"], orderId=pos["orderId"], margin=margin)
         self._broadcast_positions()
@@ -272,6 +300,7 @@ class QuantEngine:
             "pattern": pos.get("pattern"), "orderId": pos.get("orderId"), "closeId": r.get("orderId"),
         }
         st["positions"].pop(symbol)
+        self._save_positions()
         self._record_trade(trade)
         self.stats["closes"] += 1
         if pnl > 0:
@@ -304,6 +333,7 @@ class QuantEngine:
                         continue
                     sym = p.get("symbol", "").lower()
                     live[sym] = {"amt": amt, "price": float(p.get("markPrice", 0) or 0)}
+                changed = False
                 # 交易所有、本地漏记 → 补记
                 for sym, li in live.items():
                     if sym not in st["positions"]:
@@ -312,18 +342,23 @@ class QuantEngine:
                                "orderId": None, "pattern": None, "direction": None,
                                "recovered": True}
                         st["positions"][sym] = pos
+                        changed = True
                         self._event("audit", f"审计补记漏记持仓 {sym}", account=name, symbol=sym)
                 # 本地有、交易所已无 → 核销
                 for sym in list(st["positions"].keys()):
                     if sym not in live:
-                        pos = st["positions"].pop(sym)
+                        st["positions"].pop(sym)
+                        changed = True
                         self._event("audit", f"审计核销已平持仓 {sym}（交易所已无仓位）", account=name, symbol=sym)
                 # 本地与交易所数量不一致 → 以交易所为准修正数量
                 for sym, li in live.items():
                     pos = st["positions"].get(sym)
                     if pos and abs(abs(pos["qty"]) - abs(li["amt"])) > 1e-9:
                         pos["qty"] = abs(li["amt"])
+                        changed = True
                         self._event("audit", f"审计修正持仓数量 {sym} → {abs(li['amt'])}", account=name, symbol=sym)
+                if changed:
+                    self._save_positions()
             self._event("audit", "5 分钟自审计完成", positions={n: list(self._st(n)["positions"].keys()) for n in self.state})
         except Exception as e:
             self.stats["errors"] += 1
