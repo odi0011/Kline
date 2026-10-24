@@ -36,6 +36,14 @@ def start_static(dist_dir: str, port: int) -> None:
         def log_message(self, *args):
             pass
 
+        def end_headers(self):
+            # index/icons 不缓存（部署后普通刷新即见新版）；带内容哈希的 assets 永久缓存
+            if self.path.startswith("/assets/"):
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            else:
+                self.send_header("Cache-Control", "no-cache")
+            super().end_headers()
+
     httpd = ThreadingHTTPServer(("0.0.0.0", port), Quiet)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     print(f"[web] 页面 http://127.0.0.1:{port}")

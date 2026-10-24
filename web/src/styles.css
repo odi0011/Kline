@@ -61,10 +61,12 @@ body {
   z-index: 40;
 }
 
-/* 命中时币种图标辉光（不缩放，避免压住标题文字） */
+/* 命中时币种图标辉光（不缩放，避免压住标题文字）；图标一律圆形裁切 */
 .coin-icon {
   width: 22px;
   height: 22px;
+  border-radius: 50%;
+  object-fit: cover;
   transition: filter 0.35s ease;
 }
 .coin-icon.hit {

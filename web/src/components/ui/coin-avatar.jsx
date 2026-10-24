@@ -7,15 +7,16 @@ export default function CoinAvatar({ symbol, size = 22, className = "" }) {
   const display = base.toUpperCase()                  // 仅字母兜底牌用大写
   const [stage, setStage] = useState(0)   // 0=svg 1=png 2=字母兜底
   useEffect(() => { setStage(0) }, [symbol])
+  const imgStyle = { width: size, height: size, borderRadius: "50%", objectFit: "cover", display: "block" }
   if (stage === 0) {
     return (
-      <img className={className} src={`icons/${base}.svg`} alt={base} width={size} height={size}
+      <img className={className} style={imgStyle} src={`icons/${base}.svg`} alt={base} width={size} height={size}
         onError={() => setStage(1)} />
     )
   }
   if (stage === 1) {
     return (
-      <img className={className} src={`icons/${base}.png`} alt={base} width={size} height={size}
+      <img className={className} style={imgStyle} src={`icons/${base}.png`} alt={base} width={size} height={size}
         onError={() => setStage(2)} />
     )
   }
