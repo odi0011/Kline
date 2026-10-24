@@ -43,8 +43,10 @@ function AccountBackdrop({ name }) {
       const W = Math.round(cw * dpr), H = Math.round(ch * dpr)
       if (c.width !== W) c.width = W
       if (c.height !== H) c.height = H
+      const ctx = c.getContext("2d")
+      if (!ctx) return
       try {
-        paintWatercolor(c, W, H, stops, params, seed, mode, time)
+        paintWatercolor(ctx, W, H, stops, params, seed, mode, time)
       } catch { /* 保留渐变兜底 */ }
     }
     if (!glOk) { paint("export", 0); return () => { alive = false } }
