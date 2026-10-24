@@ -98,14 +98,16 @@ export function WalletStack({ accounts = [], label = "账户", onSelectedChange,
       >
         {accounts.map((a, i) => {
           const isSel = selected === a.name
-          const y = expanded
-            ? i * (CARD_H + 12) + (isSel && i > selIdx ? 96 : 0)
-            : Math.max(-12, STACK_BOTTOM_LINE - CARD_H - (n - 1 - i) * STACK_GAP)
+          // 收起位由 React 的 style.top 管理（motion 可能在挂载/动画结束时清掉自己写的内联
+          // transform/height，若静态位置依赖 animate 值会回落错位）；motion 只动相对位移 y
+          const collapsedY = Math.max(-12, STACK_BOTTOM_LINE - CARD_H - (n - 1 - i) * STACK_GAP)
+          const expandedY = i * (CARD_H + 12) + (isSel && i > selIdx ? 96 : 0)
+          const y = expandedY - collapsedY
           return (
             <motion.div
               key={a.name}
               className="wstack-slot"
-              style={{ position: "absolute", left: 0, right: 0, zIndex: i + 1 }}
+              style={{ position: "absolute", left: 0, right: 0, top: collapsedY, zIndex: i + 1 }}
               animate={{ y }}
               transition={spring}
               onClick={() => {
