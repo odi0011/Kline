@@ -102,7 +102,7 @@ export function WalletStack({ accounts = [], label = "账户", onSelectedChange,
           // transform/height，若静态位置依赖 animate 值会回落错位）；motion 只动相对位移 y
           const collapsedY = Math.max(-12, STACK_BOTTOM_LINE - CARD_H - (n - 1 - i) * STACK_GAP)
           const expandedY = i * (CARD_H + 12) + (isSel && i > selIdx ? 96 : 0)
-          const y = expandedY - collapsedY
+          const y = expanded ? expandedY - collapsedY : 0
           return (
             <motion.div
               key={a.name}
