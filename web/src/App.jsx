@@ -22,11 +22,12 @@ const MIN_SYMBOLS = 4
 const MAX_SYMBOLS = 10
 const DEFAULT_SETTINGS = {
   interval: '3m', visibleBars: 70, showVolume: true, showGrid: true,
-  symbols: ['btcusdt', 'tslausdt', 'xauusdt', 'xagusdt'],   // 默认展示的四个币种
+  symbols: ['btcusdt', 'tslausdt', 'xauusdt', 'xagusdt'],   // 默认展示的四个币种（浏览器本地）
+}
+const DEFAULT_UI = {
   themeColor: '#f0b90b', font: 'douyin',
   upDown: 'green-red', upColor: '#16a34a', downColor: '#dc2626',
-  livePreview: true,
-}
+}   // 外观默认值；连接后以服务端下发的 ui 为准（设置即真实功能）
 
 function loadSettings() {
   try {
@@ -69,6 +70,10 @@ export default function App() {
   const [settings, setSettings] = useState(loadSettings)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [frontName, setFrontName] = useState(null)   // 置前的账户（卡片点击）
+  const [ui, setUi] = useState(DEFAULT_UI)           // 外观：服务端下发（config 持久化）
+  const [patternsEnabled, setPatternsEnabled] = useState(null)  // null = 未从服务端加载
+  const [livePreview, setLivePreview] = useState(true)
+  const [srvAccounts, setSrvAccounts] = useState(null)          // 服务端账户列表（含密钥）
   const liveRef = useRef(null)
   const cardsViewportRef = useRef(null)
   const equityRef = useRef({})                       // 账户名 → [{t, bal, upnl}] 权益采样
@@ -77,23 +82,23 @@ export default function App() {
 
   // 外观即时生效：主题色 → --accent（菜单高亮/徽标等点缀），字体 → 全局
   useEffect(() => {
-    document.documentElement.style.setProperty('--accent', settings.themeColor)
-  }, [settings.themeColor])
+    document.documentElement.style.setProperty('--accent', ui.themeColor)
+  }, [ui.themeColor])
   useEffect(() => {
     const fonts = {
       douyin: '"Douyin Sans", "Microsoft YaHei", system-ui, sans-serif',
       system: 'system-ui, -apple-system, "Microsoft YaHei", sans-serif',
       serif: 'Georgia, "Times New Roman", "SimSun", serif',
     }
-    document.body.style.fontFamily = fonts[settings.font] || fonts.douyin
-  }, [settings.font])
+    document.body.style.fontFamily = fonts[ui.font] || fonts.douyin
+  }, [ui.font])
 
   // K线涨跌颜色（预设或自定义）
   const chartColors = useMemo(() => {
-    if (settings.upDown === 'red-green') return { up: '#dc2626', down: '#16a34a' }
-    if (settings.upDown === 'custom') return { up: settings.upColor, down: settings.downColor }
+    if (ui.upDown === 'red-green') return { up: '#dc2626', down: '#16a34a' }
+    if (ui.upDown === 'custom') return { up: ui.upColor, down: ui.downColor }
     return { up: '#16a34a', down: '#dc2626' }
-  }, [settings.upDown, settings.upColor, settings.downColor])
+  }, [ui.upDown, ui.upColor, ui.downColor])
 
   const connected = stats.status === 'connected'
   const mode = stats.mode || meta?.mode || ''
@@ -151,8 +156,17 @@ export default function App() {
     const offStats = live.on('pattern_stats', (m) => setPatternStats(m.stats || {}))
     const offSymStats = live.on('symbol_stats', (m) => setSymbolStats(m.stats || {}))
     const offAcc = live.on('accounts', (m) => setAccounts(m.accounts || []))
+    const offSettings = live.on('settings', (m) => {
+      const s = m.settings || {}
+      if (s.ui) setUi((prev) => ({ ...prev, ...s.ui }))
+      if (s.patterns) {
+        if (Array.isArray(s.patterns.enabled)) setPatternsEnabled(s.patterns.enabled)
+        if (typeof s.patterns.live_preview === 'boolean') setLivePreview(s.patterns.live_preview)
+      }
+      if (Array.isArray(s.accounts)) setSrvAccounts(s.accounts)
+    })
     live.connect()
-    return () => { offHit(); offStats(); offSymStats(); offAcc(); live.close() }
+    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); live.close() }
   }, [])
 
   // 命中时：滚动到最新命中的形态卡片
@@ -181,6 +195,34 @@ export default function App() {
   }, [meta])
 
   const updateSetting = (patch) => setSettings((s) => ({ ...s, ...patch }))
+
+  // 设置弹窗 → 服务端（热生效 + 持久化到 config.yaml）
+  const updateUi = (patch) => {
+    const next = { ...ui, ...patch }
+    setUi(next)
+    liveRef.current && liveRef.current.sendSettings({ ui: next })
+  }
+  const updatePatterns = (nextEnabled, nextLive = livePreview) => {
+    setPatternsEnabled(nextEnabled)
+    setLivePreview(nextLive)
+    liveRef.current && liveRef.current.sendSettings({ patterns: { enabled: nextEnabled, live_preview: nextLive } })
+  }
+  const togglePattern = (key) => {
+    const cur = patternsEnabled || []
+    const next = cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]
+    if (next.length) updatePatterns(next)          // 至少保留一个形态
+  }
+  const toggleLivePreview = () => updatePatterns(patternsEnabled || [], !livePreview)
+  const addAccount = (acct) => {
+    const next = [...(srvAccounts || []), acct]
+    setSrvAccounts(next)
+    liveRef.current && liveRef.current.sendSettings({ accounts: next })
+  }
+  const removeAccount = (name) => {
+    const next = (srvAccounts || []).filter((a) => a.name !== name)
+    setSrvAccounts(next)
+    liveRef.current && liveRef.current.sendSettings({ accounts: next })
+  }
 
   // 币种勾选：最少 MIN_SYMBOLS 个、最多 MAX_SYMBOLS 个，超限直接忽略
   const toggleSymbol = (sym) => setSettings((s) => {
@@ -364,7 +406,10 @@ export default function App() {
 
       {/* 设置弹窗 */}
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)}
-        settings={settings} updateSetting={updateSetting} accounts={accounts} />
+        ui={ui} onUpdateUi={updateUi}
+        patternsEnabled={patternsEnabled} livePreview={livePreview}
+        onTogglePattern={togglePattern} onToggleLivePreview={toggleLivePreview}
+        accounts={srvAccounts} onAddAccount={addAccount} onRemoveAccount={removeAccount} />
 
       {/* 形态信号通知：左上角 */}
       <NotificationViewport position="top-left">

@@ -134,7 +134,15 @@
 }
 .acctIcon { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; }
 .acctName { font-weight: 600; }
-.acctBal { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text-secondary, #5b6472); }
+.acctKey { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text-muted, #8b949e); font-size: 12px; }
+.delBtn {
+  display: grid; place-items: center;
+  width: 28px; height: 28px; border-radius: 8px;
+  border: 1px solid rgba(28, 35, 51, 0.12);
+  background: transparent; color: #b91c1c;
+  cursor: pointer; transition: background-color 140ms ease;
+}
+.delBtn:hover { background: rgba(185, 28, 28, 0.08); }
 
 .form { display: flex; flex-direction: column; gap: 10px; }
 .formRow { display: flex; gap: 10px; align-items: flex-end; }
@@ -168,15 +176,39 @@
   transition: filter 140ms ease;
 }
 .saveBtn:hover { filter: brightness(1.06); }
+.saveBtn:disabled { opacity: 0.45; cursor: default; filter: none; }
 
-.draftList { display: flex; flex-direction: column; gap: 4px; }
-.draftRow {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 12px; color: #1c2333;
-  padding: 6px 10px; border-radius: 8px;
-  background: rgba(28, 35, 51, 0.04);
+/* 形态启停 */
+.patternToggles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
 }
-.draftIcon { width: 18px; height: 18px; border-radius: 50%; object-fit: cover; }
+.patternToggle {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 10px;
+  border: 1px solid rgba(28, 35, 51, 0.1);
+  background: transparent;
+  font-size: 12.5px; color: var(--text-muted, #8b949e);
+  cursor: pointer; font-family: inherit;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+.patternToggle:hover { border-color: var(--border-strong, #cfd6e2); }
+.patternToggle[data-on] {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: #1c2333;
+}
+.patternToggle:disabled { opacity: 0.5; cursor: default; }
+.ptName { position: relative; flex: 1; text-align: left; }
+.ptDir {
+  position: relative; font-size: 10px; padding: 1px 6px; border-radius: 7px;
+  background: rgba(28, 35, 51, 0.08);
+}
+.ptDir[data-dir="bullish"] { background: #16a34a; color: #fff; }
+.ptDir[data-dir="bearish"] { background: #dc2626; color: #fff; }
+.ptDir[data-dir="neutral"] { background: #64748b; color: #fff; }
+.ptCheck { position: relative; color: var(--accent-deep, #b45309); font-weight: 700; width: 12px; }
 .draftKey { margin-left: auto; color: var(--text-muted, #8b949e); font-variant-numeric: tabular-nums; }
 
 /* 开关 */

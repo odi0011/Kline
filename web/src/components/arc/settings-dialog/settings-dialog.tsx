@@ -1,12 +1,14 @@
 /* 设置弹窗——玻璃面板（与图表设置菜单同款毛玻璃材质）+ 左侧菜单 + 右侧表单。
-   区块：外观（主题色/字体/K线涨跌颜色）、账户（Input 表单，密钥最终落在服务端）、形态。 */
+   所有设置均为真实系统功能：账户增删、形态启停、盘中预警、外观——
+   下发服务端热生效并持久化到 config.yaml（币种展示选择除外，存浏览器本地）。 */
 import { useEffect, useId, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
-import { X, Palette, Wallet, Activity, Image as ImageIcon, Plus } from "lucide-react"
+import { X, Palette, Wallet, Activity, Image as ImageIcon, Plus, Trash2 } from "lucide-react"
 import Input from "@/components/arc/input/input"
 import ColorPicker from "@/components/arc/color-picker/color-picker"
 import MorphSelect from "@/components/arc/morph-select/morph-select"
 import CoinAvatar from "@/components/ui/coin-avatar"
+import { PATTERN_META } from "@/patterns_meta.js"
 import styles from "./settings-dialog.module.css"
 
 const spring = { type: "spring", stiffness: 460, damping: 40, mass: 0.85 }
@@ -28,6 +30,7 @@ const UPDOWN_OPTIONS = [
   { id: "red-green", label: "红涨绿跌" },
   { id: "custom", label: "自定义" },
 ]
+const DIR_LABEL = { bullish: "涨", bearish: "跌", neutral: "变盘" }
 
 function Row({ label, children, hint }) {
   return (
@@ -45,64 +48,65 @@ function SectionTitle({ children }) {
   return <div className={styles.sectionTitle}>{children}</div>
 }
 
-function AppearancePane({ settings, updateSetting }) {
+function AppearancePane({ ui, onUpdateUi }) {
   return (
     <>
       <SectionTitle>主题</SectionTitle>
       <Row label="主题色" hint="影响菜单高亮、胜率徽标等点缀色">
-        <ColorPicker value={settings.themeColor} onChange={(v) => updateSetting({ themeColor: v })}
+        <ColorPicker value={ui.themeColor} onChange={(v) => onUpdateUi({ themeColor: v })}
           presets={THEME_PRESETS} />
       </Row>
       <Row label="字体">
-        <MorphSelect options={FONT_OPTIONS} value={settings.font} onChange={(id) => updateSetting({ font: id })} />
+        <MorphSelect options={FONT_OPTIONS} value={ui.font} onChange={(id) => onUpdateUi({ font: id })} />
       </Row>
       <SectionTitle>K线颜色</SectionTitle>
       <Row label="涨跌配色" hint="自定义可分别指定涨/跌色">
-        <MorphSelect options={UPDOWN_OPTIONS} value={settings.upDown} onChange={(id) => updateSetting({ upDown: id })} />
+        <MorphSelect options={UPDOWN_OPTIONS} value={ui.upDown} onChange={(id) => onUpdateUi({ upDown: id })} />
       </Row>
-      {settings.upDown === "custom" && (
+      {ui.upDown === "custom" && (
         <Row label="自定义涨/跌色">
           <div className={styles.colorPair}>
-            <ColorPicker label="涨" value={settings.upColor} onChange={(v) => updateSetting({ upColor: v })}
+            <ColorPicker label="涨" value={ui.upColor} onChange={(v) => onUpdateUi({ upColor: v })}
               presets={["#16a34a", "#3b82f6", "#06b6d4"]} />
-            <ColorPicker label="跌" value={settings.downColor} onChange={(v) => updateSetting({ downColor: v })}
+            <ColorPicker label="跌" value={ui.downColor} onChange={(v) => onUpdateUi({ downColor: v })}
               presets={["#dc2626", "#f97316", "#8b5cf6"]} />
           </div>
         </Row>
       )}
-      <div className={styles.note}>全部外观设置即时生效并保存在浏览器本地。</div>
+      <div className={styles.note}>外观保存在服务端配置，对所有打开此页面的人生效。</div>
     </>
   )
 }
 
-function AccountPane({ accounts }) {
+function AccountPane({ accounts, onAddAccount, onRemoveAccount }) {
   const [draft, setDraft] = useState({ name: "", key: "", secret: "" })
-  const [icon, setIcon] = useState(null)
-  const [saved, setSaved] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("kline.accountDrafts")) || [] } catch { return [] }
-  })
-  const save = () => {
-    if (!draft.name.trim() || !draft.key.trim()) return
-    const next = [...saved, { ...draft, icon }]
-    setSaved(next)
-    localStorage.setItem("kline.accountDrafts", JSON.stringify(next))
+  const [icon, setIcon] = useState("")
+  const list = accounts || []
+  const ready = draft.name.trim() && draft.key.trim() && draft.secret.trim()
+  const add = () => {
+    if (!ready) return
+    onAddAccount({ name: draft.name.trim(), api_key: draft.key.trim(), api_secret: draft.secret.trim(), icon })
     setDraft({ name: "", key: "", secret: "" })
-    setIcon(null)
+    setIcon("")
   }
   return (
     <>
-      <SectionTitle>已接入账户（来自服务端 config）</SectionTitle>
+      <SectionTitle>已接入账户（增删立即生效并写入服务端配置）</SectionTitle>
       <div className={styles.acctList}>
-        {accounts.map((a) => (
+        {list.map((a) => (
           <div key={a.name} className={styles.acctRow}>
             {a.icon ? <img className={styles.acctIcon} src={a.icon} alt="" /> : <CoinAvatar symbol={a.name} size={30} />}
             <span className={styles.acctName}>{a.name}</span>
-            <span className={styles.acctBal}>{a.balance == null ? "--" : Number(a.balance).toLocaleString()}</span>
+            <span className={styles.acctKey}>{(a.api_key || "").slice(0, 6)}····{(a.api_key || "").slice(-4)}</span>
+            <button type="button" className={styles.delBtn} aria-label={`删除 ${a.name}`}
+              onClick={() => onRemoveAccount(a.name)}>
+              <Trash2 size={14} />
+            </button>
           </div>
         ))}
-        {accounts.length === 0 && <div className={styles.note}>暂无（服务端 config.yaml 的 accounts 为空）</div>}
+        {list.length === 0 && <div className={styles.note}>暂无账户，用下方表单添加</div>}
       </div>
-      <SectionTitle>添加账户（本地暂存，密钥写入服务端 config.yaml 后重启生效，后续版本支持一键下发）</SectionTitle>
+      <SectionTitle>添加账户</SectionTitle>
       <div className={styles.form}>
         <div className={styles.formRow}>
           <Input label="账户名称" placeholder="例如：主账户" value={draft.name}
@@ -116,7 +120,10 @@ function AccountPane({ accounts }) {
               <input type="file" accept="image/*" style={{ display: "none" }}
                 onChange={(e) => {
                   const f = e.target.files && e.target.files[0]
-                  if (f) setIcon(URL.createObjectURL(f))
+                  if (!f) return
+                  const reader = new FileReader()
+                  reader.onload = () => setIcon(String(reader.result))   // dataURL，随配置持久化
+                  reader.readAsDataURL(f)
                 }} />
             </label>
           </div>
@@ -125,47 +132,50 @@ function AccountPane({ accounts }) {
           onChange={(e) => setDraft((d) => ({ ...d, key: e.target.value }))} autoComplete="off" />
         <Input label="API Secret" type="password" placeholder="币安 API Secret" value={draft.secret}
           onChange={(e) => setDraft((d) => ({ ...d, secret: e.target.value }))} autoComplete="new-password" />
-        <button type="button" className={styles.saveBtn} onClick={save}>保存到本地草稿</button>
-        {saved.length > 0 && (
-          <div className={styles.draftList}>
-            {saved.map((d, i) => (
-              <div key={i} className={styles.draftRow}>
-                {d.icon && <img src={d.icon} alt="" className={styles.draftIcon} />}
-                <span>{d.name}</span>
-                <span className={styles.draftKey}>{d.key.slice(0, 6)}····{d.key.slice(-4)}</span>
-              </div>
-            ))}
-          </div>
-        )}
+        <button type="button" className={styles.saveBtn} onClick={add} disabled={!ready}
+          data-ready={ready || undefined}>
+          {ready ? "添加账户" : "填写完整后可添加"}
+        </button>
       </div>
     </>
   )
 }
 
-function PatternsPane({ settings, updateSetting }) {
+function PatternsPane({ patternsEnabled, livePreview, onTogglePattern, onToggleLivePreview }) {
+  const enabled = patternsEnabled || []
   return (
     <>
       <SectionTitle>预警</SectionTitle>
       <Row label="盘中预警" hint="K线未收线时形态一旦满足立即提示（收线确认不受影响）">
         <label className={styles.switch}>
-          <input type="checkbox" checked={!!settings.livePreview}
-            onChange={(e) => updateSetting({ livePreview: e.target.checked })} />
+          <input type="checkbox" checked={!!livePreview}
+            onChange={() => onToggleLivePreview()} />
           <span className={styles.knob} aria-hidden />
         </label>
       </Row>
-      <div className={styles.note}>
-        该开关保存在浏览器本地；服务端检测仍以 config.yaml 的 patterns.live_preview 为准，
-        后续版本支持前端一键下发。
+      <SectionTitle>形态启停（关闭后立即停止检测该形态，保存到服务端）</SectionTitle>
+      <div className={styles.patternToggles}>
+        {Object.entries(PATTERN_META).map(([key, p]) => {
+          const on = enabled.includes(key)
+          return (
+            <button key={key} type="button" className={styles.patternToggle} data-on={on || undefined}
+              disabled={on && enabled.length <= 1}
+              onClick={() => onTogglePattern(key)}>
+              <span className={styles.ptName}>{p.name}</span>
+              <span className={styles.ptDir} data-dir={p.dir}>{DIR_LABEL[p.dir]}</span>
+              <span className={styles.ptCheck}>{on ? "✓" : "+"}</span>
+            </button>
+          )
+        })}
       </div>
-      <SectionTitle>形态库</SectionTitle>
-      <div className={styles.note}>
-        当前启用全部 19 种内置形态（见 patterns/builtin.py）。按形态启停的表单将在下一版本加入。
-      </div>
+      <div className={styles.note}>至少保留一个形态；变更立即影响服务端检测并持久化。</div>
     </>
   )
 }
 
-export function SettingsDialog({ open, onClose, settings, updateSetting, accounts = [] }) {
+export function SettingsDialog({ open, onClose, ui, onUpdateUi,
+  patternsEnabled, livePreview, onTogglePattern, onToggleLivePreview,
+  accounts, onAddAccount, onRemoveAccount }) {
   const [section, setSection] = useState("appearance")
   const [hover, setHover] = useState(null)
   const groupId = useId()
@@ -214,9 +224,10 @@ export function SettingsDialog({ open, onClose, settings, updateSetting, account
                 })}
               </nav>
               <div className={styles.pane}>
-                {section === "appearance" && <AppearancePane settings={settings} updateSetting={updateSetting} />}
-                {section === "account" && <AccountPane accounts={accounts} />}
-                {section === "patterns" && <PatternsPane settings={settings} updateSetting={updateSetting} />}
+                {section === "appearance" && <AppearancePane ui={ui} onUpdateUi={onUpdateUi} />}
+                {section === "account" && <AccountPane accounts={accounts} onAddAccount={onAddAccount} onRemoveAccount={onRemoveAccount} />}
+                {section === "patterns" && <PatternsPane patternsEnabled={patternsEnabled} livePreview={livePreview}
+                  onTogglePattern={onTogglePattern} onToggleLivePreview={onToggleLivePreview} />}
               </div>
             </div>
           </motion.div>

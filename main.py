@@ -49,7 +49,7 @@ def start_static(dist_dir: str, port: int) -> None:
     print(f"[web] 页面 http://127.0.0.1:{port}")
 
 
-async def run(cfg: dict) -> None:
+async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     notifier = Notifier(cfg.get("notify", {}), cfg.get("csv_log"))
 
     pcfg = cfg.get("patterns", {})
@@ -95,6 +95,70 @@ async def run(cfg: dict) -> None:
 
     engine = PatternEngine(enabled, notify_with_lag,
                            live_preview=bool(pcfg.get("live_preview", True)))
+
+    # 账户列表可变盒子：设置弹窗增删后热生效；refresh 标志触发立即拉取
+    accts_box = {"list": [dict(a) for a in cfg.get("accounts", [])], "refresh": False}
+
+    def save_config() -> None:
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+            print(f"[settings] 配置已写入 {config_path}")
+        except Exception as e:
+            print(f"[settings] 配置写入失败: {e}")
+
+    def current_settings() -> dict:
+        return {
+            "accounts": [{"name": a.get("name", ""), "icon": a.get("icon", ""),
+                          "api_key": a.get("api_key", ""), "api_secret": a.get("api_secret", "")}
+                         for a in accts_box["list"]],
+            "patterns": {"enabled": [p.key for p in engine.patterns],
+                         "live_preview": engine.live_preview,
+                         "all": list(pbase.all_patterns().keys())},
+            "ui": cfg.get("ui", {}),
+        }
+
+    def apply_settings(s: dict) -> dict:
+        """应用设置弹窗下发的变更：运行时热生效 + 持久化到 config.yaml。"""
+        accounts = s.get("accounts")
+        if isinstance(accounts, list):
+            clean = []
+            for a in accounts:
+                if not isinstance(a, dict):
+                    continue
+                name = str(a.get("name", "")).strip()[:40]
+                key = str(a.get("api_key", "")).strip()
+                secret = str(a.get("api_secret", "")).strip()
+                if not name or not key or not secret:
+                    continue
+                clean.append({"name": name, "api_key": key, "api_secret": secret,
+                              "icon": str(a.get("icon", ""))[:300000]})
+            accts_box["list"] = clean
+            accts_box["refresh"] = True          # 触发账户数据立即重新拉取
+            cfg["accounts"] = clean
+        patterns = s.get("patterns")
+        if isinstance(patterns, dict):
+            enabled = patterns.get("enabled")
+            if isinstance(enabled, list) and enabled:
+                valid = [k for k in enabled if k in pbase.all_patterns()]
+                if valid:
+                    engine.patterns = get_enabled(valid)   # 运行时热替换启用形态
+                    cfg.setdefault("patterns", {})["enabled"] = valid
+            if "live_preview" in patterns:
+                engine.live_preview = bool(patterns["live_preview"])
+                cfg.setdefault("patterns", {})["live_preview"] = bool(patterns["live_preview"])
+        ui = s.get("ui")
+        if isinstance(ui, dict):
+            cur = cfg.setdefault("ui", {})
+            for k in ("themeColor", "font", "upDown", "upColor", "downColor"):
+                if isinstance(ui.get(k), str) and ui[k]:
+                    cur[k] = ui[k][:64]
+        save_config()
+        print("[settings] 设置已应用并持久化")
+        return current_settings()
+
+    hub.settings_fn = current_settings
+    hub.on_settings = apply_settings
 
     def on_evt(sym, iv, candle, closed, history):
         if closed:
@@ -172,14 +236,16 @@ async def run(cfg: dict) -> None:
 
     print("K线形态识别器已启动，Ctrl+C 退出")
 
-    # 测试盘账户权益轮询（30s），广播给前端
+    # 账户权益轮询（30s；设置变更时立即刷新），广播给前端
     async def accounts_poller():
-        accts = cfg.get("accounts", [])
-        if not accts:
-            return
         while True:
+            waited = 0.0
+            while waited < 30 and not accts_box.get("refresh"):
+                await asyncio.sleep(0.5)
+                waited += 0.5
+            accts_box["refresh"] = False
             results = []
-            for a in accts:
+            for a in accts_box["list"]:
                 try:
                     d = await asyncio.to_thread(fetch_account, a["api_key"], a["api_secret"])
                     results.append({"name": a["name"], "icon": a.get("icon", ""),
@@ -192,11 +258,10 @@ async def run(cfg: dict) -> None:
             try:
                 hub.last_accounts = results
                 await hub.broadcast({"type": "accounts", "accounts": results})
-                print(f"[accounts] {len(results)} 个测试盘账户已广播: " +
+                print(f"[accounts] {len(results)} 个账户已广播: " +
                       ", ".join(f"{r['name']}={r['balance']}" for r in results))
             except Exception:
                 pass
-            await asyncio.sleep(30)
 
     await asyncio.gather(supervisor(), sweep(), accounts_poller())
 
@@ -212,7 +277,7 @@ def main() -> None:
     args = ap.parse_args()
     cfg = load_config(args.config)
     try:
-        asyncio.run(run(cfg))
+        asyncio.run(run(cfg, args.config))
     except KeyboardInterrupt:
         print("\n已退出")
 

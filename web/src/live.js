@@ -83,6 +83,9 @@ export class LiveClient {
     } else if (m.type === 'accounts') {
       this.accounts = m.accounts
       this._emitKey('accounts', m)
+    } else if (m.type === 'settings') {
+      this.settings = m.settings
+      this._emitKey('settings', m)
     } else if (m.type === 'stats') {
       this.listeners.stats.forEach((f) => f(m))
     }
@@ -111,6 +114,13 @@ export class LiveClient {
   queryBar(symbol, interval, openTime) {
     if (this.ws && this.ws.readyState === 1) {
       this.ws.send(JSON.stringify({ type: "query_bar", symbol, interval, open_time: openTime }))
+    }
+  }
+
+  /** 下发设置（账户/形态/外观）：服务端热生效并持久化到 config.yaml */
+  sendSettings(settings) {
+    if (this.ws && this.ws.readyState === 1) {
+      this.ws.send(JSON.stringify({ type: "set_settings", settings }))
     }
   }
 

@@ -30,6 +30,8 @@ class BroadcastHub:
         self.query_fn = None              # bar 记录查询（storage）
         self.last_accounts = None         # 最近一轮测试盘账户数据（main 轮询写入）
         self.stats_dirty = False
+        self.settings_fn = None           # 当前可编辑设置（main 注入）
+        self.on_settings = None           # 客户端下发设置时的回调：应用+持久化，返回新设置
 
     # ---- 聚合器回调（与 PatternEngine 并联） ----
 
@@ -88,12 +90,19 @@ class BroadcastHub:
             if self.last_accounts:
                 await ws.send(json.dumps({"type": "accounts", "accounts": self.last_accounts},
                                          separators=(",", ":")))
+            if self.settings_fn:
+                await ws.send(json.dumps({"type": "settings", "settings": self.settings_fn()},
+                                         separators=(",", ":")))
             async for raw in ws:
                 try:
                     msg = json.loads(raw)
                     mtype = msg.get("type")
                     if mtype == "set_detect_interval" and self.on_detect:
                         self.on_detect(msg.get("interval"))
+                    elif mtype == "set_settings" and self.on_settings:
+                        new_settings = self.on_settings(msg.get("settings") or {})
+                        await ws.send(json.dumps({"type": "settings", "settings": new_settings},
+                                                 separators=(",", ":")))
                     elif mtype == "query_bar" and self.query_fn:
                         sym, iv = msg.get("symbol"), msg.get("interval")
                         ot = int(msg.get("open_time") or 0)
