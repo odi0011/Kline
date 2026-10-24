@@ -3,6 +3,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import type { CSSProperties, HTMLAttributes, PointerEvent as ReactPointerEvent, ReactNode, Ref, UIEvent } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { LiquidGlass } from "@/components/ui/liquid-glass";
 import styles from "./scroll-area.module.css";
 
 type Axis = "y" | "x";
@@ -208,14 +209,18 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(function S
     </div>
     {horizontal && scrollButtons && (
       <div ref={navRef} className={styles.nav} data-hidden="" >
-        <button type="button" ref={node => { navBtns.current.start = node; }} className={styles.navBtn}
-          aria-label="向左滚动" onPointerDown={event => { event.preventDefault(); nudge(-1); }}>
-          <ChevronLeft size={16} strokeWidth={2} aria-hidden />
-        </button>
-        <button type="button" ref={node => { navBtns.current.end = node; }} className={styles.navBtn}
-          aria-label="向右滚动" onPointerDown={event => { event.preventDefault(); nudge(1); }}>
-          <ChevronRight size={16} strokeWidth={2} aria-hidden />
-        </button>
+        <LiquidGlass radius={999} scale={30} aberration={0} frost={2} tint={0.14} className={styles.navBtnGlass}>
+          <button type="button" ref={node => { navBtns.current.start = node; }} className={styles.navBtn}
+            aria-label="向左滚动" onPointerDown={event => { event.preventDefault(); nudge(-1); }}>
+            <ChevronLeft size={16} strokeWidth={2} aria-hidden />
+          </button>
+        </LiquidGlass>
+        <LiquidGlass radius={999} scale={30} aberration={0} frost={2} tint={0.14} className={styles.navBtnGlass}>
+          <button type="button" ref={node => { navBtns.current.end = node; }} className={styles.navBtn}
+            aria-label="向右滚动" onPointerDown={event => { event.preventDefault(); nudge(1); }}>
+            <ChevronRight size={16} strokeWidth={2} aria-hidden />
+          </button>
+        </LiquidGlass>
       </div>
     )}
     {vertical && bar("y")}

@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
 import { Check, ChevronLeft, Search } from "lucide-react"
+import { LiquidGlass } from "@/components/ui/liquid-glass"
 
 const spring = { type: "spring", stiffness: 520, damping: 40, mass: 0.8 }
 
@@ -126,17 +127,31 @@ export function GlassMenu({
 
   return (
     <div ref={rootRef} className={className} style={{ position: "relative", ...style }}>
-      <motion.button
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={triggerLabel || label}
-        onClick={() => setOpen((o) => !o)}
-        whileTap={{ scale: 0.92 }}
-        style={pillStyle}
-      >
-        {children}
-      </motion.button>
+      {/* 触发按钮：液态玻璃圆钮（Aceternity LiquidGlass，aberration=0 单次位移最轻链路） */}
+      <LiquidGlass radius={999} scale={36} aberration={0} frost={2.5} tint={0.14}
+        className="shadow-[0_8px_24px_rgba(16,24,40,0.18)]" style={{ display: "block" }}>
+        <motion.button
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label={triggerLabel || label}
+          onClick={() => setOpen((o) => !o)}
+          whileTap={{ scale: 0.92 }}
+          style={{
+            display: "grid",
+            placeItems: "center",
+            width: 42,
+            height: 42,
+            borderRadius: 999,
+            border: "1px solid rgba(255,255,255,0.55)",
+            background: "rgba(255,255,255,0.18)",
+            color: "#1c2333",
+            cursor: "pointer",
+          }}
+        >
+          {children}
+        </motion.button>
+      </LiquidGlass>
 
       <AnimatePresence>
         {open && (
