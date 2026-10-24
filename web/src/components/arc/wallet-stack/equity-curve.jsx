@@ -1,6 +1,7 @@
-/* 账户权益迷你曲线：平滑曲线 + 渐变面积填充，hover 出现竖线与圆点并回调采样值。
-   samples: [{ t, bal, upnl }]（时间升序，最少 1 个） */
-import { useMemo, useRef, useState } from "react"
+/* 账户权益迷你曲线：平滑曲线 + 渐变面积填充，hover 竖线与圆点并回调采样值。
+   samples: [{ t, bal, upnl }]（时间升序，最少 1 个）。
+   hover 用原生事件监听（挂载在元素上），不依赖合成事件委托。 */
+import { useEffect, useMemo, useRef, useState } from "react"
 
 function smoothPath(pts) {
   if (pts.length < 2) return ""
@@ -20,45 +21,57 @@ export default function EquityCurve({ samples, hue, height = 62, onHover }) {
   const W = 100, H = 100   // viewBox 归一化坐标，按容器比例拉伸
 
   const geom = useMemo(() => {
-    if (!samples.length) return null
+    if (!samples || !samples.length) return null
     const padY = 14
     const vals = samples.map((s) => s.bal)
     let min = Math.min(...vals), max = Math.max(...vals)
     if (max - min < 1e-9) { min -= 1; max += 1 }
     const n = samples.length
-    // 单点时铺满整行
     const xs = samples.map((_, i) => (n === 1 ? W / 2 : (i / (n - 1)) * W))
     const ys = vals.map((v) => H - padY - ((v - min) / (max - min)) * (H - padY * 2))
     const pts = xs.map((x, i) => [x, ys[i]])
     const line = smoothPath(pts)
-    const area = pts.length > 1
-      ? `${line} L ${W} ${H} L 0 ${H} Z`
-      : ""
+    const area = pts.length > 1 ? `${line} L ${W} ${H} L 0 ${H} Z` : ""
     return { pts, line, area }
   }, [samples])
 
-  const pick = (clientX) => {
-    const el = wrapRef.current
-    if (!el || !geom || !samples.length) return
-    const r = el.getBoundingClientRect()
-    const fx = Math.max(0, Math.min(1, (clientX - r.left) / r.width))
-    let idx = Math.round(fx * (samples.length - 1))
-    if (samples.length === 1) idx = 0
-    setHoverIdx(idx)
-    onHover && onHover(samples[idx])
-  }
+  // 最新值走 ref，监听器不必随数据重建
+  const geomRef = useRef(geom)
+  geomRef.current = geom
+  const samplesRef = useRef(samples)
+  samplesRef.current = samples
+  const onHoverRef = useRef(onHover)
+  onHoverRef.current = onHover
 
-  const onMove = (e) => pick(e.clientX)
-  const onLeave = () => { setHoverIdx(null); onHover && onHover(null) }
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const pick = (clientX) => {
+      const g = geomRef.current, ss = samplesRef.current
+      if (!el || !g || !ss || !ss.length) return
+      const r = el.getBoundingClientRect()
+      const fx = Math.max(0, Math.min(1, (clientX - r.left) / r.width))
+      let idx = Math.round(fx * (ss.length - 1))
+      if (ss.length === 1) idx = 0
+      setHoverIdx(idx)
+      onHoverRef.current && onHoverRef.current(ss[idx])
+    }
+    const move = (e) => pick(e.clientX)
+    const leave = () => { setHoverIdx(null); onHoverRef.current && onHoverRef.current(null) }
+    el.addEventListener("pointermove", move)
+    el.addEventListener("pointerleave", leave)
+    return () => {
+      el.removeEventListener("pointermove", move)
+      el.removeEventListener("pointerleave", leave)
+    }
+  }, [])
 
   const hoverPt = hoverIdx != null && geom ? geom.pts[hoverIdx] : null
-  // 曲线主色：账户色相，尾段深、前段浅
   const c1 = `hsl(${hue} 70% 46%)`
   const c2 = `hsl(${(hue + 30) % 360} 65% 60%)`
 
   return (
-    <div ref={wrapRef} className="ecurve" style={{ height }}
-      onPointerMove={onMove} onPointerLeave={onLeave}>
+    <div ref={wrapRef} className="ecurve" style={{ height }}>
       {geom && (
         <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: "100%", display: "block" }}>
           <defs>
