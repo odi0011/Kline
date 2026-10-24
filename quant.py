@@ -174,9 +174,13 @@ class QuantEngine:
         return step
 
     def _quantize(self, qty: float, step: float) -> float:
+        """按 stepSize 向下取整，并消除浮点尾差（10.45/0.01 → 10.450000000000001 会被交易所拒绝）。"""
         if step <= 0:
             return qty
-        return math.floor(qty / step) * step
+        # 用整数运算避免浮点累积误差：先算步数（加微小 epsilon 防止 1044.9999 被 floor 成 1044）
+        steps = int(math.floor(qty / step + 1e-9))
+        decimals = max(0, -int(math.floor(math.log10(step)))) if step < 1 else 0
+        return round(steps * step, decimals)
 
     def _place_order(self, api_key, api_secret, symbol, side, qty, reduce_only=False) -> dict:
         params = {"symbol": symbol.upper(), "side": side, "type": "MARKET",
@@ -357,7 +361,7 @@ class QuantEngine:
         pos = st["positions"].get(symbol)
         if not pos:
             return
-        # 防死循环：同一持仓连续平仓失败 3 次后放弃（交由审计核销/人工处理）
+        # 防死循环：同一持仓连续平仓失败 3 次后本轮放弃，等审计周期重置后再试
         fails = pos.get("closeFails", 0)
         if fails >= 3:
             return
@@ -447,12 +451,15 @@ class QuantEngine:
                         st["positions"][sym] = pos
                         changed = True
                         self._event("audit", f"审计补记漏记持仓 {sym}", account=name, symbol=sym)
-                # 本地有、交易所已无 → 核销
+                # 本地有、交易所已无 → 核销（含平仓熔断后卡住的记录）
                 for sym in list(st["positions"].keys()):
                     if sym not in live:
-                        st["positions"].pop(sym)
+                        pos = st["positions"].pop(sym)
                         changed = True
-                        self._event("audit", f"审计核销已平持仓 {sym}（交易所已无仓位）", account=name, symbol=sym)
+                        was_stuck = pos.get("closeFails", 0) >= 3
+                        self._event("audit",
+                                    f"审计核销已平持仓 {sym}（交易所已无仓位{'，此前平仓熔断' if was_stuck else ''}）",
+                                    account=name, symbol=sym)
                 # 本地与交易所数量不一致 → 以交易所为准修正数量
                 for sym, li in live.items():
                     pos = st["positions"].get(sym)
@@ -462,6 +469,12 @@ class QuantEngine:
                         self._event("audit", f"审计修正持仓数量 {sym} → {abs(li['amt'])}", account=name, symbol=sym)
                 if changed:
                     self._save_positions()
+                # 审计周期重置平仓失败计数：熔断只是暂停，不是永久放弃（下次重试）
+                for pos in st["positions"].values():
+                    if pos.get("closeFails", 0) >= 3:
+                        pos["closeFails"] = 0
+                        self._event("audit", f"重置平仓重试计数 {pos.get('symbol')}（进入新一轮尝试）",
+                                    account=name, symbol=pos.get("symbol"))
             self._event("audit", "5 分钟自审计完成", positions={n: list(self._st(n)["positions"].keys()) for n in self.state})
         except Exception as e:
             self.stats["errors"] += 1
