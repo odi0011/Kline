@@ -24,16 +24,18 @@ from accounts import signed_request
 
 BASE = "https://testnet.binancefuture.com"
 
-# 止盈止损按 3m K线实测波动率标定（BTC 振幅中位 0.08%、p90 0.25%；ETH 0.13%/0.36%）。
-# 首版 -0.35% 实测偏紧：9 笔样本中 4 笔止损笔均亏 -2.05，5 笔超时笔均盈 +0.75，
-# 止损单被正常波动频繁扫出。放宽到 -0.5%（约 p90 振幅的 2 倍）给仓位更多呼吸空间，
-# 止盈相应提到 +0.75%（维持约 1.5 倍盈亏比）。
+# 止盈止损按 3m K线实测波动率 + 真实成交样本双重标定：
+# - 止损 -0.35% 版本：9 笔样本胜率 33%、笔均 -0.49（被正常波动扫出）
+# - 止损 -0.50% 版本：19 笔样本胜率 47.4%、笔均 -0.14（止损改善但止盈从未触发）
+# - 19 笔中 0 笔触及 +0.75% 止盈，多数仓位浮盈后回落成超时亏损
+#   （如 ADA 曾 +0.114% —> 超时 -0.29%）→ 止盈降至 +0.35% 让盈利及时兑现
 SL_PCT = -0.005      # 止损 -0.50%
-TP_PCT = 0.0075      # 止盈 +0.75%（约 1.5 倍止损）
+TP_PCT = 0.0035      # 止盈 +0.35%（约 p90 振幅 1.4 倍，可在 45 分钟窗口内触及）
 MAX_HOLD_MIN = 45    # 超时平仓：持仓超过 45 分钟未触发止盈止损则市价了结，释放槽位
 MARGIN_PCT = 0.05    # 单仓保证金占可用余额比例
 MARGIN_MIN = 10.0    # 单仓保证金下限（USDT）
 MAX_POSITIONS = 4    # 每账户最大同时持仓数
+MAX_SAME_DIR = 3     # 同方向最大持仓数（防止信号聚集导致方向过度集中）
 COOLDOWN_SEC = 900   # 同币种冷却 15 分钟
 AUDIT_SEC = 300      # 自审计间隔 5 分钟
 
@@ -62,8 +64,10 @@ class QuantEngine:
         self._log_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant.log")
         self._trades_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant-trades.json")
         self._pos_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant-positions.json")
+        self._unsupported_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant-unsupported.json")
         self._load_trades()
         self._load_positions()
+        self._load_unsupported()
         self._event("system", "量化引擎启动", enabled=True)
 
     # ---------- 记录 ----------
@@ -200,11 +204,29 @@ class QuantEngine:
         msg = str(err)
         if "-4411" in msg or "TradFi" in msg:
             self._unsupported.add(symbol)
+            self._save_unsupported()
             self._event("system",
                         f"{symbol} 未开通合约权限（TradFi 协议未签署），已加入跳过列表不再尝试",
                         symbol=symbol)
             return True
         return False
+
+    def _save_unsupported(self):
+        try:
+            with open(self._unsupported_path, "w", encoding="utf-8") as f:
+                json.dump(sorted(self._unsupported), f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _load_unsupported(self):
+        try:
+            if os.path.exists(self._unsupported_path):
+                with open(self._unsupported_path, encoding="utf-8") as f:
+                    self._unsupported = set(json.load(f) or [])
+                if self._unsupported:
+                    self._event("system", f"恢复跳过列表: {', '.join(sorted(self._unsupported))}")
+        except Exception:
+            pass
 
     # ---------- 状态 ----------
 
@@ -263,6 +285,11 @@ class QuantEngine:
         # 风控 3：同币种冷却
         if now - st["cooldown"].get(symbol, 0) < COOLDOWN_SEC * 1000:
             self._event("skip", "冷却中", account=name, symbol=symbol)
+            return
+        # 风控 3.5：同方向持仓上限（防止同向信号聚集造成方向过度集中）
+        same_dir = sum(1 for p in st["positions"].values() if p.get("side") == side)
+        if same_dir >= MAX_SAME_DIR:
+            self._event("skip", f"同方向持仓已达上限({MAX_SAME_DIR})", account=name, symbol=symbol)
             return
         # 风控 4：可用余额与保证金
         avail = self._available(a)
