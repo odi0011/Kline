@@ -9,15 +9,15 @@
   place-items: center;
 }
 
-/* 玻璃面板：材质由 <LiquidGlass> 层提供（absolute inset 0），这里只管尺寸/边框/投影 */
+/* 设置面板：实体可读面板（不用玻璃效果） */
 .panel {
-  position: relative;
   width: min(780px, calc(100vw - 32px));
   height: min(540px, calc(100vh - 48px));
   display: flex;
   flex-direction: column;
   border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.8);
+  background: #ffffff;
+  border: 1px solid rgba(28, 35, 51, 0.1);
   box-shadow: 0 24px 64px rgba(16, 24, 40, 0.28);
   overflow: hidden;
 }
