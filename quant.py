@@ -53,6 +53,7 @@ class QuantEngine:
         self.last_audit_ms = 0
         self.broadcast_fn = None           # main 注入：asyncio.create_task(hub.broadcast(obj))
         self._err_dedupe: dict[str, int] = {}
+        self._mark_cache: dict[str, tuple] = {}
         self._lock = threading.Lock()
         self._warned_dupes = False
         self._step_sizes: dict[str, float] = {}
@@ -284,6 +285,29 @@ class QuantEngine:
 
     # ---------- 持仓监控（止损/止盈） ----------
 
+    def _mark_price(self, a, symbol: str) -> float | None:
+        """取标记价：优先用本地行情（监控池内币种，零延迟）；
+        池外持仓（历史遗留/手工仓）回落到交易所 markPrice，保证风控始终有效。"""
+        p = (self.price_fn or (lambda s: None))(symbol)
+        if p and p > 0:
+            return p
+        cache = self._mark_cache.get(symbol)
+        now = _now_ms()
+        if cache and now - cache[1] < 15000:
+            return cache[0]
+        try:
+            rows = signed_request(a["api_key"], a["api_secret"], "/fapi/v2/positionRisk",
+                                  {"symbol": symbol.upper()})
+            for row in rows:
+                if row.get("symbol", "").lower() == symbol:
+                    mp = float(row.get("markPrice") or 0)
+                    if mp > 0:
+                        self._mark_cache[symbol] = (mp, now)
+                        return mp
+        except Exception as e:
+            self._event("error", f"标记价获取失败({symbol}): {e}", symbol=symbol)
+        return None
+
     def manage(self) -> None:
         """每 5 秒调用：盯每仓盈亏，触发止损/止盈即平仓。"""
         if not self.enabled:
@@ -300,7 +324,7 @@ class QuantEngine:
             st = self._st(name)
             for symbol in list(st["positions"].keys()):
                 pos = st["positions"][symbol]
-                price = (self.price_fn or (lambda s: None))(symbol)
+                price = self._mark_price(a, symbol)
                 if not price or price <= 0:
                     continue
                 direction_up = pos["side"] == "BUY"
