@@ -34,15 +34,15 @@ export default function EquityCurve({ samples, hue, height = 62, onHover }) {
       },
     })
     const area = chart.addSeries(AreaSeries, {
-      lineColor: `hsl(${hue} 70% 46%)`,
-      topColor: `hsl(${hue} 70% 52% / 0.5)`,
-      bottomColor: `hsl(${hue} 70% 52% / 0.03)`,
+      lineColor: `hsl(${hue} 50% 24%)`,
+      topColor: `hsl(${hue} 60% 40% / 0.28)`,
+      bottomColor: `hsl(${hue} 60% 40% / 0.02)`,
       lineWidth: 2,
       lastValueVisible: false,
       priceLineVisible: false,
       crosshairMarkerRadius: 4,
       crosshairMarkerBorderColor: "rgba(255,255,255,0.95)",
-      crosshairMarkerBackgroundColor: `hsl(${hue} 70% 46%)`,
+      crosshairMarkerBackgroundColor: `hsl(${hue} 50% 24%)`,
     })
     chartRef.current = chart
     areaRef.current = area
@@ -82,13 +82,13 @@ export default function EquityCurve({ samples, hue, height = 62, onHover }) {
 
   useEffect(() => { applyData() }, [samples])
 
-  // 色相变化：热更新面积曲线配色
+  // 色相变化：热更新面积曲线配色（深墨线，任何水彩底色上都可读）
   useEffect(() => {
     areaRef.current?.applyOptions({
-      lineColor: `hsl(${hue} 70% 46%)`,
-      topColor: `hsl(${hue} 70% 52% / 0.5)`,
-      bottomColor: `hsl(${hue} 70% 52% / 0.03)`,
-      crosshairMarkerBackgroundColor: `hsl(${hue} 70% 46%)`,
+      lineColor: `hsl(${hue} 50% 24%)`,
+      topColor: `hsl(${hue} 60% 40% / 0.28)`,
+      bottomColor: `hsl(${hue} 60% 40% / 0.02)`,
+      crosshairMarkerBackgroundColor: `hsl(${hue} 50% 24%)`,
     })
   }, [hue])
 
