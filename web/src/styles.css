@@ -413,10 +413,10 @@ body {
 .wcard-pnl [class*="counter"] { font-size: 12.5px !important; font-weight: 700; }
 .wcard-na { font-size: 15px; font-weight: 700; color: #8b949e; }
 
-/* 权益迷你曲线：贴卡片底部，hover 联动上方动画数字 */
+/* 权益迷你曲线：贴卡片底部，左右留少量边距，hover 联动上方动画数字 */
 .ecurve {
   position: absolute;
-  left: 0; right: 0; bottom: 0;
-  width: 100%;
+  left: 5px; right: 5px; bottom: 0;
+  width: calc(100% - 10px);
   cursor: crosshair;
 }

@@ -76,7 +76,8 @@ export default function EquityCurve({ samples, hue, height = 62, onHover }) {
       data = [{ time: data[0].time - 120, value: data[0].value }, data[0]]
     }
     area.setData(data)
-    chart.timeScale().fitContent()
+    // 首尾点贴边：取消库默认的半柱宽边距，曲线铺满整个容器
+    chart.timeScale().setVisibleLogicalRange({ from: -0.5, to: Math.max(1, data.length - 0.5) })
   }
 
   useEffect(() => { applyData() }, [samples])
