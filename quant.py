@@ -206,7 +206,11 @@ class QuantEngine:
             self.stats["signals"] += 1
             symbol = hit.get("symbol")
             direction = hit.get("direction")
-            if not symbol or direction not in ("bullish", "bearish"):
+            if not symbol:
+                return
+            if direction not in ("bullish", "bearish"):
+                # 中性形态（十字星等）不指示方向，无法决定多空 → 明确记录，便于核对决策流水完整性
+                self._event("skip", f"中性形态不参与交易({hit.get('name_zh') or 'neutral'})", symbol=symbol)
                 return
             price = (self.price_fn or (lambda s: None))(symbol)
             if not price or price <= 0:
