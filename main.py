@@ -184,11 +184,11 @@ async def run(cfg: dict) -> None:
                     d = await asyncio.to_thread(fetch_account, a["api_key"], a["api_secret"])
                     results.append({"name": a["name"], "icon": a.get("icon", ""),
                                     "balance": d["balance"], "unrealized": d["unrealized"],
-                                    "available": d["available"]})
+                                    "available": d["available"], "positions": d.get("positions", [])})
                 except Exception as e:
                     results.append({"name": a["name"], "icon": a.get("icon", ""),
                                     "balance": None, "unrealized": None, "available": None,
-                                    "error": str(e)[:80]})
+                                    "positions": [], "error": str(e)[:80]})
             try:
                 hub.last_accounts = results
                 await hub.broadcast({"type": "accounts", "accounts": results})

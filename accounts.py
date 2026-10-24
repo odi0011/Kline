@@ -26,8 +26,24 @@ def signed_request(api_key: str, api_secret: str, path: str, params: dict | None
         return json.loads(r.read().decode())
 
 
+def fetch_positions(api_key: str, api_secret: str) -> list:
+    """拉取有仓位的合约（positionAmt != 0）：symbol / 数量 / 未实现盈亏。"""
+    rows = signed_request(api_key, api_secret, "/fapi/v2/positionRisk")
+    out = []
+    for p in rows:
+        amt = float(p.get("positionAmt", 0))
+        if abs(amt) < 1e-9:
+            continue
+        out.append({
+            "symbol": p.get("symbol", "").lower(),
+            "amt": amt,
+            "unrealized": round(float(p.get("unRealizedProfit", 0)), 2),
+        })
+    return out
+
+
 def fetch_account(api_key: str, api_secret: str) -> dict:
-    """拉取 USDT 本位账户权益：总权益 = 钱包余额 + 未实现盈亏。"""
+    """拉取 USDT 本位账户权益：总权益 = 钱包余额 + 未实现盈亏，附当前持仓列表。"""
     balances = signed_request(api_key, api_secret, "/fapi/v2/balance")
     total = upnl = avail = 0.0
     for b in balances:
@@ -36,9 +52,11 @@ def fetch_account(api_key: str, api_secret: str) -> dict:
         total += float(b.get("balance", 0))
         upnl += float(b.get("crossUnPnl", 0))
         avail += float(b.get("availableBalance", 0))
+    positions = fetch_positions(api_key, api_secret)
     return {
         "balance": round(total + upnl, 2),
         "unrealized": round(upnl, 2),
         "available": round(avail, 2),
+        "positions": positions,
         "ts": int(time.time() * 1000),
     }

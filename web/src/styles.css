@@ -365,14 +365,14 @@ body {
   position: relative;
   height: 180px;   /* 与 wallet-stack.jsx 的 CARD_H 保持一致 */
   border-radius: 14px;
-  padding: 12px 14px;
   overflow: hidden;
   color: #1c2333;
   border: 1px solid rgba(255, 255, 255, 0.65);
-  /* 不透明背景：堆叠时背面卡只露出彩色顶边，内容不会互相透出（每卡颜色由账户名决定，见 wallet-stack.jsx） */
+  /* 渐变兜底：canvas 水彩背景（AccountBackdrop）绘制失败时可见 */
   background: linear-gradient(135deg, rgba(240, 185, 11, 0.32), rgba(255, 255, 255, 1) 58%), #ffffff;
 }
-.wcard.front { }
+.wcard-bg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.wcard-body { position: relative; z-index: 1; padding: 12px 14px 0; }
 
 .wcard-avatar { display: grid; place-items: center; }
 .wcard-avatar img {
@@ -380,49 +380,21 @@ body {
   object-fit: cover; border: 2px solid rgba(255, 255, 255, 0.95);
   box-shadow: 0 2px 6px rgba(16, 24, 40, 0.2);
 }
-.wcard-na { font-size: 19px; font-weight: 700; color: #8b949e; }
+.wcard-top { display: flex; align-items: center; gap: 10px; }
+.wcard-issuer { font-size: 14px; font-weight: 700; color: #1c2333; }
 
-.wcard-top {
-  display: flex; align-items: center; justify-content: space-between;
-  font-size: 11px; color: rgba(16, 24, 40, 0.65);
-}
-.wcard-issuer { font-weight: 600; }
-.wcard-live { display: inline-flex; align-items: center; gap: 4px; }
-.wcard-dot { width: 7px; height: 7px; border-radius: 50%; background: #16a34a; animation: dotpulse 1.6s ease infinite; }
-@keyframes dotpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-
-.wcard-mid { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
-.wcard-icon { display: grid; place-items: center; }
-.wcard-icon img { width: 30px; height: 30px; }
-.wcard-price { flex: 1; }
+.wcard-mid { margin-top: 10px; }
 .wcard-price-label { display: block; font-size: 10px; color: rgba(16, 24, 40, 0.55); }
-.wcard-price [class*="counter"] { font-size: 20px !important; font-weight: 700; color: #1c2333; }
-.wcard-chip {
-  display: grid; place-items: center;
-  width: 26px; height: 20px; border-radius: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.85);
-  background: rgba(255, 255, 255, 0.5);
-  font-size: 11px; color: rgba(16, 24, 40, 0.6);
+.wcard-binline { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.wcard-bal [class*="counter"] { font-size: 20px !important; font-weight: 700; color: #1c2333; }
+.wcard-pnl { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.wcard-pnl [class*="counter"] { font-size: 12.5px !important; font-weight: 700; }
+.wcard-na { font-size: 15px; font-weight: 700; color: #8b949e; }
+
+/* 权益迷你曲线：贴卡片底部，hover 联动上方动画数字 */
+.ecurve {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  width: 100%;
+  cursor: crosshair;
 }
-
-.wcard-bottom { display: flex; align-items: center; gap: 14px; margin-top: 10px; font-size: 11px; color: rgba(16, 24, 40, 0.7); }
-.wcard-bottom b { font-weight: 700; }
-.wcard-chg.up { color: #0f7b40; }
-.wcard-chg.down { color: #b91c1c; }
-
-.wcard-num {
-  position: absolute; right: 14px; bottom: 10px;
-  font-size: 11px; letter-spacing: 2px; color: rgba(255, 255, 255, 0.85);
-}
-
-.wcard-recent {
-  margin-top: 8px; padding-top: 8px;
-  border-top: 1px solid rgba(16, 24, 40, 0.12);
-  font-size: 11px;
-}
-.wcard-recent-title { color: rgba(16, 24, 40, 0.55); font-size: 10px; margin-bottom: 4px; }
-.wcard-recent-item.bullish { color: #0f7b40; }
-.wcard-recent-item.bearish { color: #b91c1c; }
-.wcard-recent-item.neutral { color: #92400e; }
-
-@keyframes slide { from { transform: translateX(16px); opacity: 0; } to { transform: none; opacity: 1; } }

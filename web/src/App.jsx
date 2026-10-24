@@ -69,8 +69,10 @@ export default function App() {
   const [hoverPattern, setHoverPattern] = useState(null)   // {pattern, symbol} 悬停K线触发的形态
   const [settings, setSettings] = useState(loadSettings)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [frontName, setFrontName] = useState(null)   // 置前的账户（卡片点击）
   const liveRef = useRef(null)
   const cardsViewportRef = useRef(null)
+  const equityRef = useRef({})                       // 账户名 → [{t, bal, upnl}] 权益采样
   const settingsRef = useRef(settings)
   settingsRef.current = settings
 
@@ -103,6 +105,33 @@ export default function App() {
   const pool = meta?.symbols || DEFAULT_SETTINGS.symbols
   const displayed = pool.filter((s) => settings.symbols.includes(s))
   const shownSymbols = displayed.length ? displayed : pool.slice(0, MIN_SYMBOLS)
+
+  // 置前账户的持仓 → 左列排序：持仓币种排前，池内持仓但未展示的自动添加到其后
+  const frontAcct = accounts.find((a) => a.name === frontName)
+  const posSyms = frontAcct && Array.isArray(frontAcct.positions) ? frontAcct.positions.map((p) => p.symbol) : []
+  const orderedSymbols = useMemo(() => {
+    if (!posSyms.length) return shownSymbols
+    const posSet = new Set(posSyms)
+    const inList = shownSymbols.filter((s) => posSet.has(s))
+    const rest = shownSymbols.filter((s) => !posSet.has(s))
+    const autoAdd = posSyms.filter((s) => pool.includes(s) && !shownSymbols.includes(s))
+    return [...inList, ...rest, ...autoAdd]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shownSymbols.join(","), posSyms.join(","), pool.join(",")])
+
+  // 账户权益采样（每 30s 广播时记一个点，供卡片迷你曲线；本地保留最近 120 点）
+  useEffect(() => {
+    const now = Date.now()
+    accounts.forEach((a) => {
+      if (a.balance == null) return
+      const arr = (equityRef.current[a.name] ||= [])
+      const last = arr[arr.length - 1]
+      if (!last || now - last.t > 25000) {
+        arr.push({ t: now, bal: a.balance, upnl: a.unrealized ?? 0 })
+        if (arr.length > 120) arr.shift()
+      }
+    })
+  }, [accounts])
 
   useEffect(() => {
     const live = new LiveClient(`ws://${location.hostname}:${WS_PORT}`)
@@ -255,7 +284,7 @@ export default function App() {
       <main className="left">
         <ScrollArea orientation="vertical" label="币种K线" className="left-scroll" fade={20}>
           <div className="left-inner">
-            {meta && shownSymbols.map((s) => (
+            {meta && orderedSymbols.map((s) => (
               <CoinCard key={s} symbol={s} intervals={meta.intervals}
                 settings={{ ...settings, interval: defaultIv }}
                 live={liveRef.current}
@@ -323,7 +352,8 @@ export default function App() {
             </ScrollArea>
           </div>
           <div className="wallet-zone">
-            <WalletStack accounts={accounts} />
+            <WalletStack accounts={accounts} seriesMap={equityRef.current}
+              chartColors={chartColors} onFrontChange={setFrontName} />
           </div>
         </div>
         <div className="row2">
