@@ -24,11 +24,15 @@ from accounts import signed_request
 
 BASE = "https://testnet.binancefuture.com"
 
-SL_PCT = -0.015      # 止损
-TP_PCT = 0.025       # 止盈
+# 止盈止损按 3m K线实测波动率标定（BTC 振幅中位 0.08%、p90 0.25%；ETH 0.13%/0.36%）：
+# 止损取 p90 振幅量级，止盈取约 1.6 倍止损，保证在正常波动内能出场，
+# 避免仓位长期占满导致策略停摆（原 -1.5%/+2.5% 相对 3m 波动过大，几乎永不触发）。
+SL_PCT = -0.0035     # 止损 -0.35%（约 p90 振幅）
+TP_PCT = 0.0055      # 止盈 +0.55%（约 1.6 倍止损）
+MAX_HOLD_MIN = 45    # 超时平仓：持仓超过 45 分钟未触发止盈止损则市价了结，释放槽位
 MARGIN_PCT = 0.05    # 单仓保证金占可用余额比例
 MARGIN_MIN = 10.0    # 单仓保证金下限（USDT）
-MAX_POSITIONS = 3    # 每账户最大同时持仓数
+MAX_POSITIONS = 4    # 每账户最大同时持仓数
 COOLDOWN_SEC = 900   # 同币种冷却 15 分钟
 AUDIT_SEC = 300      # 自审计间隔 5 分钟
 
@@ -238,9 +242,13 @@ class QuantEngine:
                     continue
                 direction_up = pos["side"] == "BUY"
                 move = (price - pos["entry"]) / pos["entry"] * (1 if direction_up else -1)
+                hold_min = (now - pos.get("entryTs", now)) / 60000
                 if move <= SL_PCT or move >= TP_PCT:
                     reason = "止盈" if move >= TP_PCT else "止损"
                     self._close(name, a, symbol, price, f"{reason}({move * 100:.2f}%)")
+                elif hold_min >= MAX_HOLD_MIN:
+                    # 超时出场：避免窄幅震荡时仓位长期占满槽位（策略停摆兜底）
+                    self._close(name, a, symbol, price, f"超时({hold_min:.0f}min,{move * 100:.2f}%)")
 
     def _close(self, name, a, symbol, price, reason: str) -> None:
         st = self._st(name)
