@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { LiveClient } from './live.js'
 import CoinCard from './CoinCard.jsx'
 import PatternGlyph from './PatternGlyph.jsx'
