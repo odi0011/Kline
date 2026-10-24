@@ -105,6 +105,21 @@ export function WalletStack({ accounts = [], seriesMap = {}, chartColors, onFron
   const rootRef = useRef(null)
   const n = accounts.length
 
+  // hover 用原生 mouseenter/mouseleave：卡片点击置前后 DOM 节点会重排，
+  // React 合成 leave 事件可能丢失导致卡在展开态
+  useEffect(() => {
+    const el = rootRef.current
+    if (!el) return
+    const enter = () => setHover(true)
+    const leave = () => setHover(false)
+    el.addEventListener("mouseenter", enter)
+    el.addEventListener("mouseleave", leave)
+    return () => {
+      el.removeEventListener("mouseenter", enter)
+      el.removeEventListener("mouseleave", leave)
+    }
+  }, [])
+
   useEffect(() => {
     if (front && !accounts.some((a) => a.name === front)) setFront(null)
   }, [accounts, front])
@@ -128,8 +143,6 @@ export function WalletStack({ accounts = [], seriesMap = {}, chartColors, onFron
     <div
       ref={rootRef}
       className={"wstack" + (className ? " " + className : "")}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
       aria-label="账户"
     >
       <motion.div
