@@ -167,14 +167,10 @@ export function GlassMenu({
               bottom: "calc(100% + 12px)",
               [align === "end" ? "right" : "left"]: 0,
               width,
-              borderRadius: 14,
-              boxShadow: "0 12px 36px rgba(16,24,40,0.18)",
+              ...panelStyle,
             }}
           >
-            <LiquidGlass radius={14} scale={24} aberration={0} frost={3.5} tint={0.4}
-              style={{ width: "100%", maxHeight: "62vh", overflow: "hidden" }}>
-              <div style={{ maxHeight: "62vh", overflowY: "auto", overscrollBehavior: "contain", padding: 6 }}>
-              {subItem && (
+            {subItem && (
               <div
                 onClick={() => setSub(null)}
                 style={{
@@ -240,8 +236,6 @@ export function GlassMenu({
                 </div>
               ))
             )}
-              </div>
-            </LiquidGlass>
           </motion.div>
         )}
       </AnimatePresence>
