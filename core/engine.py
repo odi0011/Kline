@@ -16,8 +16,10 @@ class PatternEngine:
     """订阅K线事件，跑所有已启用形态，去重后吐 PatternHit。
 
     两种触发：
-      live      —— 盘中每笔成交都检查（仅 live=True 的形态），同一根K线同一形态只报一次；
+      live      —— 盘中每笔成交都检查（仅 live=True 的形态）；
       confirmed —— 收线瞬间检查全部形态。
+    同一根K线命中多个形态时（定义天然重叠，如平头顶部常伴随看跌吞没），
+    只报优先级最高的一个，且每根K线每种模式只报一次。
     """
 
     def __init__(self, enabled, notifier, live_preview: bool = True,
@@ -57,23 +59,26 @@ class PatternEngine:
             window = window + [candle]
         if len(window) < 3:
             return
+        candidates = []
         for p in self.patterns:
             if not closed and not (self.live_preview and p.live):
                 continue
             if len(window) < p.min_bars + 3:      # 形态本体 + 最低限度趋势上下文
                 continue
             try:
-                hit = p.check(window)
+                if p.check(window):
+                    candidates.append(p)
             except Exception:
                 continue
-            if not hit:
-                continue
-            key = (symbol, interval, p.key, candle.open_time, mode)
-            if not self._dedupe_ok(key):
-                continue
-            self.notifier(PatternHit(
-                symbol=symbol, interval=interval, pattern=p.key,
-                name_zh=p.name_zh, direction=p.direction, mode=mode,
-                price=candle.close, bar_open_time=candle.open_time,
-                ts=int(time.time() * 1000),
-            ))
+        if not candidates:
+            return
+        # 同一根K线多个形态重叠时只报优先级最高的一个（平数取注册顺序靠前者）
+        best = max(candidates, key=lambda p: (p.priority, p.min_bars))
+        if not self._dedupe_ok((symbol, interval, candle.open_time, mode)):
+            return
+        self.notifier(PatternHit(
+            symbol=symbol, interval=interval, pattern=best.key,
+            name_zh=best.name_zh, direction=best.direction, mode=mode,
+            price=candle.close, bar_open_time=candle.open_time,
+            ts=int(time.time() * 1000),
+        ))

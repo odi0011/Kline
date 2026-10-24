@@ -33,7 +33,7 @@
 币安 fstream.binance.com/market/stream (aggTrade 逐笔推送, 免key, 非REST无限频)
   → feed/source.py      WS长连接，自动重连，记录推送延迟
   → core/aggregator.py  事件驱动聚合：每笔成交即更新K线，桶切换瞬间判定收线（不等定时器）
-  → core/engine.py      形态引擎：盘中预警(live) + 收线确认(confirmed) 两种模式，同根同形态去重
+  → core/engine.py      形态引擎：盘中预警(live) + 收线确认(confirmed) 两种模式，同根K线只报优先级最高的一个形态（每根每种模式仅一次）
   → server/hub.py       WS广播给浏览器 + Windows toast/钉钉/飞书(可选) + signals.csv
 ```
 

@@ -31,6 +31,7 @@ def _star_shape(c) -> bool:
 @register
 class Hammer(Pattern):
     key, name_zh, direction = "hammer", "锤子线", BULLISH
+    priority = 10
 
     def check(self, cs):
         return _hammer_shape(cs[-1]) and trend_of(cs[:-1]) == "down"
@@ -39,6 +40,7 @@ class Hammer(Pattern):
 @register
 class HangingMan(Pattern):
     key, name_zh, direction = "hanging_man", "上吊线", BEARISH
+    priority = 10
 
     def check(self, cs):
         return _hammer_shape(cs[-1]) and trend_of(cs[:-1]) == "up"
@@ -47,6 +49,7 @@ class HangingMan(Pattern):
 @register
 class InvertedHammer(Pattern):
     key, name_zh, direction = "inverted_hammer", "倒锤子", BULLISH
+    priority = 10
 
     def check(self, cs):
         return _star_shape(cs[-1]) and trend_of(cs[:-1]) == "down"
@@ -55,6 +58,7 @@ class InvertedHammer(Pattern):
 @register
 class ShootingStar(Pattern):
     key, name_zh, direction = "shooting_star", "流星线", BEARISH
+    priority = 10
 
     def check(self, cs):
         return _star_shape(cs[-1]) and trend_of(cs[:-1]) == "up"
@@ -63,6 +67,7 @@ class ShootingStar(Pattern):
 @register
 class Doji(Pattern):
     key, name_zh, direction = "doji", "十字星", NEUTRAL
+    priority = 5
 
     def check(self, cs):
         c = cs[-1]
@@ -73,6 +78,7 @@ class Doji(Pattern):
 @register
 class DragonflyDoji(Pattern):
     key, name_zh, direction = "dragonfly_doji", "蜻蜓十字", BULLISH
+    priority = 12
 
     def check(self, cs):
         c = cs[-1]
@@ -85,6 +91,7 @@ class DragonflyDoji(Pattern):
 @register
 class GravestoneDoji(Pattern):
     key, name_zh, direction = "gravestone_doji", "墓碑十字", BEARISH
+    priority = 12
 
     def check(self, cs):
         c = cs[-1]
@@ -99,6 +106,7 @@ class GravestoneDoji(Pattern):
 @register
 class BullishEngulfing(Pattern):
     key, name_zh, direction = "bullish_engulfing", "看涨吞没", BULLISH
+    priority = 26
 
     def check(self, cs):
         p, c = cs[-2], cs[-1]
@@ -111,6 +119,7 @@ class BullishEngulfing(Pattern):
 @register
 class BearishEngulfing(Pattern):
     key, name_zh, direction = "bearish_engulfing", "看跌吞没", BEARISH
+    priority = 26
 
     def check(self, cs):
         p, c = cs[-2], cs[-1]
@@ -123,6 +132,7 @@ class BearishEngulfing(Pattern):
 @register
 class PiercingLine(Pattern):
     key, name_zh, direction = "piercing", "刺透线", BULLISH
+    priority = 24
 
     def check(self, cs):
         p, c = cs[-2], cs[-1]
@@ -135,6 +145,7 @@ class PiercingLine(Pattern):
 @register
 class DarkCloudCover(Pattern):
     key, name_zh, direction = "dark_cloud", "乌云盖顶", BEARISH
+    priority = 24
 
     def check(self, cs):
         p, c = cs[-2], cs[-1]
@@ -147,6 +158,7 @@ class DarkCloudCover(Pattern):
 @register
 class BullishHarami(Pattern):
     key, name_zh, direction = "bullish_harami", "看涨孕线", BULLISH
+    priority = 15
 
     def check(self, cs):
         p, c = cs[-2], cs[-1]
@@ -159,6 +171,7 @@ class BullishHarami(Pattern):
 @register
 class BearishHarami(Pattern):
     key, name_zh, direction = "bearish_harami", "看跌孕线", BEARISH
+    priority = 15
 
     def check(self, cs):
         p, c = cs[-2], cs[-1]
@@ -171,6 +184,7 @@ class BearishHarami(Pattern):
 @register
 class TweezerBottom(Pattern):
     key, name_zh, direction = "tweezer_bottom", "平头底部", BULLISH
+    priority = 20
 
     def check(self, cs):
         p, c = cs[-2], cs[-1]
@@ -182,6 +196,7 @@ class TweezerBottom(Pattern):
 @register
 class TweezerTop(Pattern):
     key, name_zh, direction = "tweezer_top", "平头顶部", BEARISH
+    priority = 20
 
     def check(self, cs):
         p, c = cs[-2], cs[-1]
@@ -195,6 +210,7 @@ class TweezerTop(Pattern):
 @register
 class MorningStar(Pattern):
     key, name_zh, direction = "morning_star", "启明星", BULLISH
+    priority = 30
 
     def check(self, cs):
         p1, p2, p3 = cs[-3], cs[-2], cs[-1]
@@ -209,6 +225,7 @@ class MorningStar(Pattern):
 @register
 class EveningStar(Pattern):
     key, name_zh, direction = "evening_star", "黄昏星", BEARISH
+    priority = 30
 
     def check(self, cs):
         p1, p2, p3 = cs[-3], cs[-2], cs[-1]
@@ -223,6 +240,7 @@ class EveningStar(Pattern):
 @register
 class ThreeWhiteSoldiers(Pattern):
     key, name_zh, direction = "three_white_soldiers", "三白兵", BULLISH
+    priority = 30
 
     def check(self, cs):
         a, b, c = cs[-3], cs[-2], cs[-1]
@@ -238,6 +256,7 @@ class ThreeWhiteSoldiers(Pattern):
 @register
 class ThreeBlackCrows(Pattern):
     key, name_zh, direction = "three_black_crows", "三只乌鸦", BEARISH
+    priority = 30
 
     def check(self, cs):
         a, b, c = cs[-3], cs[-2], cs[-1]

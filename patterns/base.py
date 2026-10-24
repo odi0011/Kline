@@ -107,6 +107,8 @@ class Pattern(ABC):
 
     子类只需设置四个类属性并实现 check()：
       key/name_zh/direction/min_bars；live=False 表示只在收线后判定。
+    priority：同根K线命中多个形态时，引擎只报优先级最高的一个
+    （结构越具体/信号越强优先级越高，如吞没 > 平头 > 孕线）。
     check(candles) 中 candles[-1] 是形态的最后一根，往前的作为上下文
     （trend_of(candles[:-k]) 取形态之前的趋势，窗口不够时自动返回 flat）。
     """
@@ -115,6 +117,7 @@ class Pattern(ABC):
     name_zh: str = ""
     direction: str = NEUTRAL
     min_bars: int = 1
+    priority: int = 0
     live: bool = True
 
     @abstractmethod
