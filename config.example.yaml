@@ -1,0 +1,85 @@
+# ============ K线形态识别器 配置 ============
+
+# 服务端口（网页 / 行情WebSocket）
+web_port: 8000
+ws_port: 8765
+
+# 监控的合约（币安 USDT-M 永续，小写）
+symbols:
+  - btcusdt
+  - ethusdt
+  - bnbusdt
+  - solusdt
+
+# K线周期（支持 1s 5s 15s 30s 1m 3m 5m 15m 30m 1h 2h 4h 1d）
+intervals:
+  - 1m
+  - 3m
+
+# 数据源
+feed:
+  # auto=币安直连，反复无数据自动降级演示模式 | binance=只连币安 | demo=强制演示数据
+  mode: auto
+  # 本地网络连不上 fstream.binance.com 时填代理，如 socks5://127.0.0.1:7890 或 http://127.0.0.1:7890
+  # 留空则自动读环境变量 WSS_PROXY / HTTPS_PROXY
+  proxy: ""
+  # 启动时回补的历史K线根数（给形态的趋势判断提供上下文）
+  backfill_bars: 300
+
+# 形态识别
+patterns:
+  # 启用哪些形态：all 或列 key（见 patterns/builtin.py）
+  enabled: all
+  # 盘中实时预警（K线未收线时形态一旦满足立即通知），收线后如仍满足会再发一次"确认"
+  live_preview: true
+  # 趋势判定窗口与阈值（收盘价相对前 N 根均值的偏离）
+  trend_bars: 10
+  trend_threshold: 0.002
+
+# 通知
+notify:
+  # Windows 桌面弹窗（信号较多，容易打扰，默认关闭；网页右下角信号面板不受影响）
+  toast: false
+  sound: false
+  # Webhook 推送（钉钉/飞书群机器人），不需要则 enabled: false
+  webhook:
+    enabled: false
+    # dingtalk | feishu | raw
+    type: dingtalk
+    url: ""
+
+# 存储层（MySQL，库/账号已在服务器创建，仅授权 kline 库）
+mysql:
+  host: 127.0.0.1
+  port: 3306
+  user: kline
+  password: "你的MySQL密码"
+  database: kline
+
+storage:
+  # K线滚动保留时长（分钟）
+  minutes: 30
+  # 胜率判定：出现形态后10分钟内，价格先向形态方向走满 0.15% → 胜；先反向走满 → 负；都没走到 → 不计
+  eval_minutes: 10
+  eval_threshold: 0.0015
+
+# 币安合约测试盘账户（只读拉取权益，测试盘 key 无真实资金）
+accounts:
+  - name: ODDD测试盘1
+    api_key: "你的测试盘API Key"
+    api_secret: "你的测试盘API Secret"
+    icon: "icons/oddd.jpg"
+  - name: ODDD测试盘2
+    api_key: "你的测试盘API Key"
+    api_secret: "你的测试盘API Secret"
+    icon: "icons/oddd.jpg"
+  - name: ODDD测试盘3
+    api_key: "你的测试盘API Key"
+    api_secret: "你的测试盘API Secret"
+    icon: "icons/oddd.jpg"
+
+# 信号同时落盘到 signals.csv
+csv_log: signals.csv
+
+# 每隔多少秒打印一次延迟统计
+latency_report_sec: 60

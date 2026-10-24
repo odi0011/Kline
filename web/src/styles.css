@@ -1,0 +1,417 @@
+@font-face {
+  font-family: "Douyin Sans";
+  src: url("/fonts/douyin.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* 注意：不要写通用的 * { margin:0; padding:0 } 重置——
+   Tailwind v4 的工具类在 @layer utilities 里，未分层的通配重置会压过它们
+   （曾导致 BoardUI 通知卡片 p-4 内边距全部失效）。Tailwind preflight 已做同样的事。 */
+
+:root {
+  --text: #1c2333;
+  --muted: #7a8499;
+  --up: #16a34a;
+  --down: #dc2626;
+  --accent: #f0b90b;
+}
+
+html, body, #root { height: 100%; }
+
+body {
+  background: #ffffff;
+  color: var(--text);
+  font-family: "Douyin Sans", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 13px;
+}
+
+/* 隐藏滚动条（保留滚动能力） */
+.no-bar, .left, .cards-row {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-bar::-webkit-scrollbar, .left::-webkit-scrollbar, .cards-row::-webkit-scrollbar {
+  display: none;
+}
+
+.app { display: flex; height: 100%; }
+
+/* ---------- 左侧 40%：币种竖排（ScrollArea 竖向滚动，滚动条隐藏） ---------- */
+.left {
+  width: 40%;
+  min-width: 400px;
+  display: flex;
+  position: relative;
+}
+
+.left-scroll { flex: 1; min-width: 0; }
+
+/* 左栏不显示滚动条：隐藏 ScrollArea 的覆盖层滚动条（CSS Module 类名带哈希，用属性选择器），滚轮/触摸滚动不受影响 */
+.left-scroll [class*="track"] { display: none !important; }
+
+.left-inner { padding: 4px 10px 4px 16px; }
+
+/* 玻璃设置菜单：左栏右下角 */
+.glass-wrap {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 40;
+}
+
+/* 命中时币种图标放大 + 辉光 */
+.coin-icon {
+  width: 22px;
+  height: 22px;
+  transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.35s ease;
+}
+.coin-icon.hit {
+  transform: scale(2.15);
+  filter: drop-shadow(0 0 12px rgba(240, 185, 11, 0.6));
+}
+
+/* ---------- Arc UI 主题变量（card / scroll-area 依赖） ---------- */
+:root {
+  --border: #e5e9f0;
+  --border-strong: #cfd6e2;
+  --surface: #ffffff;
+  --surface-muted: #f4f6fa;
+  --surface-raised: #ffffff;
+  --foreground: #1c2333;
+  --text-secondary: #5b6472;
+  --text-muted: #8b949e;
+  --radius-panel: 12px;
+  --radius-surface: 12px;
+  --radius-pill: 999px;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px;
+  --text-xs: 11px; --text-sm: 12.5px; --text-lg: 15px; --text-xl: 17px;
+  --tracking-body: 0.01em;
+  --leading-body: 1.5;
+  --duration-instant: 80ms; --duration-fast: 140ms; --duration-standard: 220ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-enter: cubic-bezier(0.2, 0, 0, 1);
+  --shadow-raised: 0 6px 18px rgba(16, 24, 40, 0.10);
+  --shadow-floating: 0 12px 32px rgba(16, 24, 40, 0.16);
+}
+
+/* ---------- 右侧 60%：上（形态图鉴70% + 账户堆叠30%）+ 下（收益图表行） ---------- */
+.right {
+  flex: 1;
+  position: relative;
+  padding: 12px 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.top-row {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+
+.pattern-zone {
+  flex: 0 0 66%;
+  min-width: 0;
+  height: 234px;
+  display: flex;
+  flex-direction: column;
+}
+
+.wallet-zone {
+  flex: 1;
+  min-width: 210px;
+  height: 234px;
+  position: relative;
+  z-index: 40;          /* 展开的账户卡浮在下方内容之上 */
+}
+
+.row2 {
+  display: flex;
+  gap: 14px;
+  flex: 0 0 auto;
+}
+
+.combo-card {
+  flex: 0 0 30%;
+  min-width: 0;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.combo-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.combo-title { font-size: 13px; font-weight: 700; }
+.combo-delta { font-size: 11px; padding: 1px 7px; border-radius: 8px; }
+.combo-delta.up { color: #0f7b40; background: #f0fdf4; }
+.combo-delta.down { color: #b91c1c; background: #fef2f2; }
+.combo-ranges { display: flex; gap: 4px; }
+.combo-ranges button {
+  font-size: 11px; padding: 2px 8px; border-radius: 6px; cursor: pointer;
+  background: transparent; color: var(--muted); border: 1px solid var(--border);
+}
+.combo-ranges button.on { background: var(--accent); border-color: var(--accent); color: #1c2333; font-weight: 600; }
+.combo-tiles { display: flex; gap: 10px; margin-top: 8px; }
+.combo-tile {
+  flex: 1; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+  font-size: 11px; color: var(--muted); display: flex; align-items: baseline; justify-content: space-between;
+}
+.combo-tile b { color: var(--text); font-size: 12.5px; }
+
+.row2-rest { flex: 1; }
+
+.wallet-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 1px;
+  margin-bottom: 10px;
+}
+
+.demo-float {
+  position: absolute;
+  top: 10px;
+  right: 16px;
+  z-index: 5;
+}
+
+/* 宫格：只显示一行，全部横向排列（滚动区悬停时显示滚动条） */
+.cards-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 176px;
+  gap: 12px;
+  width: max-content;
+  padding: 2px 2px 20px;   /* 底部留白，避免最后一行内容贴着滚动条 */
+}
+
+/* ---------- 形态卡片：小字体、不加粗、居中、等高 ---------- */
+.pattern-card { display: flex; }
+.pattern-card article { flex: 1; border-radius: 12px; }
+
+.pattern-card article > div[class*="zoom"] { min-height: 56px; padding-top: 8px; }
+
+.pattern-card .glyph { width: 100%; height: 52px; display: block; }
+
+.pattern-card article .content,
+.pattern-card article div[class*="content"] { padding: 8px 10px 12px; text-align: center; }
+
+.pattern-card h3 {
+  margin-inline: auto;
+  font-size: 12.5px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+
+.pattern-card p[class*="description"] {
+  margin: 5px auto 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  text-align: center;
+  color: #a0a8b4;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;      /* 超出两行省略 */
+  overflow: hidden;
+}
+
+.right-rest { min-height: 40px; }
+
+/* ---------- 单币种（无边框无阴影） ---------- */
+.card { padding: 2px 0 8px; }
+
+.card-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 2px 4px;
+}
+
+.coin-icon { width: 22px; height: 22px; }
+
+.sym { font-size: 16px; font-weight: 700; letter-spacing: 0.3px; }
+
+.iv-label { color: var(--muted); font-size: 11px; }
+
+.price { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; display: inline-flex; }
+.price.up { color: var(--up); }
+.price.down { color: var(--down); }
+.chg { font-size: 13px; font-variant-numeric: tabular-nums; }
+.up { color: var(--up); }
+.down { color: var(--down); }
+
+.chart-box { height: calc(25vh - 42px); min-height: 190px; }
+
+/* ---------- 演示模式小角标 ---------- */
+.mini-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  vertical-align: 1px;
+  cursor: help;
+}
+
+/* ---------- 形态卡片：徽标 / 计数 / 命中噪声渐变 ---------- */
+.pattern-card { position: relative; }
+
+.noise-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: 12px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.noise-overlay > * { border-radius: 12px; }
+
+.dir-badge {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 8px;
+}
+.dir-badge.bullish { background: #16a34a; color: #fff; }
+.dir-badge.bearish { background: #dc2626; color: #fff; }
+.dir-badge.neutral { background: #64748b; color: #fff; }
+
+/* 方向徽标 + 胜率徽标（背景深度按胜率分三档，由主题色衍生） */
+.badges {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 3;
+  display: flex;
+  gap: 4px;
+}
+.dir-badge,
+.win-badge {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 8px;
+}
+.dir-badge.bullish { background: #16a34a; color: #fff; }
+.dir-badge.bearish { background: #dc2626; color: #fff; }
+.dir-badge.neutral { background: #64748b; color: #fff; }
+.win-badge.low { background: rgba(240, 185, 11, 0.2); color: #7a5800; }
+.win-badge.mid { background: rgba(240, 185, 11, 0.55); color: #4a3b00; }
+.win-badge.hi { background: #f0b90b; color: #1c2333; }
+
+/* 标题后的小计数（uiarc 计数器默认 var(--text-3xl)=30px，这里压回小字号） */
+.pc-title { display: inline-flex; align-items: baseline; gap: 5px; }
+.cnt-mini { font-size: 10.5px; color: #a0a8b4; font-weight: 400; }
+.cnt-mini [class*="counter"] { font-size: 10.5px !important; }
+
+/* 价格计数器压回头部字号 */
+.price [class*="counter"] { font-size: 17px !important; }
+
+/* 命中时整卡透出流动渐变 */
+.pn-container { padding: 0 !important; background: #fff !important; border-radius: 12px !important; }
+.pn-content { position: relative; z-index: 1; }
+.pattern-card.hit article,
+.pattern-card.hit article [class*="media"] { background: transparent !important; }
+
+/* ---------- 悬停K线：显示存储记录 ---------- */
+.chart-box { position: relative; }
+
+.hover-tip {
+  position: absolute;
+  z-index: 30;
+  min-width: 175px;
+  max-width: 250px;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(16, 24, 40, 0.14);
+  padding: 8px 10px;
+  font-size: 11px;
+  pointer-events: none;
+}
+.ht-time { font-weight: 700; margin-bottom: 3px; }
+.ht-ohlc { color: #5b6472; margin-bottom: 3px; }
+.ht-ohlc.dim { color: #a0a8b4; }
+.ht-vol { color: #a0a8b4; }
+.ht-hit { margin-top: 2px; }
+.ht-hit.bullish { color: var(--up); }
+.ht-hit.bearish { color: var(--down); }
+.ht-hit.neutral { color: #b45309; }
+.ht-none { color: #a0a8b4; margin-top: 2px; }
+
+/* ---------- 钱包堆叠（账户卡） ---------- */
+.wstack { position: relative; height: 100%; }
+.wstack-cards { position: absolute; inset: 0; }
+
+.wstack-slot { cursor: pointer; }
+
+.wcard {
+  position: relative;
+  height: 196px;
+  border-radius: 14px;
+  padding: 12px 14px;
+  overflow: hidden;
+  color: #1c2333;
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  /* 不透明背景：堆叠时背面卡只露出彩色顶边，内容不会互相透出 */
+  background: linear-gradient(135deg, rgba(240, 185, 11, 0.32), rgba(255, 255, 255, 1) 58%), #ffffff;
+}
+.wcard.front { }
+
+.wcard-avatar { display: grid; place-items: center; }
+.wcard-avatar img {
+  width: 34px; height: 34px; border-radius: 50%;
+  object-fit: cover; border: 2px solid rgba(255, 255, 255, 0.95);
+  box-shadow: 0 2px 6px rgba(16, 24, 40, 0.2);
+}
+.wcard-na { font-size: 19px; font-weight: 700; color: #8b949e; }
+
+.wcard-top {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; color: rgba(16, 24, 40, 0.65);
+}
+.wcard-issuer { font-weight: 600; }
+.wcard-live { display: inline-flex; align-items: center; gap: 4px; }
+.wcard-dot { width: 7px; height: 7px; border-radius: 50%; background: #16a34a; animation: dotpulse 1.6s ease infinite; }
+@keyframes dotpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+.wcard-mid { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.wcard-icon { display: grid; place-items: center; }
+.wcard-icon img { width: 30px; height: 30px; }
+.wcard-price { flex: 1; }
+.wcard-price-label { display: block; font-size: 10px; color: rgba(16, 24, 40, 0.55); }
+.wcard-price [class*="counter"] { font-size: 20px !important; font-weight: 700; color: #1c2333; }
+.wcard-chip {
+  display: grid; place-items: center;
+  width: 26px; height: 20px; border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.5);
+  font-size: 11px; color: rgba(16, 24, 40, 0.6);
+}
+
+.wcard-bottom { display: flex; align-items: center; gap: 14px; margin-top: 10px; font-size: 11px; color: rgba(16, 24, 40, 0.7); }
+.wcard-bottom b { font-weight: 700; }
+.wcard-chg.up { color: #0f7b40; }
+.wcard-chg.down { color: #b91c1c; }
+
+.wcard-num {
+  position: absolute; right: 14px; bottom: 10px;
+  font-size: 11px; letter-spacing: 2px; color: rgba(255, 255, 255, 0.85);
+}
+
+.wcard-recent {
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid rgba(16, 24, 40, 0.12);
+  font-size: 11px;
+}
+.wcard-recent-title { color: rgba(16, 24, 40, 0.55); font-size: 10px; margin-bottom: 4px; }
+.wcard-recent-item.bullish { color: #0f7b40; }
+.wcard-recent-item.bearish { color: #b91c1c; }
+.wcard-recent-item.neutral { color: #92400e; }
+
+@keyframes slide { from { transform: translateX(16px); opacity: 0; } to { transform: none; opacity: 1; } }

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.db
+signals.csv
+deploy.tar.gz
+dist.tar.gz
+
+# 运行配置含密钥（用 config.example.yaml 作模板）
+config.yaml
+
+web/node_modules/
+web/dist/

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>币安合约K线监控</title>
+    <script>
+      window.__errs = []
+      window.addEventListener("error", (e) => window.__errs.push((e.message || "error") + " @" + (e.filename || "").split("/").pop() + ":" + e.lineno))
+      window.addEventListener("unhandledrejection", (e) => window.__errs.push("rejection: " + String(e.reason).slice(0, 200)))
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
