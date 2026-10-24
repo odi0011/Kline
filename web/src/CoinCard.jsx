@@ -56,47 +56,53 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
   }
 
   // 水墨映射：方向定墨色（青碧墨/赤墨/灰墨），参与形态的 N 根一起染色，
-  // 逐根错相呼吸 → 水墨扩散层次，不再单色来回跳
+  // 逐根错相呼吸 → 水墨扩散层次。lightweight-charts 的 update() 只允许最新一根，
+  // 所以多根染色必须走 setData 全量重绘。
   const INK = {
     bullish: { hue: 168, sat: 60 },
     bearish: { hue: 348, sat: 62 },
     neutral: { hue: 218, sat: 36 },
   }
-  const inkColor = (k, count, t) => {
+  const inkOf = (barsAgo, count, t) => {
     const ink = INK[hitDirRef.current] || INK.neutral
-    const hue = (ink.hue + (k - (count - 1) / 2) * 16 + 360) % 360
-    const breath = 0.5 + 0.5 * Math.sin(t / 260 + k * 1.15)
+    const hue = (ink.hue + (barsAgo - (count - 1) / 2) * 16 + 360) % 360
+    const breath = 0.5 + 0.5 * Math.sin(t / 260 + barsAgo * 1.15)
     const light = 30 + breath * 17
     const sat = ink.sat + breath * 9
-    const color = `hsl(${hue.toFixed(0)} ${sat.toFixed(0)}% ${light.toFixed(0)}%)`
-    return { color, vol: `hsl(${hue.toFixed(0)} ${sat.toFixed(0)}% ${light.toFixed(0)}% / 0.35)` }
+    return {
+      color: `hsl(${hue.toFixed(0)} ${sat.toFixed(0)}% ${light.toFixed(0)}%)`,
+      vol: `hsl(${hue.toFixed(0)} ${sat.toFixed(0)}% ${light.toFixed(0)}% / 0.35)`,
+    }
   }
 
   const paintHit = () => {
     const bars = live.store[symbol]?.[intervalRef.current]?.bars || []
-    const nBars = bars.length
-    const count = Math.min(hitBarsRef.current, nBars)
+    if (!bars.length || !candleRef.current || !chartRef.current) return
+    const count = Math.min(hitBarsRef.current, bars.length)
     const t = Date.now()
-    for (let k = 0; k < count; k++) {
-      const bar = bars[nBars - 1 - k]
-      if (!bar) continue
-      const { color, vol } = inkColor(k, count, t)
-      candleRef.current?.update({ time: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close, color, borderColor: color, wickColor: color })
-      volRef.current?.update({ time: bar.time, value: bar.volume, color: vol })
+    const candles = []
+    const vols = []
+    for (let i = 0; i < bars.length; i++) {
+      const b = bars[i]
+      const barsAgo = bars.length - 1 - i
+      const base = { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close }
+      if (barsAgo < count) {
+        const { color, vol } = inkOf(barsAgo, count, t)
+        candles.push({ ...base, color, borderColor: color, wickColor: color })
+        vols.push({ time: b.time, value: b.volume, color: vol })
+      } else {
+        const up = b.close >= b.open
+        candles.push(base)
+        vols.push({ time: b.time, value: b.volume, color: up ? rgba(ccRef.current.up, 0.3) : rgba(ccRef.current.down, 0.3) })
+      }
     }
-  }
-
-  const paintNormal = (count) => {
-    const bars = live.store[symbol]?.[intervalRef.current]?.bars || []
-    const nBars = bars.length
-    const cc = ccRef.current
-    for (let k = 0; k < Math.min(count, nBars); k++) {
-      const bar = bars[nBars - 1 - k]
-      if (!bar) continue
-      const up = bar.close >= bar.open
-      candleRef.current?.update({ time: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close })
-      volRef.current?.update({ time: bar.time, value: bar.volume, color: up ? rgba(cc.up, 0.3) : rgba(cc.down, 0.3) })
-    }
+    candleRef.current.setData(candles)
+    volRef.current.setData(vols)
+    // setData 会重置可视范围：按设置的显示根数恢复
+    chartRef.current.timeScale().setVisibleLogicalRange({
+      from: Math.max(0, bars.length - (settingsRef.current.visibleBars || 70)),
+      to: bars.length + 2,
+    })
   }
 
   const applyLiveBar = () => {
@@ -105,10 +111,7 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
     if (!last || !candleRef.current) return
     const baseBar = { time: last.time, open: last.open, high: last.high, low: last.low, close: last.close }
     const cc = ccRef.current
-    if (Date.now() < hitUntilRef.current) {
-      paintHit()
-      return
-    }
+    if (Date.now() < hitUntilRef.current) return   // 命中期间由 90ms 定时器统一水墨重绘
     candleRef.current.update(baseBar)
     volRef.current?.update({ time: last.time, value: last.volume, color: last.close >= last.open ? rgba(cc.up, 0.3) : rgba(cc.down, 0.3) })
   }
@@ -271,7 +274,7 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
         if (Date.now() >= hitUntilRef.current) {
           clearInterval(timer)
           hitUntilRef.current = 0
-          paintNormal(hitBarsRef.current)
+          setData()               // 恢复普通配色 + 可视范围
         } else {
           paintHit()
         }
