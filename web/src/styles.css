@@ -341,7 +341,7 @@ body {
 .pn-hit-bg.bullish::before { background-image: linear-gradient(115deg, #052e2b, #0d9488, #99f6e4, #0d9488, #052e2b); }
 .pn-hit-bg.bearish::before { background-image: linear-gradient(115deg, #450a0a, #e11d48, #fda4af, #e11d48, #450a0a); }
 .pn-hit-bg.neutral::before { background-image: linear-gradient(115deg, #1e293b, #64748b, #cbd5e1, #64748b, #1e293b); }
-.pn-hit-bg::after { content: ""; position: absolute; inset: 0; background: rgba(255, 255, 255, 0.45); }
+.pn-hit-bg::after { content: ""; position: absolute; inset: 0; background: rgba(255, 255, 255, 0.62); }
 @keyframes pnFlow {
   0% { background-position: 0% 50%; }
   50% { background-position: 100% 50%; }
@@ -350,6 +350,10 @@ body {
 .pattern-card.hit article,
 .pattern-card.hit article [class*="media"] { background: transparent !important; }
 .pattern-card.hit article { position: relative; z-index: 1; }
+/* 命中态文字加深：浅灰说明文字在彩底上不可读 */
+.pattern-card.hit p[class*="description"] { color: #414c5c; }
+.pattern-card.hit .cnt-mini,
+.pattern-card.hit .cnt-mini [class*="counter"] { color: #5b6472; }
 
 /* ---------- 悬停K线：显示存储记录 ---------- */
 .chart-box { position: relative; }
