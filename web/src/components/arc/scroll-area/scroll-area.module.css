@@ -46,6 +46,37 @@
 .root[data-orientation="both"] > .track[data-axis="x"] { right: 13px; }
 .track[data-hidden] { display: none; }
 
+/* 横向区域可选的右上角玻璃箭头按钮（scrollButtons），替代底部滚动条。 */
+.nav {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  gap: 6px;
+}
+.nav[data-hidden] { display: none; }
+.navBtn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.62);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 6px 18px rgba(16, 24, 40, 0.14);
+  color: var(--foreground, #1c2333);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-standard), opacity var(--duration-fast) var(--ease-standard);
+}
+@media (hover: hover) and (pointer: fine) {
+  .navBtn:hover { background: rgba(255, 255, 255, 0.88); }
+}
+.navBtn[data-off] { opacity: 0.35; pointer-events: none; }
+
 .thumb { position: absolute; top: 0; left: 0; will-change: transform; }
 .track[data-axis="y"] .thumb { width: 100%; }
 .track[data-axis="x"] .thumb { height: 100%; }

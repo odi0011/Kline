@@ -8,9 +8,9 @@ import { AnimatedCounter } from "@/components/arc/animated-counter/animated-coun
 const spring = { type: "spring", stiffness: 420, damping: 36, mass: 0.9 }
 const CARD_H = 180              // 与 styles.css 的 .wcard height 保持一致
 const STACK_GAP = 12
-// 与 styles.css 的 .pattern-zone/.wallet-zone 高度(212)同步：
+// 与 styles.css 的 .pattern-zone/.wallet-zone 高度(192)同步：
 // 收起时最前一张卡底边落在 188（= 顶部留白2 + 形态卡186，同形态卡底线），后面的卡向上每张错开 STACK_GAP
-const STACK_ZONE_H = 212
+const STACK_ZONE_H = 192
 const STACK_BOTTOM_LINE = 188
 
 // 账户名逐字符编码 → 确定性色相：同一账户永远同色，等于添加时就定好了颜色

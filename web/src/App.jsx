@@ -207,7 +207,7 @@ export default function App() {
         )}
         <div className="top-row">
           <div className="pattern-zone">
-            <ScrollArea orientation="horizontal" scrollbars="auto" label="K线形态图鉴" viewportRef={cardsViewportRef}>
+            <ScrollArea orientation="horizontal" scrollbars="auto" scrollButtons label="K线形态图鉴" viewportRef={cardsViewportRef}>
               <div className="cards-grid">
                 {Object.entries(PATTERN_META).map(([key, p]) => {
                   const active = hits.find((h) => h.pattern === key)

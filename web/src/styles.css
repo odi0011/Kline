@@ -118,11 +118,11 @@ body {
   flex: 0 0 auto;
 }
 
-/* 212 = 网格顶部留白 2 + 形态卡 186 + 底部滚动条净空 24（两栏同一底线） */
+/* 192 = 网格顶部留白 2 + 形态卡 186 + 底部呼吸 4；横向滚动用右上角箭头（scrollButtons），无底部滚动条 */
 .pattern-zone {
   flex: 0 0 66%;
   min-width: 0;
-  height: 212px;
+  height: 192px;
   display: flex;
   flex-direction: column;
 }
@@ -130,7 +130,7 @@ body {
 .wallet-zone {
   flex: 1;
   min-width: 210px;
-  height: 212px;
+  height: 192px;
   position: relative;
   z-index: 40;          /* 展开的账户卡浮在下方内容之上 */
 }
@@ -192,7 +192,7 @@ body {
   grid-auto-columns: 176px;
   gap: 12px;
   width: max-content;
-  padding: 2px 2px 24px;   /* 底部留白：滚动条悬浮在净空区，不贴卡片内容 */
+  padding: 2px 2px 4px;    /* 无底部滚动条（箭头按钮在右上角），底部只留少量呼吸 */
 }
 
 /* ---------- 形态卡片：小字体、不加粗、居中、等高 ---------- */

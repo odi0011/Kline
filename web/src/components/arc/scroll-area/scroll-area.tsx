@@ -2,6 +2,7 @@
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import type { CSSProperties, HTMLAttributes, PointerEvent as ReactPointerEvent, ReactNode, Ref, UIEvent } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import styles from "./scroll-area.module.css";
 
 type Axis = "y" | "x";
@@ -22,6 +23,8 @@ export interface ScrollAreaProps extends Omit<HTMLAttributes<HTMLDivElement>, "o
   fade?: number;
   /** "auto" shows scrollbars while scrolling or hovering; "always" keeps them visible when content overflows. */
   scrollbars?: "auto" | "always";
+  /** 横向区域的右上角玻璃箭头按钮（替代底部滚动条：启用后不再渲染 x 轴滚动条）。 */
+  scrollButtons?: boolean;
   /** How long scrollbars linger after scrolling stops, in ms. */
   hideDelay?: number;
   /** Maximum height of the viewport, for vertical areas that should grow with their content. */
@@ -43,13 +46,15 @@ export interface ScrollAreaProps extends Omit<HTMLAttributes<HTMLDivElement>, "o
 const MIN_THUMB = 28;
 
 export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(function ScrollArea({
-  children, orientation = "vertical", fade = 28, scrollbars = "auto", hideDelay = 900, maxHeight, snap, label,
+  children, orientation = "vertical", fade = 28, scrollbars = "auto", scrollButtons = false, hideDelay = 900, maxHeight, snap, label,
   wheelToHorizontal = true, viewportClassName, viewportStyle, viewportRef, onScroll, onEdgeChange, className, ...rest
 }, forwardedRef) {
   const rootRef = useRef<HTMLDivElement>(null);
   const viewport = useRef<HTMLDivElement>(null);
   const tracks = useRef<Record<Axis, HTMLDivElement | null>>({ x: null, y: null });
   const thumbs = useRef<Record<Axis, HTMLDivElement | null>>({ x: null, y: null });
+  const navRef = useRef<HTMLDivElement | null>(null);
+  const navBtns = useRef<{ start: HTMLButtonElement | null; end: HTMLButtonElement | null }>({ start: null, end: null });
   const hideTimer = useRef<number | undefined>(undefined);
   const lastEdges = useRef("");
   const onEdgeRef = useRef(onEdgeChange);
@@ -91,6 +96,9 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(function S
     if (vertical) place("y", scrollTop, maxY, clientHeight, scrollHeight);
     if (horizontal) place("x", left, maxX, clientWidth, scrollWidth);
     root.toggleAttribute("data-overflow", maxY > .5 || maxX > .5);
+    if (navRef.current) navRef.current.toggleAttribute("data-hidden", !(horizontal && maxX > .5));
+    if (navBtns.current.start) navBtns.current.start.toggleAttribute("data-off", !edges.left);
+    if (navBtns.current.end) navBtns.current.end.toggleAttribute("data-off", !edges.right);
 
     const key = `${edges.top}${edges.bottom}${edges.left}${edges.right}`;
     if (key !== lastEdges.current) { lastEdges.current = key; onEdgeRef.current?.(edges); }
@@ -178,6 +186,15 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(function S
     node.scrollBy({ [axis === "y" ? "top" : "left"]: page, behavior: reduce ? "auto" : "smooth" });
   };
 
+  /* 箭头按钮：每次点击横向滚动约一屏的 80%。 */
+  const nudge = (dir: 1 | -1) => {
+    const node = viewport.current;
+    if (!node) return;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    node.scrollBy({ left: dir * node.clientWidth * .8, behavior: reduce ? "auto" : "smooth" });
+    wake();
+  };
+
   const bar = (axis: Axis) => <div ref={node => { tracks.current[axis] = node; }} className={styles.track} data-axis={axis} data-hidden="" aria-hidden="true"
     onPointerDown={event => onTrackDown(event, axis)}>
     <div ref={node => { thumbs.current[axis] = node; }} className={styles.thumb}
@@ -189,8 +206,20 @@ export const ScrollArea = forwardRef<HTMLDivElement, ScrollAreaProps>(function S
       style={{ maxHeight, scrollSnapType: snap, ...viewportStyle }} tabIndex={0} role={label ? "region" : undefined} aria-label={label} onScroll={handleScroll}>
       {children}
     </div>
+    {horizontal && scrollButtons && (
+      <div ref={navRef} className={styles.nav} data-hidden="" >
+        <button type="button" ref={node => { navBtns.current.start = node; }} className={styles.navBtn}
+          aria-label="向左滚动" onPointerDown={event => { event.preventDefault(); nudge(-1); }}>
+          <ChevronLeft size={16} strokeWidth={2} aria-hidden />
+        </button>
+        <button type="button" ref={node => { navBtns.current.end = node; }} className={styles.navBtn}
+          aria-label="向右滚动" onPointerDown={event => { event.preventDefault(); nudge(1); }}>
+          <ChevronRight size={16} strokeWidth={2} aria-hidden />
+        </button>
+      </div>
+    )}
     {vertical && bar("y")}
-    {horizontal && bar("x")}
+    {horizontal && !scrollButtons && bar("x")}
   </div>;
 });
 
