@@ -12,12 +12,18 @@ import { ComboChartCard } from '@/components/base/combo-chart-card/combo-chart-c
 import { NoiseBackground } from '@/components/ui/noise-background'
 import { Badge } from '@/components/base/badges/badge'
 import { AnimatedCounter } from '@/components/arc/animated-counter/animated-counter'
-import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal } from 'lucide-react'
+import CoinAvatar from '@/components/ui/coin-avatar'
+import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins } from 'lucide-react'
 
 const WS_PORT = 8765
 const HIT_TTL_MS = 9_000
 const SETTINGS_KEY = 'kline.settings.v1'
-const DEFAULT_SETTINGS = { interval: '3m', visibleBars: 70, showVolume: true, showGrid: true }
+const MIN_SYMBOLS = 4
+const MAX_SYMBOLS = 10
+const DEFAULT_SETTINGS = {
+  interval: '3m', visibleBars: 70, showVolume: true, showGrid: true,
+  symbols: ['btcusdt', 'tslausdt', 'xauusdt', 'xagusdt'],   // 默认展示的四个币种
+}
 
 function loadSettings() {
   try {
@@ -60,12 +66,18 @@ export default function App() {
   const [settings, setSettings] = useState(loadSettings)
   const liveRef = useRef(null)
   const cardsViewportRef = useRef(null)
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
 
   const connected = stats.status === 'connected'
   const mode = stats.mode || meta?.mode || ''
   const defaultIv = meta
     ? (meta.intervals.includes(settings.interval) ? settings.interval : meta.intervals[0])
     : settings.interval
+  // 监控池 = 服务端 config symbols；展示 = 池 ∩ 用户选择（本地持久化）
+  const pool = meta?.symbols || DEFAULT_SETTINGS.symbols
+  const displayed = pool.filter((s) => settings.symbols.includes(s))
+  const shownSymbols = displayed.length ? displayed : pool.slice(0, MIN_SYMBOLS)
 
   useEffect(() => {
     const live = new LiveClient(`ws://${location.hostname}:${WS_PORT}`)
@@ -78,6 +90,7 @@ export default function App() {
     live.onStats((s) => setStats((prev) => ({ ...prev, ...s, status: 'connected' })))
     live.onStatus((s) => setStats((prev) => ({ ...prev, status: s })))
     const offHit = live.on('hit', (h) => {
+      if (!settingsRef.current.symbols.includes(h.symbol)) return   // 只提示当前展示的币种
       const item = { ...h, id: `${h.ts}-${h.symbol}-${h.pattern}-${h.mode}-${Math.random().toString(36).slice(2, 7)}` }
       setHits((x) => [item, ...x].slice(0, 6))
     })
@@ -115,6 +128,14 @@ export default function App() {
 
   const updateSetting = (patch) => setSettings((s) => ({ ...s, ...patch }))
 
+  // 币种勾选：最少 MIN_SYMBOLS 个、最多 MAX_SYMBOLS 个，超限直接忽略
+  const toggleSymbol = (sym) => setSettings((s) => {
+    const cur = s.symbols || []
+    if (cur.includes(sym)) return cur.length <= MIN_SYMBOLS ? s : { ...s, symbols: cur.filter((x) => x !== sym) }
+    if (cur.length >= MAX_SYMBOLS) return s
+    return { ...s, symbols: [...cur, sym] }
+  })
+
   // 滚动到指定形态卡片（居中）：纯数据计算目标位置（不依赖布局测量，页面冻结时也能滚动）
   const lastScrollPatternRef = useRef('')
   const scrollToPattern = (patternKey) => {
@@ -145,32 +166,55 @@ export default function App() {
     }, 120)
   }
 
+  const sel = settings.symbols || []
+  const atMax = sel.length >= MAX_SYMBOLS
+  const atMin = sel.length <= MIN_SYMBOLS
   const menuGroups = [
     {
-      id: 'g-interval', label: 'K线周期（检测 + 显示）',
-      items: (meta?.intervals || ['1m', '3m']).map((iv) => ({
-        id: `iv:${iv}`, label: iv,
-        icon: <Clock3 size={16} />, checked: settings.interval === iv, keepOpen: true,
-      })),
+      id: 'g-symbols',
+      items: [{
+        id: 'symbols', label: '选择币种', icon: <Coins size={16} />, shortcut: `${sel.length} 个`,
+        items: pool.map((s) => ({
+          id: `sym:${s}`, label: s.toUpperCase(),
+          icon: <CoinAvatar symbol={s} size={18} />,
+          checked: sel.includes(s), keepOpen: true,
+          disabled: (atMax && !sel.includes(s)) || (atMin && sel.includes(s)),
+        })),
+        searchable: true, placeholder: '搜索币种',
+        hint: `${sel.length}/${MAX_SYMBOLS} · 至少 ${MIN_SYMBOLS}`,
+      }],
     },
     {
-      id: 'g-chart', label: '图表',
+      id: 'g-interval',
+      items: [{
+        id: 'interval', label: 'K线周期', icon: <Clock3 size={16} />, shortcut: defaultIv,
+        items: (meta?.intervals || ['1m', '3m']).map((iv) => ({
+          id: `iv:${iv}`, label: iv, icon: <Clock3 size={16} />, checked: settings.interval === iv, keepOpen: true,
+        })),
+      }],
+    },
+    {
+      id: 'g-chart',
+      label: '图表',
       items: [
         { id: 'volume', label: '成交量', icon: <BarChart3 size={16} />, checked: settings.showVolume, keepOpen: true },
         { id: 'grid', label: '网格线', icon: <Grid3x3 size={16} />, checked: settings.showGrid, keepOpen: true },
       ],
     },
     {
-      id: 'g-range', label: '显示范围',
-      items: [50, 70, 100, 150].map((n) => ({
-        id: `bars:${n}`, label: `最近 ${n} 根`,
-        icon: <MoveHorizontal size={16} />, checked: settings.visibleBars === n, keepOpen: true,
-      })),
+      id: 'g-range',
+      items: [{
+        id: 'range', label: '显示范围', icon: <MoveHorizontal size={16} />, shortcut: `最近 ${settings.visibleBars} 根`,
+        items: [50, 70, 100, 150].map((n) => ({
+          id: `bars:${n}`, label: `最近 ${n} 根`, icon: <MoveHorizontal size={16} />, checked: settings.visibleBars === n, keepOpen: true,
+        })),
+      }],
     },
   ]
 
   const onMenuSelect = (id) => {
-    if (id.startsWith('iv:')) updateSetting({ interval: id.slice(3) })
+    if (id.startsWith('sym:')) toggleSymbol(id.slice(4))
+    else if (id.startsWith('iv:')) updateSetting({ interval: id.slice(3) })
     else if (id === 'volume') updateSetting({ showVolume: !settings.showVolume })
     else if (id === 'grid') updateSetting({ showGrid: !settings.showGrid })
     else if (id.startsWith('bars:')) updateSetting({ visibleBars: Number(id.slice(5)) })
@@ -181,7 +225,7 @@ export default function App() {
       <main className="left">
         <ScrollArea orientation="vertical" label="币种K线" className="left-scroll" fade={20}>
           <div className="left-inner">
-            {meta && meta.symbols.map((s) => (
+            {meta && shownSymbols.map((s) => (
               <CoinCard key={s} symbol={s} intervals={meta.intervals}
                 settings={{ ...settings, interval: defaultIv }}
                 live={liveRef.current}

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, HistogramSeries, ColorType } from 'lightweight-charts'
 import { AnimatedCounter } from '@/components/arc/animated-counter/animated-counter'
+import CoinAvatar from '@/components/ui/coin-avatar'
 
 const UP = '#16a34a'
 const DOWN = '#dc2626'
@@ -223,8 +224,7 @@ export default function CoinCard({ symbol, intervals, settings, live, hitActive,
   return (
     <section className="card">
       <div className="card-head">
-        <img className={`coin-icon ${hitActive ? 'hit' : ''}`} src={`icons/${base}.svg`} alt={base}
-          onError={(e) => { e.target.style.display = 'none' }} />
+        <CoinAvatar symbol={symbol} size={22} className={`coin-icon ${hitActive ? 'hit' : ''}`} />
         <span className="sym">{symbol.toUpperCase()}</span>
         <span className={`price ${tick ? tick.dir : ''}`}>
           <AnimatedCounter value={tick ? tick.price : 0} decimals={decimals} />

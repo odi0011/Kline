@@ -4,12 +4,19 @@
 web_port: 8000
 ws_port: 8765
 
-# 监控的合约（币安 USDT-M 永续，小写）
+# 监控的合约（币安 USDT-M 永续，小写）。这是"监控池"：行情/形态检测对池内全部币种跑，
+# 前端在菜单"选择币种"里勾选其中 4~10 个展示（选择持久化在浏览器本地）
 symbols:
   - btcusdt
+  - tslausdt
+  - xauusdt
+  - xagusdt
   - ethusdt
   - bnbusdt
   - solusdt
+  - xrpusdt
+  - dogeusdt
+  - adausdt
 
 # K线周期（支持 1s 5s 15s 30s 1m 3m 5m 15m 30m 1h 2h 4h 1d）
 intervals:

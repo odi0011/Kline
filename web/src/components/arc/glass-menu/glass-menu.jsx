@@ -3,7 +3,7 @@
    动效：面板从触发器弹出（spring），高亮滑块用 layoutId 在行间滑动。 */
 import { useEffect, useRef, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
-import { Check, ChevronLeft } from "lucide-react"
+import { Check, ChevronLeft, Search } from "lucide-react"
 
 const spring = { type: "spring", stiffness: 520, damping: 40, mass: 0.8 }
 
@@ -49,10 +49,11 @@ export function GlassMenu({
   const [open, setOpen] = useState(false)
   const [hoverId, setHoverId] = useState(null)
   const [sub, setSub] = useState(null)          // 打开的子菜单父项
+  const [subQuery, setSubQuery] = useState("")  // searchable 子菜单的搜索词
   const rootRef = useRef(null)
 
   useEffect(() => {
-    if (!open) { setSub(null); setHoverId(null); return }
+    if (!open) { setSub(null); setHoverId(null); setSubQuery(""); return }
     const onDoc = (e) => { if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false) }
     const onKey = (e) => { if (e.key === "Escape") setOpen(false) }
     document.addEventListener("pointerdown", onDoc)
@@ -65,7 +66,7 @@ export function GlassMenu({
 
   const rowClick = (item) => {
     if (item.disabled) return
-    if (item.items) { setSub(item); return }
+    if (item.items) { setSub(item); setSubQuery(""); return }
     onSelect?.(item.id, item)
     if (!item.keepOpen) setOpen(false)
   }
@@ -161,21 +162,60 @@ export function GlassMenu({
                 <ChevronLeft size={15} /> {sub.label}
               </div>
             )}
-            {sub
-              ? sub.items.map(renderRow)
-              : groups.map((g, gi) => (
-                  <div key={g.id}>
-                    {g.label && (
-                      <div style={{ fontSize: 11, color: "#8b949e", padding: "6px 10px 2px", letterSpacing: 1 }}>
-                        {g.label}
+            {sub && sub.searchable && (
+              <div
+                style={{
+                  display: "flex", alignItems: "center", gap: 8, height: 32,
+                  margin: "0 4px 6px", padding: "0 10px", borderRadius: 10,
+                  background: "rgba(28,35,51,0.06)",
+                }}
+              >
+                <Search size={13} color="#8b949e" aria-hidden />
+                <input
+                  autoFocus
+                  value={subQuery}
+                  onChange={(e) => setSubQuery(e.target.value)}
+                  placeholder={sub.placeholder || "搜索"}
+                  style={{
+                    flex: 1, minWidth: 0, border: "0", outline: "none", background: "transparent",
+                    fontSize: 12.5, color: "#1c2333",
+                  }}
+                />
+                {sub.hint && (
+                  <span style={{ fontSize: 11, color: "#8b949e", whiteSpace: "nowrap" }}>{sub.hint}</span>
+                )}
+              </div>
+            )}
+            {sub ? (
+              (() => {
+                const q = subQuery.trim().toLowerCase()
+                const rows = q ? sub.items.filter((it) => it.label.toLowerCase().includes(q)) : sub.items
+                return (
+                  <>
+                    {rows.map(renderRow)}
+                    {sub.searchable && rows.length === 0 && (
+                      <div style={{ padding: 10, fontSize: 12, color: "#a0a8b4", textAlign: "center" }}>
+                        无匹配
                       </div>
                     )}
-                    {g.items.map(renderRow)}
-                    {gi < groups.length - 1 && (
-                      <div style={{ height: 1, background: "rgba(28,35,51,0.08)", margin: "5px 8px" }} />
-                    )}
-                  </div>
-                ))}
+                  </>
+                )
+              })()
+            ) : (
+              groups.map((g, gi) => (
+                <div key={g.id}>
+                  {g.label && (
+                    <div style={{ fontSize: 11, color: "#8b949e", padding: "6px 10px 2px", letterSpacing: 1 }}>
+                      {g.label}
+                    </div>
+                  )}
+                  {g.items.map(renderRow)}
+                  {gi < groups.length - 1 && (
+                    <div style={{ height: 1, background: "rgba(28,35,51,0.08)", margin: "5px 8px" }} />
+                  )}
+                </div>
+              ))
+            )}
           </motion.div>
         )}
       </AnimatePresence>
