@@ -158,19 +158,23 @@ export function GlassMenu({
           <motion.div
             role="menu"
             aria-label={label}
-            initial={{ opacity: 0, scale: 0.9, y: 10, filter: "blur(4px)" }}
-            animate={{ opacity: 1, scale: 1, y: 0, filter: "blur(0px)" }}
-            exit={{ opacity: 0, scale: 0.94, y: 8, filter: "blur(3px)" }}
+            initial={{ opacity: 0, y: 10, filter: "blur(4px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            exit={{ opacity: 0, y: 8, filter: "blur(3px)" }}
             transition={spring}
             style={{
               position: "absolute",
               bottom: "calc(100% + 12px)",
               [align === "end" ? "right" : "left"]: 0,
               width,
-              ...panelStyle,
+              borderRadius: 14,
+              boxShadow: "0 12px 36px rgba(16,24,40,0.18)",
             }}
           >
-            {subItem && (
+            <LiquidGlass radius={14} scale={24} aberration={0} frost={3.5} tint={0.4}
+              style={{ width: "100%", maxHeight: "62vh", overflow: "hidden" }}>
+              <div style={{ maxHeight: "62vh", overflowY: "auto", overscrollBehavior: "contain", padding: 6 }}>
+              {subItem && (
               <div
                 onClick={() => setSub(null)}
                 style={{
@@ -195,7 +199,7 @@ export function GlassMenu({
                   autoFocus
                   value={subQuery}
                   onChange={(e) => setSubQuery(e.target.value)}
-                  placeholder={sub.placeholder || "搜索"}
+                  placeholder={subItem.placeholder || "搜索"}
                   style={{
                     flex: 1, minWidth: 0, border: "0", outline: "none", background: "transparent",
                     fontSize: 12.5, color: "#1c2333",
@@ -236,6 +240,8 @@ export function GlassMenu({
                 </div>
               ))
             )}
+              </div>
+            </LiquidGlass>
           </motion.div>
         )}
       </AnimatePresence>
