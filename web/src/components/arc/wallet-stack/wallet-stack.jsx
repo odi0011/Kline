@@ -17,25 +17,38 @@ const STACK_GAP = 12
 const STACK_ZONE_H = 192
 const STACK_BOTTOM_LINE = 188
 
-/* 账户色相衍生的水彩背景（静态绘制一次，尺寸变化重绘） */
+/* 账户色相衍生的水彩背景（动态）：逐帧驱动 paintRecipe 的 startT 时间轴。
+   无 WebGL（引擎退化为 CPU 逐像素渲染）时只画静态一帧，避免逐帧卡顿。 */
 function AccountBackdrop({ name }) {
   const ref = useRef(null)
-  const paint = () => {
+  useEffect(() => {
     const c = ref.current
     if (!c) return
-    const w = c.clientWidth, h = c.clientHeight
-    if (!w || !h) return
-    const dpr = Math.min(window.devicePixelRatio || 1, 2)
-    const W = Math.round(w * dpr), H = Math.round(h * dpr)
-    if (c.width !== W) c.width = W
-    if (c.height !== H) c.height = H
-    try { paintRecipe(c, accountRecipe(name)) } catch { /* 渲染失败时保留渐变兜底 */ }
-  }
-  useEffect(() => {
-    paint()
-    const ro = new ResizeObserver(() => paint())
-    if (ref.current) ro.observe(ref.current)
-    return () => ro.disconnect()
+    const hue = accountHue(name)
+    const recipe = accountRecipe(name)
+    const glOk = !!document.createElement("canvas").getContext("webgl")
+    let raf = 0
+    let alive = true
+    const t0 = performance.now()
+    const paint = (elapsed) => {
+      const w = c.clientWidth, h = c.clientHeight
+      if (!w || !h) return
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5)
+      const W = Math.round(w * dpr), H = Math.round(h * dpr)
+      if (c.width !== W) c.width = W
+      if (c.height !== H) c.height = H
+      try {
+        paintRecipe(c, { ...recipe, startT: elapsed })
+      } catch { /* 保留渐变兜底 */ }
+    }
+    if (!glOk) { paint(0); return () => { alive = false } }
+    const frame = () => {
+      if (!alive) return
+      paint((performance.now() - t0) * (24 / 50))
+      raf = requestAnimationFrame(frame)
+    }
+    raf = requestAnimationFrame(frame)
+    return () => { alive = false; cancelAnimationFrame(raf) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name])
   return <canvas ref={ref} className="wcard-bg" aria-hidden />
