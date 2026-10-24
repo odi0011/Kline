@@ -54,6 +54,7 @@ class QuantEngine:
         self.broadcast_fn = None           # main 注入：asyncio.create_task(hub.broadcast(obj))
         self._err_dedupe: dict[str, int] = {}
         self._lock = threading.Lock()
+        self._warned_dupes = False
         self._step_sizes: dict[str, float] = {}
         self._log_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant.log")
         self._trades_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant-trades.json")
@@ -125,6 +126,28 @@ class QuantEngine:
 
     # ---------- 交易所辅助 ----------
 
+    def _tradable_accounts(self) -> list:
+        """返回参与交易的账户：按 API Key 去重（同一 key = 同一账户，
+        多个别名会让同一信号重复下单，导致叠加仓位与平仓错乱）。"""
+        seen = {}
+        out = []
+        dup_names = []
+        for a in self.accts_box["list"]:
+            key = (a.get("api_key") or "").strip()
+            if not key:
+                continue
+            if key in seen:
+                dup_names.append(a.get("name"))
+                continue
+            seen[key] = a.get("name")
+            out.append(a)
+        if dup_names and not self._warned_dupes:
+            self._warned_dupes = True
+            self._event("system",
+                        f"账户别名去重：{', '.join(dup_names)} 与已启用账户共用同一 API Key，"
+                        f"已跳过（同一账户只交易一份）")
+        return out
+
     def _acc(self, name):
         for a in self.accts_box["list"]:
             if a.get("name") == name:
@@ -189,7 +212,7 @@ class QuantEngine:
                 self._event("skip", "无最新价", symbol=symbol)
                 return
             side = "BUY" if direction == "bullish" else "SELL"
-            for a in list(self.accts_box["list"]):
+            for a in self._tradable_accounts():
                 name = a.get("name", "")
                 try:
                     self._decide_open(name, a, symbol, side, direction, float(price), hit)
@@ -266,7 +289,11 @@ class QuantEngine:
         if not self.enabled:
             return
         now = _now_ms()
+        # 只管理"参与交易"的账户（按 API Key 去重），避免别名账户重复平仓
+        tradable = {a.get("name") for a in self._tradable_accounts()}
         for name in list(self.state.keys()):
+            if name not in tradable:
+                continue
             a = self._acc(name)
             if not a:
                 continue
@@ -366,7 +393,7 @@ class QuantEngine:
             return
         self.last_audit_ms = _now_ms()
         try:
-            for a in list(self.accts_box["list"]):
+            for a in self._tradable_accounts():
                 name = a.get("name", "")
                 try:
                     rows = signed_request(a["api_key"], a["api_secret"], "/fapi/v2/positionRisk")
