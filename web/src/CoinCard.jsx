@@ -8,11 +8,12 @@ const UP_VOL = 'rgba(22, 163, 74, 0.3)'
 const DOWN_VOL = 'rgba(220, 38, 38, 0.3)'
 
 const pad = (n) => String(n).padStart(2, '0')
+// ts 为 UTC 秒：+8h 后用 UTC 取值才是北京时间（本地时区取值会叠加成 +16h）
 const bj = (t) => new Date(t * 1000 + 8 * 3600 * 1000)
-const fmtTick = (t) => { const d = bj(t); return `${pad(d.getHours())}:${pad(d.getMinutes())}` }
+const fmtTick = (t) => { const d = bj(t); return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}` }
 const fmtCross = (t) => {
   const d = bj(t)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
 }
 
 export default function CoinCard({ symbol, intervals, settings, live, hitActive, onHoverHits }) {

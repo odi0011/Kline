@@ -43,9 +43,10 @@ const comboMonth = [
   { label: "W3", pnl: 38.8, cum: 72.9 }, { label: "W4", pnl: 24.5, cum: 97.4 },
 ]
 const fmtTime = (ts) => {
+  // ts 为 UTC 毫秒：+8h 后用 UTC 取值才是北京时间（本地时区取值会叠加成 +16h）
   const d = new Date(ts + 8 * 3600 * 1000)
   const pad = (n) => String(n).padStart(2, '0')
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`
 }
 
 export default function App() {
