@@ -10,6 +10,13 @@
 - `hits` 表：形态命中完整记录，保留 7 天；悬停某根K线可查当时记录（含胜负）
 - **胜率判定**：确认信号出现后 `storage.eval_minutes`（默认 10 分钟）的收盘价，如形态方向所预测即为 win；前端卡片上的"胜xx%"徽标由此统计
 
+## 自动部署（已配置）
+
+- GitHub main 分支每次更新后，服务器上的 `kline-autodeploy.timer`（每 2 分钟检查）自动完成：拉取代码 → 构建前端（独立 node20，位于 /opt/kline-node，不影响系统 node）→ 重启服务，全流程 1~2 分钟。
+- 服务器侧永不覆盖：`config.yaml`（密钥）、`kline.db`、`venv/`。
+- 手动触发：`systemctl start kline-autodeploy.service`；日志：`journalctl -u kline-autodeploy -f`。
+- 前端开发改完代码：本地构建验证后直接 push，线上 2 分钟内自动更新。
+
 ## 设计约定
 
 - 页面里所有出现横向/纵向滚动的容器，一律用 uiarc 的 `ScrollArea`（`@/components/arc/scroll-area/scroll-area`）包裹；需要"完全隐藏滚动条"的容器（如左侧币种列表）加 `.left-scroll` 类（内部 CSS 隐藏 `.track` 覆盖层）。
