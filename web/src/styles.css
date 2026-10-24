@@ -53,10 +53,10 @@ body {
 
 .left-inner { padding: 4px 10px 4px 16px; }
 
-/* 玻璃设置菜单：左栏右下角 */
+/* 玻璃设置菜单：左栏左下角 */
 .glass-wrap {
   position: absolute;
-  right: 14px;
+  left: 14px;
   bottom: 14px;
   z-index: 40;
 }
