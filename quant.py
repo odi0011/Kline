@@ -52,6 +52,7 @@ class QuantEngine:
         self.stats = {"signals": 0, "decisions": 0, "orders": 0, "closes": 0, "errors": 0, "wins": 0, "losses": 0}
         self.last_audit_ms = 0
         self.broadcast_fn = None           # main 注入：asyncio.create_task(hub.broadcast(obj))
+        self._err_dedupe: dict[str, int] = {}
         self._lock = threading.Lock()
         self._step_sizes: dict[str, float] = {}
         self._log_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant.log")
@@ -66,6 +67,13 @@ class QuantEngine:
     def _event(self, kind: str, reason: str = "", **extra):
         ev = {"ts": _now_ms(), "kind": kind, "reason": reason, **extra}
         self.events.append(ev)
+        # 错误限流：同一原因 1 分钟内只落盘一次，避免异常循环刷爆日志（事件流仍保留）
+        if kind == "error":
+            key = reason[:60]
+            last = self._err_dedupe.get(key, 0)
+            if ev["ts"] - last < 60000:
+                return ev
+            self._err_dedupe[key] = ev["ts"]
         try:
             with open(self._log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(ev, ensure_ascii=False) + "\n")
@@ -278,23 +286,63 @@ class QuantEngine:
                     # 超时出场：避免窄幅震荡时仓位长期占满槽位（策略停摆兜底）
                     self._close(name, a, symbol, price, f"超时({hold_min:.0f}min,{move * 100:.2f}%)")
 
+    def _live_amt(self, api_key: str, api_secret: str, symbol: str) -> float | None:
+        """查交易所该币种真实持仓量（平仓必须用它，本地记录可能因部分成交而不准）。"""
+        try:
+            rows = signed_request(api_key, api_secret, "/fapi/v2/positionRisk", {"symbol": symbol.upper()})
+            for p in rows:
+                if p.get("symbol", "").lower() == symbol:
+                    return float(p.get("positionAmt", 0))
+        except Exception as e:
+            self._event("error", f"查询真实持仓失败({symbol}): {e}", symbol=symbol)
+        return None
+
     def _close(self, name, a, symbol, price, reason: str) -> None:
         st = self._st(name)
         pos = st["positions"].get(symbol)
         if not pos:
             return
+        # 防死循环：同一持仓连续平仓失败 3 次后放弃（交由审计核销/人工处理）
+        fails = pos.get("closeFails", 0)
+        if fails >= 3:
+            return
+        # 以交易所真实持仓量为准（本地数量可能是部分成交后的旧值）
+        live_amt = self._live_amt(a["api_key"], a["api_secret"], symbol)
+        if live_amt is not None:
+            if abs(live_amt) < 1e-9:
+                # 交易所已无仓位 → 直接核销，不再下单
+                st["positions"].pop(symbol)
+                self._save_positions()
+                self._event("close", f"{reason}（交易所已无仓位，核销记录）", account=name, symbol=symbol)
+                self._broadcast_positions()
+                return
+            close_qty = abs(live_amt)
+            if abs(close_qty - abs(pos["qty"])) > 1e-9:
+                pos["qty"] = close_qty        # 修正为真实量再平
+        else:
+            close_qty = abs(pos["qty"])
         close_side = "SELL" if pos["side"] == "BUY" else "BUY"
+        step = self._step_size(a["api_key"], a["api_secret"], symbol)
+        close_qty = self._quantize(close_qty, step)
+        if close_qty <= 0:
+            st["positions"].pop(symbol)
+            self._save_positions()
+            return
         try:
-            r = self._place_order(a["api_key"], a["api_secret"], symbol, close_side, pos["qty"], reduce_only=True)
+            r = self._place_order(a["api_key"], a["api_secret"], symbol, close_side, close_qty, reduce_only=True)
         except Exception as e:
+            pos["closeFails"] = fails + 1
             self.stats["errors"] += 1
-            self._event("error", f"平仓失败({name}/{symbol}): {e}（下次审计重试）", symbol=symbol)
+            self._event("error", f"平仓失败({name}/{symbol}) 第{fails + 1}次: {e}",
+                        symbol=symbol)
+            if pos["closeFails"] >= 3:
+                self._event("error", f"{name}/{symbol} 平仓连续失败3次，暂停重试等待审计核销", symbol=symbol)
             return
         move = (price - pos["entry"]) / pos["entry"] * (1 if pos["side"] == "BUY" else -1)
-        pnl = round((price - pos["entry"]) * pos["qty"] * (1 if pos["side"] == "BUY" else -1), 2)
+        pnl = round((price - pos["entry"]) * close_qty * (1 if pos["side"] == "BUY" else -1), 2)
         trade = {
             "ts": _now_ms(), "account": name, "symbol": symbol, "side": pos["side"],
-            "qty": pos["qty"], "entry": pos["entry"], "exit": price, "pnl": pnl,
+            "qty": close_qty, "entry": pos["entry"], "exit": price, "pnl": pnl,
             "movePct": round(move * 100, 2), "reason": reason,
             "entryTs": pos["entryTs"], "holdMin": round((now_ms() - pos["entryTs"]) / 60000, 1),
             "pattern": pos.get("pattern"), "orderId": pos.get("orderId"), "closeId": r.get("orderId"),
