@@ -28,13 +28,15 @@ body {
 }
 
 /* 隐藏滚动条（保留滚动能力） */
-.no-bar, .left, .cards-row {
+.no-bar, .left, .cards-row, .wcard-scroll {
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
-.no-bar::-webkit-scrollbar, .left::-webkit-scrollbar, .cards-row::-webkit-scrollbar {
+.no-bar::-webkit-scrollbar, .left::-webkit-scrollbar, .cards-row::-webkit-scrollbar, .wcard-scroll::-webkit-scrollbar {
   display: none;
 }
+/* 卡内滚动区：隐藏 ScrollArea 的覆盖滚动条 */
+.wcard-scroll [class*="track"] { display: none !important; }
 
 .app { display: flex; height: 100%; }
 

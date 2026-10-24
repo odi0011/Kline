@@ -6,8 +6,9 @@ import { useEffect, useRef, useState } from "react"
 import { motion } from "motion/react"
 import { AnimatedCounter } from "@/components/arc/animated-counter/animated-counter"
 import EquityCurve from "./equity-curve"
-import { accountHue, accountRecipe } from "@/lib/account-theme"
-import { paintRecipe } from "@/lib/gradient-engine.js"
+import { accountHue, deriveStops, TEMPLATE_PRESET } from "@/lib/account-theme"
+import { paintWatercolor } from "@/lib/gradient-engine.js"
+import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 
 const spring = { type: "spring", stiffness: 420, damping: 36, mass: 0.9 }
 const CARD_H = 180
@@ -17,34 +18,41 @@ const STACK_GAP = 12
 const STACK_ZONE_H = 192
 const STACK_BOTTOM_LINE = 188
 
-/* 账户色相衍生的水彩背景（动态）：逐帧驱动 paintRecipe 的 startT 时间轴。
-   无 WebGL（引擎退化为 CPU 逐像素渲染）时只画静态一帧，避免逐帧卡顿。 */
+/* 账户色相衍生的水彩背景（动态）：完全按引擎官方组件的驱动方式——
+   每帧 时间 += speed/100 × 1.2 × min(0.05, 帧间隔秒)，paintWatercolor 交互模式渲染。
+   无 WebGL（引擎退化为 CPU 逐像素）时只画静态一帧。 */
 function AccountBackdrop({ name }) {
   const ref = useRef(null)
   useEffect(() => {
     const c = ref.current
     if (!c) return
     const hue = accountHue(name)
-    const recipe = accountRecipe(name)
+    const stops = deriveStops(hue)
+    const params = TEMPLATE_PRESET.params
+    const seed = hue % 9999
+    const speed = TEMPLATE_PRESET.speed || 24
     const glOk = !!document.createElement("canvas").getContext("webgl")
     let raf = 0
     let alive = true
-    const t0 = performance.now()
-    const paint = (elapsed) => {
-      const w = c.clientWidth, h = c.clientHeight
-      if (!w || !h) return
+    let w = 0
+    let last = 0
+    const paint = (mode, time) => {
+      const cw = c.clientWidth, ch = c.clientHeight
+      if (!cw || !ch) return
       const dpr = Math.min(window.devicePixelRatio || 1, 1.5)
-      const W = Math.round(w * dpr), H = Math.round(h * dpr)
+      const W = Math.round(cw * dpr), H = Math.round(ch * dpr)
       if (c.width !== W) c.width = W
       if (c.height !== H) c.height = H
       try {
-        paintRecipe(c, { ...recipe, startT: elapsed })
+        paintWatercolor(c, W, H, stops, params, seed, mode, time)
       } catch { /* 保留渐变兜底 */ }
     }
-    if (!glOk) { paint(0); return () => { alive = false } }
-    const frame = () => {
+    if (!glOk) { paint("export", 0); return () => { alive = false } }
+    const frame = (ne) => {
       if (!alive) return
-      paint((performance.now() - t0) * (24 / 50))
+      if (last) w += (speed / 100) * 1.2 * Math.min(0.05, (ne - last) / 1000)
+      last = ne
+      paint("interactive", w)
       raf = requestAnimationFrame(frame)
     }
     raf = requestAnimationFrame(frame)
@@ -73,26 +81,29 @@ function WalletCard({ account, front, series, chartColors, onPick }) {
   return (
     <div className={"wcard" + (front ? " front" : "")} onClick={() => onPick(name)}>
       <AccountBackdrop name={name} />
-      <div className="wcard-body">
-        <div className="wcard-top">
-          <span className="wcard-avatar"><img src={icon} alt="" /></span>
-          <span className="wcard-issuer">{name}</span>
-        </div>
-        <div className="wcard-mid">
-          <span className="wcard-price-label">账户权益 (USDT)</span>
-          <div className="wcard-binline">
-            {balance == null
-              ? <span className="wcard-na">获取失败</span>
-              : <span className="wcard-bal"><AnimatedCounter value={dispBal ?? 0} decimals={2} /></span>}
-            {pnl != null && (
-              <span className="wcard-pnl" style={{ color: pnlColor }}>
-                {up ? "+" : down ? "-" : ""}
-                <AnimatedCounter value={Math.abs(pnl)} decimals={2} />
-              </span>
-            )}
+      <ScrollArea orientation="vertical" fade={10} className="wcard-scroll"
+        style={{ position: "absolute", inset: "0 0 62px 0" }}>
+        <div className="wcard-body">
+          <div className="wcard-top">
+            <span className="wcard-avatar"><img src={icon} alt="" /></span>
+            <span className="wcard-issuer">{name}</span>
+          </div>
+          <div className="wcard-mid">
+            <span className="wcard-price-label">账户权益 (USDT)</span>
+            <div className="wcard-binline">
+              {balance == null
+                ? <span className="wcard-na">获取失败</span>
+                : <span className="wcard-bal"><AnimatedCounter value={dispBal ?? 0} decimals={2} /></span>}
+              {pnl != null && (
+                <span className="wcard-pnl" style={{ color: pnlColor }}>
+                  {up ? "+" : down ? "-" : ""}
+                  <AnimatedCounter value={Math.abs(pnl)} decimals={2} />
+                </span>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      </ScrollArea>
       <EquityCurve samples={series || []} hue={hue} height={62}
         onHover={(s) => setHoverS(s)} />
     </div>
@@ -145,10 +156,9 @@ export function WalletStack({ accounts = [], seriesMap = {}, chartColors, onFron
       className={"wstack" + (className ? " " + className : "")}
       aria-label="账户"
     >
-      <motion.div
+      <div
         className="wstack-cards"
-        animate={{ height: expanded ? n * (CARD_H + 12) + 24 : STACK_ZONE_H }}
-        transition={spring}
+        style={{ height: STACK_ZONE_H }}
       >
         {ordered.map((a, i) => {
           // 收起位由 React 的 style.top 管理（motion 可能在挂载/动画结束时清掉自己写的内联
@@ -159,7 +169,10 @@ export function WalletStack({ accounts = [], seriesMap = {}, chartColors, onFron
           const back = n - 1 - i
           const strip = n > 1 ? Math.min(STACK_GAP, frontTop / (n - 1)) : STACK_GAP
           const collapsedY = Math.max(0, frontTop - back * strip)
-          const expandedY = i * (CARD_H + 12)
+          // 展开位：间距压缩到可视区内（纯覆盖在下一行内容之上，不撑高右侧滚动区）
+          const avail = Math.max(420, window.innerHeight - 140)
+          const spread = n > 1 ? Math.min(CARD_H + 12, Math.max(64, (avail - CARD_H) / (n - 1))) : CARD_H + 12
+          const expandedY = i * spread
           const y = expanded ? expandedY - collapsedY : 0
           return (
             <motion.div
@@ -174,7 +187,7 @@ export function WalletStack({ accounts = [], seriesMap = {}, chartColors, onFron
             </motion.div>
           )
         })}
-      </motion.div>
+      </div>
     </div>
   )
 }
