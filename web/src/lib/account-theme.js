@@ -1,12 +1,14 @@
 /* 账户主题：由账户名生成确定性色相，并基于渐变引擎的水彩预设衍生配色。
    模板预设取自 gradient-engine 内置的 "Mint Splash"（wc-botanical，水彩 wash），
-   把它的色相整体旋转到账户色相，即得到每账户专属的同风格配色。 */
+   把它的色相整体旋转到账户色相，即得到每账户专属的同风格配色。
+   哈希用 131 进制 + 997/47 扩散：名字只差最后一个字（如 测试盘1/2/3）也会得到
+   相差约 47° 的明显不同色相。 */
 
 export function accountHue(name) {
   let h = 0
   const s = name || ""
-  for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) % 360
-  return h
+  for (let i = 0; i < s.length; i++) h = (h * 131 + s.charCodeAt(i)) % 4294967296
+  return ((h % 997) * 47) % 360
 }
 
 function hexToHsl(hex) {

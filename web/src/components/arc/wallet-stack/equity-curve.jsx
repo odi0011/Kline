@@ -1,43 +1,12 @@
-/* 账户权益迷你曲线：平滑曲线 + 渐变面积填充，hover 竖线与圆点并回调采样值。
-   samples: [{ t, bal, upnl }]（时间升序，最少 1 个）。
-   hover 用原生事件监听（挂载在元素上），不依赖合成事件委托。 */
-import { useEffect, useMemo, useRef, useState } from "react"
-
-function smoothPath(pts) {
-  if (pts.length < 2) return ""
-  let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)]
-    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6]
-    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6]
-    d += ` C ${c1[0].toFixed(1)} ${c1[1].toFixed(1)}, ${c2[0].toFixed(1)} ${c2[1].toFixed(1)}, ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`
-  }
-  return d
-}
+/* 账户权益迷你曲线：直接用项目已有的 lightweight-charts AreaSeries（真实组件）。
+   单点也铺平线可见；hover 十字由库提供，联动上方余额/盈亏动画数字。 */
+import { useEffect, useRef } from "react"
+import { createChart, AreaSeries, ColorType } from "lightweight-charts"
 
 export default function EquityCurve({ samples, hue, height = 62, onHover }) {
   const wrapRef = useRef(null)
-  const [hoverIdx, setHoverIdx] = useState(null)
-  const W = 100, H = 100   // viewBox 归一化坐标，按容器比例拉伸
-
-  const geom = useMemo(() => {
-    if (!samples || !samples.length) return null
-    const padY = 14
-    const vals = samples.map((s) => s.bal)
-    let min = Math.min(...vals), max = Math.max(...vals)
-    if (max - min < 1e-9) { min -= 1; max += 1 }
-    const n = samples.length
-    const xs = samples.map((_, i) => (n === 1 ? W / 2 : (i / (n - 1)) * W))
-    const ys = vals.map((v) => H - padY - ((v - min) / (max - min)) * (H - padY * 2))
-    const pts = xs.map((x, i) => [x, ys[i]])
-    const line = smoothPath(pts)
-    const area = pts.length > 1 ? `${line} L ${W} ${H} L 0 ${H} Z` : ""
-    return { pts, line, area }
-  }, [samples])
-
-  // 最新值走 ref，监听器不必随数据重建
-  const geomRef = useRef(geom)
-  geomRef.current = geom
+  const chartRef = useRef(null)
+  const areaRef = useRef(null)
   const samplesRef = useRef(samples)
   samplesRef.current = samples
   const onHoverRef = useRef(onHover)
@@ -46,56 +15,81 @@ export default function EquityCurve({ samples, hue, height = 62, onHover }) {
   useEffect(() => {
     const el = wrapRef.current
     if (!el) return
-    const pick = (clientX) => {
-      const g = geomRef.current, ss = samplesRef.current
-      if (!el || !g || !ss || !ss.length) return
-      const r = el.getBoundingClientRect()
-      const fx = Math.max(0, Math.min(1, (clientX - r.left) / r.width))
-      let idx = Math.round(fx * (ss.length - 1))
-      if (ss.length === 1) idx = 0
-      setHoverIdx(idx)
-      onHoverRef.current && onHoverRef.current(ss[idx])
-    }
-    const move = (e) => pick(e.clientX)
-    const leave = () => { setHoverIdx(null); onHoverRef.current && onHoverRef.current(null) }
-    el.addEventListener("pointermove", move)
-    el.addEventListener("pointerleave", leave)
-    return () => {
-      el.removeEventListener("pointermove", move)
-      el.removeEventListener("pointerleave", leave)
-    }
+    const chart = createChart(el, {
+      autoSize: true,
+      layout: {
+        background: { type: ColorType.Solid, color: "transparent" },
+        textColor: "transparent",
+        attributionLogo: false,
+      },
+      grid: { vertLines: { visible: false }, horzLines: { visible: false } },
+      rightPriceScale: { visible: false },
+      timeScale: { visible: false, borderVisible: false },
+      handleScroll: false,
+      handleScale: false,
+      crosshair: {
+        mode: 0,
+        vertLine: { color: "rgba(28,35,51,0.3)", labelBackgroundColor: "rgba(28,35,51,0.6)" },
+        horzLine: { color: "rgba(28,35,51,0.3)", labelBackgroundColor: "rgba(28,35,51,0.6)" },
+      },
+    })
+    const area = chart.addSeries(AreaSeries, {
+      lineColor: `hsl(${hue} 70% 46%)`,
+      topColor: `hsl(${hue} 70% 52% / 0.5)`,
+      bottomColor: `hsl(${hue} 70% 52% / 0.03)`,
+      lineWidth: 2,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerRadius: 4,
+      crosshairMarkerBorderColor: "rgba(255,255,255,0.95)",
+      crosshairMarkerBackgroundColor: `hsl(${hue} 70% 46%)`,
+    })
+    chartRef.current = chart
+    areaRef.current = area
+    applyData()
+
+    // hover 十字 → 就近采样回调（余额/盈亏数字联动）
+    chart.subscribeCrosshairMove((param) => {
+      const d = param.seriesData.get(area)
+      if (!d) { onHoverRef.current && onHoverRef.current(null); return }
+      const tSec = param.time
+      const ss = samplesRef.current || []
+      let nearest = null
+      for (const s of ss) {
+        const st = Math.round(s.t / 1000)
+        if (nearest === null || Math.abs(st - tSec) < Math.abs(Math.round(nearest.t / 1000) - tSec)) nearest = s
+      }
+      onHoverRef.current && onHoverRef.current({ bal: d.value, upnl: nearest ? nearest.upnl : null })
+    })
+
+    return () => chart.remove()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const hoverPt = hoverIdx != null && geom ? geom.pts[hoverIdx] : null
-  const c1 = `hsl(${hue} 70% 46%)`
-  const c2 = `hsl(${(hue + 30) % 360} 65% 60%)`
+  function applyData() {
+    const area = areaRef.current, chart = chartRef.current
+    if (!area || !chart) return
+    const ss = samplesRef.current || []
+    let data = ss.map((s) => ({ time: Math.round(s.t / 1000), value: s.bal }))
+    if (data.length === 1) {
+      // 单点铺成平线，保证曲线始终可见
+      data = [{ time: data[0].time - 120, value: data[0].value }, data[0]]
+    }
+    area.setData(data)
+    chart.timeScale().fitContent()
+  }
 
-  return (
-    <div ref={wrapRef} className="ecurve" style={{ height }}>
-      {geom && (
-        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: "100%", display: "block" }}>
-          <defs>
-            <linearGradient id={`ecg-${hue}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={c1} stopOpacity="0.34" />
-              <stop offset="100%" stopColor={c2} stopOpacity="0.04" />
-            </linearGradient>
-            <linearGradient id={`ecl-${hue}`} x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stopColor={c2} />
-              <stop offset="100%" stopColor={c1} />
-            </linearGradient>
-          </defs>
-          {geom.area && <path d={geom.area} fill={`url(#ecg-${hue})`} />}
-          <path d={geom.line} fill="none" stroke={`url(#ecl-${hue})`} strokeWidth="2.4"
-            vectorEffect="non-scaling-stroke" strokeLinecap="round" />
-        </svg>
-      )}
-      {hoverPt && (
-        <svg className="ecurve-hover" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
-          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
-          <line x1={hoverPt[0]} y1="0" x2={hoverPt[0]} y2={H} stroke="rgba(28,35,51,0.28)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
-          <circle cx={hoverPt[0]} cy={hoverPt[1]} r="3.4" fill={c1} stroke="#fff" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
-        </svg>
-      )}
-    </div>
-  )
+  useEffect(() => { applyData() }, [samples])
+
+  // 色相变化：热更新面积曲线配色
+  useEffect(() => {
+    areaRef.current?.applyOptions({
+      lineColor: `hsl(${hue} 70% 46%)`,
+      topColor: `hsl(${hue} 70% 52% / 0.5)`,
+      bottomColor: `hsl(${hue} 70% 52% / 0.03)`,
+      crosshairMarkerBackgroundColor: `hsl(${hue} 70% 46%)`,
+    })
+  }, [hue])
+
+  return <div ref={wrapRef} className="ecurve" style={{ height }} />
 }
