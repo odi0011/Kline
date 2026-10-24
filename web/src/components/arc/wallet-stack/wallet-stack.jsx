@@ -104,7 +104,8 @@ export function WalletStack({ accounts = [], label = "账户", onSelectedChange,
           // 保证收起时整叠不超出整行高度，且最前一张卡底边始终对齐形态卡底线。
           const frontTop = STACK_BOTTOM_LINE - CARD_H
           const back = n - 1 - i
-          const strip = back > 0 ? Math.min(STACK_GAP, frontTop / back) : STACK_GAP
+          // 间距按总余量均分（账户越多越细），背面卡均匀分布在余量内
+          const strip = n > 1 ? Math.min(STACK_GAP, frontTop / (n - 1)) : STACK_GAP
           const collapsedY = Math.max(0, frontTop - back * strip)
           const expandedY = i * (CARD_H + 12) + (isSel && i > selIdx ? 96 : 0)
           const y = expanded ? expandedY - collapsedY : 0
