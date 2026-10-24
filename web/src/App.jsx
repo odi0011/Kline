@@ -8,11 +8,11 @@ import { Card } from '@/components/arc/card/card'
 import { ScrollArea } from '@/components/arc/scroll-area/scroll-area'
 import { GlassMenu } from '@/components/arc/glass-menu/glass-menu'
 import { WalletStack } from '@/components/arc/wallet-stack/wallet-stack'
-import { ComboChartCard } from '@/components/base/combo-chart-card/combo-chart-card'
 import { Badge } from '@/components/base/badges/badge'
 import { AnimatedCounter } from '@/components/arc/animated-counter/animated-counter'
 import CoinAvatar from '@/components/ui/coin-avatar'
 import SettingsDialog from '@/components/arc/settings-dialog/settings-dialog'
+import AccountPanel from '@/components/arc/account-panel/account-panel'
 import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins, Settings } from 'lucide-react'
 
 const WS_PORT = 8765
@@ -41,17 +41,6 @@ const STATUS_BY_DIR = { bullish: 'success', bearish: 'error', neutral: 'informat
 const DIR_LABEL = { bullish: '上涨', bearish: '下跌', neutral: '变盘' }
 const fmtPrice = (p) => (p >= 1000 ? p.toFixed(1) : p >= 1 ? p.toFixed(3) : p.toPrecision(4))
 
-// 账户收益图模拟数据（布局用，后续可接测试盘收益记录）
-const comboWeek = [
-  { label: "一", pnl: 12.4, cum: 12.4 }, { label: "二", pnl: -8.2, cum: 4.2 },
-  { label: "三", pnl: 21.6, cum: 25.8 }, { label: "四", pnl: 5.1, cum: 30.9 },
-  { label: "五", pnl: -3.4, cum: 27.5 }, { label: "六", pnl: 18.9, cum: 46.4 },
-  { label: "日", pnl: 9.2, cum: 55.6 },
-]
-const comboMonth = [
-  { label: "W1", pnl: 46.4, cum: 46.4 }, { label: "W2", pnl: -12.3, cum: 34.1 },
-  { label: "W3", pnl: 38.8, cum: 72.9 }, { label: "W4", pnl: 24.5, cum: 97.4 },
-]
 const fmtTime = (ts) => {
   // ts 为 UTC 毫秒：+8h 后用 UTC 取值才是北京时间（本地时区取值会叠加成 +16h）
   const d = new Date(ts + 8 * 3600 * 1000)
@@ -123,6 +112,10 @@ export default function App() {
     return [...inList, ...autoAdd, ...rest]
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownSymbols.join(","), posSyms.join(","), pool.join(",")])
+
+  // 第二行数据面板：置前账户（默认最后一张卡）
+  const frontAccount = accounts.find((a) => a.name === (frontName || accounts[accounts.length - 1]?.name))
+  const frontSeries = frontAccount ? equityRef.current[frontAccount.name] : undefined
 
   // 账户权益采样（每 30s 广播时记一个点，供卡片迷你曲线；本地保留最近 120 点）
   useEffect(() => {
@@ -386,22 +379,9 @@ export default function App() {
               chartColors={chartColors} onFrontChange={setFrontName} />
           </div>
         </div>
-        <div className="row2">
-          <ComboChartCard
-            className="combo-card"
-            title="账户收益（模拟数据）"
-            data={comboWeek}
-            bar={{ key: "pnl", label: "每日盈亏", format: (n) => `${n.toFixed(2)} U` }}
-            line={{ key: "cum", label: "累计收益", format: (n) => `${n.toFixed(1)} U` }}
-            delta={0.124}
-            ranges={[
-              { id: "week", label: "本周", data: comboWeek, delta: 0.124 },
-              { id: "month", label: "本月", data: comboMonth, delta: 0.32 },
-            ]}
-            tiles
-          />
-          <div className="row2-rest" />
-        </div>
+      <div className="row2">
+        <AccountPanel account={frontAccount} series={frontSeries} chartColors={chartColors} />
+      </div>
       </aside>
 
       {/* 设置弹窗 */}
