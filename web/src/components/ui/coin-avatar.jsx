@@ -3,7 +3,8 @@ import { useEffect, useState } from "react"
 /* 币种头像：依次尝试 public/icons/{base}.svg → {base}.png → 确定性色相字母圆牌。
    色相由币种名逐字符编码，稳定不变（仅当两种格式的 icon 文件都不存在时才会走到）。 */
 export default function CoinAvatar({ symbol, size = 22, className = "" }) {
-  const base = symbol.replace(/usdt$/i, "").toUpperCase()
+  const base = symbol.replace(/usdt$/i, "")          // 文件路径保持小写原样（icons/btc.svg …）
+  const display = base.toUpperCase()                  // 仅字母兜底牌用大写
   const [stage, setStage] = useState(0)   // 0=svg 1=png 2=字母兜底
   useEffect(() => { setStage(0) }, [symbol])
   if (stage === 0) {
@@ -27,7 +28,7 @@ export default function CoinAvatar({ symbol, size = 22, className = "" }) {
         background: `linear-gradient(135deg, hsl(${hue} 72% 55%), hsl(${(hue + 40) % 360} 72% 44%))`,
         color: "#fff", fontSize: Math.round(size * 0.4), fontWeight: 700, lineHeight: 1,
       }}>
-      {base.slice(0, 2)}
+      {display.slice(0, 2)}
     </span>
   )
 }
