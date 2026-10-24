@@ -320,7 +320,7 @@ export default function App() {
             <Notification
               key={h.id}
               status={STATUS_BY_DIR[h.direction] || 'information'}
-              icon={<CoinAvatar symbol={h.symbol} size={40} />}
+              icon={function CoinIcon() { return <CoinAvatar symbol={h.symbol} size={34} /> }}
               title={`${h.symbol.toUpperCase()} · ${h.interval}  ${h.name_zh} ${h.direction === 'bullish' ? '↑' : h.direction === 'bearish' ? '↓' : '◆'}`}
               description={`${h.mode === 'live' ? '盘中预警' : '收线确认'} @ ${fmtPrice(h.price)}`}
               timestamp={fmtTime(h.ts)}
