@@ -193,7 +193,7 @@ export default function App() {
           </div>
         </ScrollArea>
         <div className="glass-wrap">
-          <GlassMenu label="图表设置" triggerLabel="图表设置" align="end" width={240}
+          <GlassMenu label="图表设置" triggerLabel="图表设置" align="start" width={240}
             groups={menuGroups} onSelect={onMenuSelect}>
             <SlidersHorizontal size={18} />
           </GlassMenu>
@@ -245,7 +245,6 @@ export default function App() {
                 })}
               </div>
             </ScrollArea>
-            <div className="right-rest" />
           </div>
           <div className="wallet-zone">
             <WalletStack accounts={accounts} />

@@ -6,17 +6,30 @@ import { motion } from "motion/react"
 import { AnimatedCounter } from "@/components/arc/animated-counter/animated-counter"
 
 const spring = { type: "spring", stiffness: 420, damping: 36, mass: 0.9 }
-const CARD_H = 196
+const CARD_H = 180              // 与 styles.css 的 .wcard height 保持一致
 const STACK_GAP = 12
+// 与 styles.css 的 .pattern-zone/.wallet-zone 高度(212)同步：
+// 收起时最前一张卡底边落在 188（= 顶部留白2 + 形态卡186，同形态卡底线），后面的卡向上每张错开 STACK_GAP
+const STACK_ZONE_H = 212
+const STACK_BOTTOM_LINE = 188
+
+// 账户名逐字符编码 → 确定性色相：同一账户永远同色，等于添加时就定好了颜色
+function accountHue(name) {
+  let h = 5381
+  const s = name || ""
+  for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) % 4294967296
+  return ((h % 997) * 47) % 360
+}
 
 function WalletCard({ account, front, expanded }) {
   const { name, icon, balance, unrealized, available } = account
   const up = (unrealized ?? 0) > 0
   const down = (unrealized ?? 0) < 0
+  const hue = accountHue(name)
   return (
     <div
       className={"wcard" + (front ? " front" : "")}
-      style={{ background: "linear-gradient(135deg, rgba(240,185,11,0.3), rgba(255,255,255,0.88) 55%, rgba(255,255,255,0.82))" }}
+      style={{ background: `linear-gradient(135deg, hsla(${hue}, 85%, 56%, 0.34), rgba(255,255,255,0.94) 55%, rgba(255,255,255,0.9)), #ffffff` }}
     >
       <div className="wcard-top">
         <span className="wcard-avatar"><img src={icon} alt="" /></span>
@@ -80,14 +93,14 @@ export function WalletStack({ accounts = [], label = "账户", onSelectedChange,
     >
       <motion.div
         className="wstack-cards"
-        animate={{ height: expanded ? n * (CARD_H + 12) + 24 : STACK_GAP * (n - 1) + CARD_H + 18 }}
+        animate={{ height: expanded ? n * (CARD_H + 12) + 24 : STACK_ZONE_H }}
         transition={spring}
       >
         {accounts.map((a, i) => {
           const isSel = selected === a.name
           const y = expanded
             ? i * (CARD_H + 12) + (isSel && i > selIdx ? 96 : 0)
-            : i * STACK_GAP
+            : Math.max(-12, STACK_BOTTOM_LINE - CARD_H - (n - 1 - i) * STACK_GAP)
           return (
             <motion.div
               key={a.name}
