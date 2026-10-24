@@ -311,9 +311,9 @@ body {
 .dir-badge.bullish { background: #16a34a; color: #fff; }
 .dir-badge.bearish { background: #dc2626; color: #fff; }
 .dir-badge.neutral { background: #64748b; color: #fff; }
-.win-badge.low { background: color-mix(in srgb, var(--accent) 20%, transparent); color: #5a4300; }
-.win-badge.mid { background: color-mix(in srgb, var(--accent) 55%, transparent); color: rgba(255, 255, 255, 0.85); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); }
-.win-badge.hi { background: var(--accent); color: rgba(255, 255, 255, 0.96); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); }
+.win-badge.low { background: color-mix(in srgb, var(--accent) 25%, transparent); color: #6a4a00; }
+.win-badge.mid { background: color-mix(in srgb, var(--accent) 65%, transparent); color: #332600; }
+.win-badge.hi { background: color-mix(in srgb, var(--accent) 55%, #201200); color: #ffedb0; }
 
 /* 标题后的小计数（uiarc 计数器默认 var(--text-3xl)=30px，这里压回小字号） */
 .pc-title { display: inline-flex; align-items: baseline; gap: 5px; }
