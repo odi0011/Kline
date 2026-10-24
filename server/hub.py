@@ -100,6 +100,7 @@ class BroadcastHub:
                     if mtype == "set_detect_interval" and self.on_detect:
                         self.on_detect(msg.get("interval"))
                     elif mtype == "set_settings" and self.on_settings:
+                        print(f"[settings] 收到 set_settings: {str(msg.get('settings'))[:150]}")
                         new_settings = self.on_settings(msg.get("settings") or {})
                         await ws.send(json.dumps({"type": "settings", "settings": new_settings},
                                                  separators=(",", ":")))
