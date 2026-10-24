@@ -3,10 +3,11 @@ import { createChart, CandlestickSeries, HistogramSeries, ColorType } from 'ligh
 import { AnimatedCounter } from '@/components/arc/animated-counter/animated-counter'
 import CoinAvatar from '@/components/ui/coin-avatar'
 
-const UP = '#16a34a'
-const DOWN = '#dc2626'
-const UP_VOL = 'rgba(22, 163, 74, 0.3)'
-const DOWN_VOL = 'rgba(220, 38, 38, 0.3)'
+const rgba = (hex, a) => {
+  const h = hex.replace('#', '')
+  const n = parseInt(h.length === 3 ? h.split('').map((c) => c + c).join('') : h, 16)
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`
+}
 
 const pad = (n) => String(n).padStart(2, '0')
 // ts 为 UTC 秒：+8h 后用 UTC 取值才是北京时间（本地时区取值会叠加成 +16h）
@@ -17,7 +18,7 @@ const fmtCross = (t) => {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
 }
 
-export default function CoinCard({ symbol, intervals, settings, live, hitActive, onHoverHits }) {
+export default function CoinCard({ symbol, intervals, settings, live, chartColors, hitActive, onHoverHits }) {
   const boxRef = useRef(null)
   const chgRef = useRef(null)
   const chartRef = useRef(null)
@@ -29,6 +30,8 @@ export default function CoinCard({ symbol, intervals, settings, live, hitActive,
   const settingsRef = useRef(settings)
   const hitUntilRef = useRef(0)
   const onHoverHitsRef = useRef(onHoverHits)
+  const ccRef = useRef(chartColors)
+  ccRef.current = chartColors
   const [tick, setTick] = useState(null)   // { price, dir }
   const [hover, setHover] = useState(null) // { x, y, timeMs } 十字悬停
   const [barDetail, setBarDetail] = useState(null)
@@ -56,6 +59,7 @@ export default function CoinCard({ symbol, intervals, settings, live, hitActive,
     const last = bars[bars.length - 1]
     if (!last || !candleRef.current) return
     const baseBar = { time: last.time, open: last.open, high: last.high, low: last.low, close: last.close }
+    const cc = ccRef.current
     const t = Date.now()
     if (t < hitUntilRef.current) {
       const c = sciFiColor(t)
@@ -64,22 +68,23 @@ export default function CoinCard({ symbol, intervals, settings, live, hitActive,
       volRef.current?.update({ time: last.time, value: last.volume, color: c })
     } else {
       candleRef.current.update(baseBar)
-      volRef.current?.update({ time: last.time, value: last.volume, color: last.close >= last.open ? UP_VOL : DOWN_VOL })
+      volRef.current?.update({ time: last.time, value: last.volume, color: last.close >= last.open ? rgba(cc.up, 0.3) : rgba(cc.down, 0.3) })
     }
   }
 
   const drawBar = (b) => {
     if (Date.now() < hitUntilRef.current) { applyLiveBar(); return }
+    const cc = ccRef.current
     candleRef.current?.update({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })
     volRef.current?.update({
-      time: b.time, value: b.volume, color: b.close >= b.open ? UP_VOL : DOWN_VOL,
+      time: b.time, value: b.volume, color: b.close >= b.open ? rgba(cc.up, 0.3) : rgba(cc.down, 0.3),
     })
   }
 
   const setData = () => {
     const bars = live.store[symbol]?.[intervalRef.current]?.bars || []
     candleRef.current?.setData(bars.map((b) => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })))
-    volRef.current?.setData(bars.map((b) => ({ time: b.time, value: b.volume, color: b.close >= b.open ? UP_VOL : DOWN_VOL })))
+    volRef.current?.setData(bars.map((b) => ({ time: b.time, value: b.volume, color: b.close >= b.open ? rgba(ccRef.current.up, 0.3) : rgba(ccRef.current.down, 0.3) })))
     if (bars.length) {
       const vb = settingsRef.current.visibleBars
       chartRef.current?.timeScale().setVisibleLogicalRange({
@@ -106,8 +111,9 @@ export default function CoinCard({ symbol, intervals, settings, live, hitActive,
       localization: { timeFormatter: fmtCross },
       crosshair: { mode: 1 },
     })
+    const cc = ccRef.current
     const candle = chart.addSeries(CandlestickSeries, {
-      upColor: UP, downColor: DOWN, wickUpColor: UP, wickDownColor: DOWN, borderVisible: false,
+      upColor: cc.up, downColor: cc.down, wickUpColor: cc.up, wickDownColor: cc.down, borderVisible: false,
       priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
     })
     const vol = chart.addSeries(HistogramSeries, {
@@ -200,6 +206,17 @@ export default function CoinCard({ symbol, intervals, settings, live, hitActive,
       },
     })
   }, [settings.showGrid])
+
+  // 涨跌颜色变化：热更新系列配色并重绘最新K线
+  useEffect(() => {
+    if (!candleRef.current) return
+    candleRef.current.applyOptions({
+      upColor: chartColors.up, downColor: chartColors.down,
+      wickUpColor: chartColors.up, wickDownColor: chartColors.down,
+    })
+    applyLiveBar()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartColors.up, chartColors.down])
 
   // 命中动画：图标放大由 CSS 类控制；流彩K线用定时循环驱动（成交稀疏时也持续变色）
   useEffect(() => {

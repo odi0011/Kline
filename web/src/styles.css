@@ -96,6 +96,9 @@ body {
   --ease-enter: cubic-bezier(0.2, 0, 0, 1);
   --shadow-raised: 0 6px 18px rgba(16, 24, 40, 0.10);
   --shadow-floating: 0 12px 32px rgba(16, 24, 40, 0.16);
+  /* 主题色（设置弹窗-外观 里可改，App 会把 --accent 写到 documentElement 上） */
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --accent-deep: color-mix(in srgb, var(--accent) 62%, #6a4a00);
 }
 
 /* ---------- 右侧 60%：上（形态图鉴70% + 账户堆叠30%）+ 下（收益图表行） ---------- */
@@ -308,9 +311,9 @@ body {
 .dir-badge.bullish { background: #16a34a; color: #fff; }
 .dir-badge.bearish { background: #dc2626; color: #fff; }
 .dir-badge.neutral { background: #64748b; color: #fff; }
-.win-badge.low { background: rgba(240, 185, 11, 0.2); color: #7a5800; }
-.win-badge.mid { background: rgba(240, 185, 11, 0.55); color: #4a3b00; }
-.win-badge.hi { background: #f0b90b; color: #1c2333; }
+.win-badge.low { background: color-mix(in srgb, var(--accent) 20%, transparent); color: #7a5800; }
+.win-badge.mid { background: color-mix(in srgb, var(--accent) 55%, transparent); color: #4a3b00; }
+.win-badge.hi { background: var(--accent); color: #1c2333; }
 
 /* 标题后的小计数（uiarc 计数器默认 var(--text-3xl)=30px，这里压回小字号） */
 .pc-title { display: inline-flex; align-items: baseline; gap: 5px; }

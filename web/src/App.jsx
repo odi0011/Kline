@@ -13,7 +13,8 @@ import { NoiseBackground } from '@/components/ui/noise-background'
 import { Badge } from '@/components/base/badges/badge'
 import { AnimatedCounter } from '@/components/arc/animated-counter/animated-counter'
 import CoinAvatar from '@/components/ui/coin-avatar'
-import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins } from 'lucide-react'
+import SettingsDialog from '@/components/arc/settings-dialog/settings-dialog'
+import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins, Settings } from 'lucide-react'
 
 const WS_PORT = 8765
 const HIT_TTL_MS = 9_000
@@ -23,6 +24,9 @@ const MAX_SYMBOLS = 10
 const DEFAULT_SETTINGS = {
   interval: '3m', visibleBars: 70, showVolume: true, showGrid: true,
   symbols: ['btcusdt', 'tslausdt', 'xauusdt', 'xagusdt'],   // 默认展示的四个币种
+  themeColor: '#f0b90b', font: 'douyin',
+  upDown: 'green-red', upColor: '#16a34a', downColor: '#dc2626',
+  livePreview: true,
 }
 
 function loadSettings() {
@@ -64,10 +68,31 @@ export default function App() {
   const [symbolStats, setSymbolStats] = useState({})
   const [hoverPattern, setHoverPattern] = useState(null)   // {pattern, symbol} 悬停K线触发的形态
   const [settings, setSettings] = useState(loadSettings)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const liveRef = useRef(null)
   const cardsViewportRef = useRef(null)
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+
+  // 外观即时生效：主题色 → --accent（菜单高亮/徽标等点缀），字体 → 全局
+  useEffect(() => {
+    document.documentElement.style.setProperty('--accent', settings.themeColor)
+  }, [settings.themeColor])
+  useEffect(() => {
+    const fonts = {
+      douyin: '"Douyin Sans", "Microsoft YaHei", system-ui, sans-serif',
+      system: 'system-ui, -apple-system, "Microsoft YaHei", sans-serif',
+      serif: 'Georgia, "Times New Roman", "SimSun", serif',
+    }
+    document.body.style.fontFamily = fonts[settings.font] || fonts.douyin
+  }, [settings.font])
+
+  // K线涨跌颜色（预设或自定义）
+  const chartColors = useMemo(() => {
+    if (settings.upDown === 'red-green') return { up: '#dc2626', down: '#16a34a' }
+    if (settings.upDown === 'custom') return { up: settings.upColor, down: settings.downColor }
+    return { up: '#16a34a', down: '#dc2626' }
+  }, [settings.upDown, settings.upColor, settings.downColor])
 
   const connected = stats.status === 'connected'
   const mode = stats.mode || meta?.mode || ''
@@ -194,14 +219,6 @@ export default function App() {
       }],
     },
     {
-      id: 'g-chart',
-      label: '图表',
-      items: [
-        { id: 'volume', label: '成交量', icon: <BarChart3 size={16} />, checked: settings.showVolume, keepOpen: true },
-        { id: 'grid', label: '网格线', icon: <Grid3x3 size={16} />, checked: settings.showGrid, keepOpen: true },
-      ],
-    },
-    {
       id: 'g-range',
       items: [{
         id: 'range', label: '显示范围', icon: <MoveHorizontal size={16} />, shortcut: `最近 ${settings.visibleBars} 根`,
@@ -210,9 +227,22 @@ export default function App() {
         })),
       }],
     },
+    {
+      id: 'g-chart',
+      label: '图表',
+      items: [
+        { id: 'volume', label: '成交量', icon: <BarChart3 size={16} />, checked: settings.showVolume, keepOpen: true },
+        { id: 'grid', label: '网格线', icon: <Grid3x3 size={16} />, checked: settings.showGrid, keepOpen: true },
+      ],
+    },
+    {
+      id: 'g-settings',
+      items: [{ id: 'settings', label: '设置', icon: <Settings size={16} /> }],
+    },
   ]
 
   const onMenuSelect = (id) => {
+    if (id === 'settings') { setSettingsOpen(true); return }
     if (id.startsWith('sym:')) toggleSymbol(id.slice(4))
     else if (id.startsWith('iv:')) updateSetting({ interval: id.slice(3) })
     else if (id === 'volume') updateSetting({ showVolume: !settings.showVolume })
@@ -229,6 +259,7 @@ export default function App() {
               <CoinCard key={s} symbol={s} intervals={meta.intervals}
                 settings={{ ...settings, interval: defaultIv }}
                 live={liveRef.current}
+                chartColors={chartColors}
                 hitActive={hits.some((h) => h.symbol === s)}
                 onHoverHits={(hs, sym) => {
                   setHoverPattern(hs.length ? { pattern: hs[0].pattern, symbol: sym } : null)
@@ -312,6 +343,10 @@ export default function App() {
           <div className="row2-rest" />
         </div>
       </aside>
+
+      {/* 设置弹窗 */}
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)}
+        settings={settings} updateSetting={updateSetting} accounts={accounts} />
 
       {/* 形态信号通知：左上角 */}
       <NotificationViewport position="top-left">

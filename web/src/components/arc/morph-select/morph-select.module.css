@@ -1,0 +1,31 @@
+.seg {
+  display: grid;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 10px;
+  background: rgba(28, 35, 51, 0.06);
+  border: 1px solid var(--border, #e5e9f0);
+  min-width: 0;
+}
+
+.opt {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 0;
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--text-secondary, #5b6472);
+  cursor: pointer;
+  white-space: nowrap;
+  min-width: 0;
+  font-family: inherit;
+}
+.opt[data-on] { color: #1c2333; font-weight: 600; }
+
+.pill { position: absolute; inset: 0; border-radius: 8px; background: #fff; box-shadow: 0 1px 4px rgba(16, 24, 40, 0.14); }
+.pill[data-hover] { background: rgba(28, 35, 51, 0.06); box-shadow: none; }

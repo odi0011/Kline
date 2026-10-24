@@ -97,19 +97,19 @@ export function GlassMenu({
         <motion.div
           layoutId="glass-menu-pill"
           transition={spring}
-          style={{ position: "absolute", inset: 0, borderRadius: 10, background: "rgba(240,185,11,0.16)" }}
+          style={{ position: "absolute", inset: 0, borderRadius: 10, background: "var(--accent-soft, rgba(240,185,11,0.16))" }}
         />
       )}
       {item.items && sub ? null : null}
       {item.icon && (
-        <span style={{ position: "relative", display: "grid", placeItems: "center", color: "#b45309" }}>
+        <span style={{ position: "relative", display: "grid", placeItems: "center", color: "var(--accent-deep, #b45309)" }}>
           {item.icon}
         </span>
       )}
       <span style={{ position: "relative", flex: 1, whiteSpace: "nowrap" }}>{item.label}</span>
       {item.shortcut && <span style={{ position: "relative", fontSize: 11, color: "#8b949e" }}>{item.shortcut}</span>}
       {item.checked != null && (
-        <span style={{ position: "relative", color: item.checked ? "#b45309" : "transparent" }}>
+        <span style={{ position: "relative", color: item.checked ? "var(--accent-deep, #b45309)" : "transparent" }}>
           <Check size={15} strokeWidth={2.4} />
         </span>
       )}
