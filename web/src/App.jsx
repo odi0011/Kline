@@ -114,7 +114,8 @@ export default function App() {
     const inList = shownSymbols.filter((s) => posSet.has(s))
     const rest = shownSymbols.filter((s) => !posSet.has(s))
     const autoAdd = posSyms.filter((s) => pool.includes(s) && !shownSymbols.includes(s))
-    return [...inList, ...rest, ...autoAdd]
+    // 持仓币种（含自动添加的）整体排在非持仓币种之前
+    return [...inList, ...autoAdd, ...rest]
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownSymbols.join(","), posSyms.join(","), pool.join(",")])
 
