@@ -90,6 +90,9 @@ class QuantEngine:
         self._trades_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant-trades.json")
         self._pos_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant-positions.json")
         self._unsupported_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant-unsupported.json")
+        self._manual_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant-manual.json")
+        self._manual: set[tuple[str, str]] = set()   # (account, symbol) 手动仓位：引擎不干预止盈止损
+        self._manual_mtime = 0.0
         self._load_trades()
         self._load_positions()
         self._load_unsupported()
@@ -155,6 +158,27 @@ class QuantEngine:
                 self._event("system", f"恢复未平仓持仓 {n} 个（含 entry 价与开仓时间）")
         except Exception as e:
             self._event("error", f"持仓状态恢复失败: {e}")
+
+    # ---------- 手动仓位注册表（文件热加载：外部脚本开仓后引擎自动放行） ----------
+
+    def _manual_reload(self) -> None:
+        try:
+            mtime = os.path.getmtime(self._manual_path)
+        except OSError:
+            if self._manual:
+                self._manual = set()
+                self._manual_mtime = 0
+            return
+        if mtime == self._manual_mtime:
+            return
+        self._manual_mtime = mtime
+        try:
+            with open(self._manual_path, encoding="utf-8") as f:
+                self._manual = {tuple(x.split("|", 1)) for x in (json.load(f) or [])}
+            self._event("system", f"手动仓位注册表更新: {len(self._manual)} 个",
+                        manual=sorted(f"{a}/{s}" for a, s in self._manual))
+        except Exception as e:
+            self._event("error", f"手动仓位注册表读取失败: {e}")
 
     # ---------- 交易所辅助 ----------
 
@@ -235,6 +259,13 @@ class QuantEngine:
                         symbol=symbol)
             return True
         return False
+
+    def _save_manual(self):
+        try:
+            with open(self._manual_path, "w", encoding="utf-8") as f:
+                json.dump(sorted(f"{a}|{s}" for a, s in self._manual), f, ensure_ascii=False)
+        except Exception:
+            pass
 
     def _save_unsupported(self):
         try:
@@ -416,8 +447,11 @@ class QuantEngine:
             if not a:
                 continue
             st = self._st(name)
+            self._manual_reload()
             peak_dirty = False
             for symbol in list(st["positions"].keys()):
+                if (name, symbol) in self._manual:
+                    continue        # 手动仓位：止盈止损交给交易所挂单，引擎不干预
                 pos = st["positions"][symbol]
                 price = self._mark_price(a, symbol)
                 if not price or price <= 0:
@@ -553,9 +587,12 @@ class QuantEngine:
                         st["positions"][sym] = pos
                         changed = True
                         self._event("audit", f"审计补记漏记持仓 {sym}", account=name, symbol=sym)
-                # 本地有、交易所已无 → 核销（含平仓熔断后卡住的记录）
+                # 本地有、交易所已无 → 核销（含平仓熔断后卡住的记录；手动仓位被止损/强平也在此清理）
                 for sym in list(st["positions"].keys()):
                     if sym not in live:
+                        if (name, sym) in self._manual:
+                            self._manual.discard((name, sym))
+                            self._save_manual()
                         pos = st["positions"].pop(sym)
                         changed = True
                         was_stuck = pos.get("closeFails", 0) >= 3
