@@ -577,9 +577,11 @@ class QuantEngine:
                     sym = p.get("symbol", "").lower()
                     live[sym] = {"amt": amt, "price": float(p.get("markPrice", 0) or 0)}
                 changed = False
-                # 交易所有、本地漏记 → 补记
+                # 交易所有、本地漏记 → 补记（手动仓位除外：纳入跟踪会被止盈止损规则误平）
                 for sym, li in live.items():
                     if sym not in st["positions"]:
+                        if (name, sym) in self._manual:
+                            continue
                         pos = {"symbol": sym, "side": "BUY" if li["amt"] > 0 else "SELL",
                                "qty": abs(li["amt"]), "entry": li["price"] or 0, "entryTs": _now_ms(),
                                "orderId": None, "pattern": None, "direction": None,
@@ -606,6 +608,13 @@ class QuantEngine:
                         pos["qty"] = abs(li["amt"])
                         changed = True
                         self._event("audit", f"审计修正持仓数量 {sym} → {abs(li['amt'])}", account=name, symbol=sym)
+                # 豁免登记的仓位在交易所已不存在（未被跟踪故未走上面核销）→ 清理登记，
+                # 否则残留豁免会让量化引擎后续在同账户同币种开的仓绕过止盈止损
+                for (n, sym) in list(self._manual):
+                    if n == name and sym not in live:
+                        self._manual.discard((n, sym))
+                        self._save_manual()
+                        self._event("audit", f"清理已平手动仓位的豁免登记 {sym}", account=name, symbol=sym)
                 if changed:
                     self._save_positions()
                 # 审计周期重置平仓失败计数：熔断只是暂停，不是永久放弃（下次重试）

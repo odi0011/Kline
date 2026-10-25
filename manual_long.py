@@ -1,5 +1,11 @@
 """手动开仓：BTCUSDT 1/3仓做多，杠杆从 150 向下试探交易所允许的最高档，
-止损单挂在强平价上方 0.2%（STOP_MARKET 全平），并注册引擎放行（不干预止盈止损）。"""
+止损挂在强平价上方 0.2%（algo 条件单 STOP_MARKET），并注册引擎放行。
+
+血泪教训：登记必须先于挂 SL——曾因 SL 接口报错脚本中断，
+量化引擎把手动仓当自己的仓在 +0.18% 止盈线市价平掉。
+algo 条件单接口（2025-12 迁移）：closePosition 在测试盘会报 -4509/-4006，
+必须用 quantity + reduceOnly=true。
+"""
 import json
 import math
 import os
@@ -77,28 +83,38 @@ order = signed_request(KEY, SECRET, "/fapi/v1/order",
                        {"symbol": SYMBOL, "side": "BUY", "type": "MARKET", "quantity": qty,
                         "newOrderRespType": "RESULT"}, method="POST")
 
-# 6. 强平价与止损单（触发即全平该仓）
+# 6. 立即登记引擎放行（必须先于挂 SL：挂单失败也不能让量化引擎接管此仓）
+mp = "quant-manual.json"
+cur = []
+if os.path.exists(mp):
+    cur = json.load(open(mp)) or []
+entry_key = f"{ACCT_NAME}|{SYMBOL.lower()}"
+if entry_key not in cur:
+    cur.append(entry_key)
+json.dump(cur, open(mp, "w"))
+
+# 7. 强平价 + 止损（algo 条件单：quantity + reduceOnly，closePosition 测试盘不可用）
 pr = signed_request(KEY, SECRET, "/fapi/v2/positionRisk", {"symbol": SYMBOL})
 pos = next(p for p in pr if p.get("symbol") == SYMBOL)
 liq = float(pos.get("liquidationPrice") or 0)
 entry = float(pos.get("entryPrice") or price)
 sl = round(liq * SL_ABOVE_LIQ / tick) * tick
+live_amt = abs(float(pos.get("positionAmt") or 0))
 
-sl_order = signed_request(KEY, SECRET, "/fapi/v1/order",
-                          {"symbol": SYMBOL, "side": "SELL", "type": "STOP_MARKET",
-                           "stopPrice": sl, "closePosition": "true",
-                           "workingType": "MARK_PRICE", "newOrderRespType": "RESULT"},
-                          method="POST")
-
-# 7. 注册引擎放行（量化引擎不干预此仓的止盈止损）
-mp = "quant-manual.json"
-cur = []
-if os.path.exists(mp):
-    cur = json.load(open(mp)) or []
-entry_key = f"{ACCT_NAME}|btcusdt"
-if entry_key not in cur:
-    cur.append(entry_key)
-json.dump(cur, open(mp, "w"))
+sl_result = {}
+try:
+    placed = signed_request(KEY, SECRET, "/fapi/v1/algoOrder",
+                            {"algoType": "CONDITIONAL", "symbol": SYMBOL, "side": "SELL",
+                             "type": "STOP_MARKET", "quantity": f"{live_amt:.3f}",
+                             "reduceOnly": "true", "triggerPrice": f"{sl:.2f}",
+                             "workingType": "MARK_PRICE", "newOrderRespType": "RESULT"},
+                            method="POST")
+    aid = placed.get("algoId")
+    st = signed_request(KEY, SECRET, "/fapi/v1/algoOrder", {"algoId": aid})
+    sl_result = {"algoId": aid, "algoStatus": st.get("algoStatus"),
+                 "triggerPrice": st.get("triggerPrice"), "quantity": st.get("quantity")}
+except Exception as e:
+    sl_result = {"error": str(e)[:200]}
 
 print(json.dumps({
     "account": ACCT_NAME,
@@ -107,12 +123,13 @@ print(json.dumps({
     "leverageNote": f"交易所分档上限：该保证金规模下最高 {lev}x（150x 超出 BTCUSDT 分档限制）",
     "available": avail,
     "margin": margin,
-    "qty": qty,
-    "notional": round(qty * price, 2),
+    "qty": live_amt,
+    "notional": round(live_amt * entry, 2),
     "entry": entry,
     "liquidationPrice": liq,
     "stopLoss": sl,
     "slDistanceFromEntryPct": round((entry - sl) / entry * 100, 3),
     "orderId": order.get("orderId"),
-    "slOrderId": sl_order.get("orderId"),
+    "stopLossOrder": sl_result,
+    "manualRegistered": entry_key,
 }, ensure_ascii=False, indent=1))
