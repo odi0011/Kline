@@ -117,8 +117,11 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         storage.save_hit(hit)
         hub.stats_dirty = True          # 触发 pattern_stats 广播
         if hit.mode == "confirmed":
-            quant.on_signal({"symbol": hit.symbol, "direction": hit.direction,
-                             "pattern": hit.pattern, "name_zh": hit.name_zh})
+            # 量化引擎里的交易所调用是同步 HTTP，放线程池执行，避免卡住K线主事件循环
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, quant.on_signal,
+                                 {"symbol": hit.symbol, "direction": hit.direction,
+                                  "pattern": hit.pattern, "name_zh": hit.name_zh})
 
     engine = PatternEngine(enabled, notify_with_lag,
                            live_preview=bool(pcfg.get("live_preview", True)))
@@ -218,9 +221,16 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         hist = list(agg.history)
         return hist[-1].close if hist else None
 
-    quant = QuantEngine(accts_box, config_path, price_fn=_price_fn)
-    quant.enabled = bool(cfg.get("quant", {}).get("enabled", True))
-    quant.broadcast_fn = lambda obj: asyncio.create_task(hub.broadcast(obj))
+    qcfg = cfg.get("quant", {})
+    quant = QuantEngine(accts_box, config_path, price_fn=_price_fn,
+                        min_pattern_winrate=float(qcfg.get("min_pattern_winrate", 0.35)),
+                        min_pattern_samples=int(qcfg.get("min_pattern_samples", 5)))
+    quant.enabled = bool(qcfg.get("enabled", True))
+    quant.pattern_stats_fn = storage.pattern_stats
+    # 量化引擎在线程池中运行；广播用 call_soon_threadsafe 回到事件循环（线程安全）
+    _loop = asyncio.get_running_loop()
+    quant.broadcast_fn = lambda obj: _loop.call_soon_threadsafe(
+        lambda: asyncio.create_task(hub.broadcast(obj)))
     hub.quant_fn = quant.snapshot
 
     def on_evt(sym, iv, candle, closed, history):
@@ -286,11 +296,11 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             for agg in aggs.values():
                 agg.sweep(now)
             try:
-                quant.manage()                       # 止损/止盈监控（每 5 秒）
+                await asyncio.to_thread(quant.manage)    # 止损/止盈监控（每 5 秒，线程池内不卡主循环）
                 qtick += 1
                 if qtick % 10 == 0:                  # 约 5 秒广播一次量化快照
                     asyncio.create_task(hub.broadcast({"type": "quant", "snapshot": quant.snapshot()}))
-                quant.audit()                        # 5 分钟自审计（引擎内部自限流）
+                await asyncio.to_thread(quant.audit)  # 5 分钟自审计（引擎内部自限流）
             except Exception as e:
                 print(f"[quant] 运行异常: {e}")
 

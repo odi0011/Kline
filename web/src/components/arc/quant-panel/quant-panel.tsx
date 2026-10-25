@@ -6,6 +6,7 @@ import { useMemo } from "react"
 import { Activity, ArrowRight, CircleDot, XCircle, CheckCircle2, Zap, AlertTriangle } from "lucide-react"
 import CoinAvatar from "@/components/ui/coin-avatar"
 import { AnimatedCounter } from "@/components/arc/animated-counter/animated-counter"
+import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import styles from "./quant-panel.module.css"
 
 const KIND_META = {
@@ -103,10 +104,12 @@ export default function QuantPanel({ snapshot, chartColors, onToggle }) {
             <span className={styles.colTitle}>决策流水</span>
             <span className={styles.colHint}>每一步都记录</span>
           </div>
-          <div className={styles.scroll}>
-            {events.map((ev, i) => <EventRow key={`${ev.ts}-${i}`} ev={ev} chartColors={chartColors} />)}
-            {events.length === 0 && <div className={styles.empty}>等待首个信号…</div>}
-          </div>
+          <ScrollArea className={styles.scrollArea}>
+            <div className={styles.list}>
+              {events.map((ev, i) => <EventRow key={`${ev.ts}-${i}`} ev={ev} chartColors={chartColors} />)}
+              {events.length === 0 && <div className={styles.empty}>等待首个信号…</div>}
+            </div>
+          </ScrollArea>
         </section>
 
         {/* 当前持仓 */}
@@ -115,24 +118,26 @@ export default function QuantPanel({ snapshot, chartColors, onToggle }) {
             <span className={styles.colTitle}>当前持仓</span>
             <span className={styles.colHint}>{positions.length} 仓</span>
           </div>
-          <div className={styles.scroll}>
-            {positions.map((p) => (
-              <div key={`${p.account}-${p.symbol}`} className={styles.posRow}>
-                <CoinAvatar symbol={p.symbol} size={18} />
-                <span className={styles.posSym}>{p.symbol.toUpperCase()}</span>
-                <span className={styles.posSide} data-side={p.side === "BUY" ? "long" : "short"}>
-                  {p.side === "BUY" ? "多" : "空"}
-                </span>
-                <span className={styles.posQty}>{Number(p.qty).toLocaleString()}</span>
-                <span className={styles.posPnl} style={{ color: p.upnl >= 0 ? chartColors.up : chartColors.down }}>
-                  {p.upnl >= 0 ? "+" : "-"}
-                  <AnimatedCounter value={Math.abs(p.upnl)} decimals={2} />
-                  <em>{fmtPct(p.movePct)}</em>
-                </span>
-              </div>
-            ))}
-            {positions.length === 0 && <div className={styles.empty}>暂未持仓</div>}
-          </div>
+          <ScrollArea className={styles.scrollArea}>
+            <div className={styles.list}>
+              {positions.map((p) => (
+                <div key={`${p.account}-${p.symbol}`} className={styles.posRow}>
+                  <CoinAvatar symbol={p.symbol} size={18} />
+                  <span className={styles.posSym}>{p.symbol.toUpperCase()}</span>
+                  <span className={styles.posSide} data-side={p.side === "BUY" ? "long" : "short"}>
+                    {p.side === "BUY" ? "多" : "空"}
+                  </span>
+                  <span className={styles.posQty}>{Number(p.qty).toLocaleString()}</span>
+                  <span className={styles.posPnl} style={{ color: p.upnl >= 0 ? chartColors.up : chartColors.down }}>
+                    {p.upnl >= 0 ? "+" : "-"}
+                    <AnimatedCounter value={Math.abs(p.upnl)} decimals={2} />
+                    <em>{fmtPct(p.movePct)}</em>
+                  </span>
+                </div>
+              ))}
+              {positions.length === 0 && <div className={styles.empty}>暂未持仓</div>}
+            </div>
+          </ScrollArea>
         </section>
 
         {/* 平仓记录 */}
@@ -141,23 +146,25 @@ export default function QuantPanel({ snapshot, chartColors, onToggle }) {
             <span className={styles.colTitle}>平仓记录</span>
             {winRate != null && <span className={styles.winRate}>胜率 {winRate}%</span>}
           </div>
-          <div className={styles.scroll}>
-            {trades.map((t, i) => (
-              <div key={`${t.ts}-${i}`} className={styles.tradeRow}>
-                <span className={styles.tTime}>{fmtClock(t.ts)}</span>
-                <span className={styles.posSym}>{t.symbol.replace(/usdt$/i, "").toUpperCase()}</span>
-                <span className={styles.posSide} data-side={t.side === "BUY" ? "long" : "short"}>
-                  {t.side === "BUY" ? "多" : "空"}
-                </span>
-                <span className={styles.tReason}>{t.reason}</span>
-                <span className={styles.tHold}>{t.holdMin}m</span>
-                <span className={styles.posPnl} style={{ color: t.pnl >= 0 ? chartColors.up : chartColors.down }}>
-                  {t.pnl > 0 ? "+" : ""}{t.pnl}
-                </span>
-              </div>
-            ))}
-            {trades.length === 0 && <div className={styles.empty}>暂无平仓记录</div>}
-          </div>
+          <ScrollArea className={styles.scrollArea}>
+            <div className={styles.list}>
+              {trades.map((t, i) => (
+                <div key={`${t.ts}-${i}`} className={styles.tradeRow}>
+                  <span className={styles.tTime}>{fmtClock(t.ts)}</span>
+                  <span className={styles.posSym}>{t.symbol.replace(/usdt$/i, "").toUpperCase()}</span>
+                  <span className={styles.posSide} data-side={t.side === "BUY" ? "long" : "short"}>
+                    {t.side === "BUY" ? "多" : "空"}
+                  </span>
+                  <span className={styles.tReason}>{t.reason}</span>
+                  <span className={styles.tHold}>{t.holdMin}m</span>
+                  <span className={styles.posPnl} style={{ color: t.pnl >= 0 ? chartColors.up : chartColors.down }}>
+                    {t.pnl > 0 ? "+" : ""}{t.pnl}
+                  </span>
+                </div>
+              ))}
+              {trades.length === 0 && <div className={styles.empty}>暂无平仓记录</div>}
+            </div>
+          </ScrollArea>
         </section>
       </div>
     </div>

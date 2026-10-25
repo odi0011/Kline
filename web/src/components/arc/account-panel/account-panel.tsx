@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { createChart, AreaSeries, ColorType } from "lightweight-charts"
 import { AnimatedCounter } from "@/components/arc/animated-counter/animated-counter"
+import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import CoinAvatar from "@/components/ui/coin-avatar"
 import styles from "./account-panel.module.css"
 
@@ -167,14 +168,16 @@ export default function AccountPanel({ account, series, chartColors }) {
         </div>
         <div className={styles.posBox}>
           <span className={styles.chartTitle}>当前持仓</span>
-          <div className={styles.posList}>
-            {positions.map((p) => (
-              <PositionRow key={p.symbol} p={p} chartColors={chartColors} />
-            ))}
-            {positions.length === 0 && (
-              <div className={styles.emptyTxt}>该账户当前没有持仓</div>
-            )}
-          </div>
+          <ScrollArea className={styles.posScroll}>
+            <div className={styles.posList}>
+              {positions.map((p) => (
+                <PositionRow key={p.symbol} p={p} chartColors={chartColors} />
+              ))}
+              {positions.length === 0 && (
+                <div className={styles.emptyTxt}>该账户当前没有持仓</div>
+              )}
+            </div>
+          </ScrollArea>
         </div>
       </div>
     </div>

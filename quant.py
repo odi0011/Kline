@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import functools
 import json
 import math
 import os
@@ -23,6 +24,16 @@ from collections import deque
 from accounts import signed_request
 
 BASE = "https://testnet.binancefuture.com"
+
+
+def _serialized(fn):
+    """引擎操作串行化：on_signal/manage/audit 里的交易所调用在线程池中执行，
+    可能并发进入；一把粗锁保证状态互斥，同时不阻塞 K线 主事件循环。"""
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self._op_lock:
+            return fn(self, *args, **kwargs)
+    return wrapper
 
 # 止盈止损标定历经三版（每版都是真实成交样本驱动）：
 #   v1 SL-0.35%/TP+0.75%：9 笔胜率 33%，止损被正常波动扫出
@@ -53,11 +64,17 @@ def _now_ms() -> int:
 
 
 class QuantEngine:
-    def __init__(self, accts_box: dict, config_path: str, price_fn=None):
+    def __init__(self, accts_box: dict, config_path: str, price_fn=None,
+                 min_pattern_winrate: float = 0.35, min_pattern_samples: int = 5):
         self.accts_box = accts_box          # main 的账户盒子（list/refresh）
         self.config_path = config_path
         self.price_fn = price_fn            # symbol -> 最新价（来自聚合器）
         self.enabled = True
+        # 信号质量门：历史胜率过低的形态不再入场（与形态统计系统联动）
+        self.pattern_stats_fn = None        # main 注入：storage.pattern_stats
+        self.min_pattern_winrate = min_pattern_winrate
+        self.min_pattern_samples = min_pattern_samples
+        self._op_lock = threading.RLock()   # 引擎操作互斥（配合线程池卸载）
         self.state: dict[str, dict] = {}    # name -> {positions:{sym:{}}, cooldown:{sym:ts}, trades:[], seq:int}
         self.events: deque = deque(maxlen=60)   # 决策/事件流水（广播给前端）
         self.stats = {"signals": 0, "decisions": 0, "orders": 0, "closes": 0, "errors": 0, "wins": 0, "losses": 0}
@@ -246,6 +263,7 @@ class QuantEngine:
 
     # ---------- 信号入口（收线确认信号驱动） ----------
 
+    @_serialized
     def on_signal(self, hit: dict) -> None:
         """确认信号 → 逐账户决策开仓。任何异常只记录并跳过。"""
         if not self.enabled:
@@ -299,6 +317,18 @@ class QuantEngine:
         if same_dir >= MAX_SAME_DIR:
             self._event("skip", f"同方向持仓已达上限({MAX_SAME_DIR})", account=name, symbol=symbol)
             return
+        # 风控 3.7：形态历史胜率质量门——胜率过低的形态不入场（与形态统计系统联动）
+        if self.pattern_stats_fn:
+            pst = (self.pattern_stats_fn() or {}).get(hit.get("pattern"))
+            if pst:
+                n_dec = pst["wins"] + pst["losses"]
+                if n_dec >= self.min_pattern_samples:
+                    wr = pst["wins"] / n_dec
+                    if wr < self.min_pattern_winrate:
+                        self._event("skip",
+                                    f"形态历史胜率过低({round(wr * 100)}%, n={n_dec})，质量门拦截",
+                                    account=name, symbol=symbol)
+                        return
         # 风控 4：可用余额与保证金
         avail = self._available(a)
         margin = max(MARGIN_MIN, round(avail * MARGIN_PCT, 2))
@@ -371,6 +401,7 @@ class QuantEngine:
             self._event("error", f"标记价获取失败({symbol}): {e}", symbol=symbol)
         return None
 
+    @_serialized
     def manage(self) -> None:
         """每 5 秒调用：盯每仓盈亏，触发止损/止盈即平仓。"""
         if not self.enabled:
@@ -489,6 +520,7 @@ class QuantEngine:
 
     # ---------- 每 5 分钟自审计（对账 + 兜底） ----------
 
+    @_serialized
     def audit(self) -> None:
         """用交易所 positionRisk 对账：漏记补记、已平核销、卡单标记。"""
         if not self.enabled or _now_ms() - self.last_audit_ms < AUDIT_SEC * 1000:

@@ -58,13 +58,9 @@
 .colHint { font-size: 10px; color: var(--text-muted, #8b949e); }
 .winRate { font-size: 10px; font-weight: 700; color: var(--accent-deep, #b45309); }
 
-.scroll {
-  flex: 1; min-height: 0;
-  overflow-y: auto; overscroll-behavior: contain;
-  display: flex; flex-direction: column; gap: 3px;
-  scrollbar-width: none; -ms-overflow-style: none;
-}
-.scroll::-webkit-scrollbar { display: none; }
+/* 滚动区改用 uiarc ScrollArea（规范约定）：容器只负责弹性占位 */
+.scrollArea { flex: 1; min-height: 0; }
+.list { display: flex; flex-direction: column; gap: 3px; }
 
 /* 决策流水行 */
 .evRow {
