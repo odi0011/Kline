@@ -25,6 +25,10 @@ from server.hub import BroadcastHub
 from storage import Storage
 from accounts import fetch_account
 
+MASK_SEC = "••••••••"
+MASK_KEY = "····"
+
+
 def load_config(path: str) -> dict:
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
@@ -130,10 +134,17 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         except Exception as e:
             print(f"[settings] 配置写入失败: {e}")
 
+    def _mask_key(k: str) -> str:
+        k = k or ""
+        return (k[:6] + MASK_KEY + k[-4:]) if len(k) > 12 else (MASK_SEC if k else "")
+
     def current_settings() -> dict:
+        # 凭据绝不出网：settings 会广播给所有 WS 客户端（端口在公网），
+        # 只下发掩码；前端回传掩码时由 apply_settings 换回服务端保存的原值。
         return {
             "accounts": [{"name": a.get("name", ""), "icon": a.get("icon", ""),
-                          "api_key": a.get("api_key", ""), "api_secret": a.get("api_secret", "")}
+                          "api_key": _mask_key(a.get("api_key", "")),
+                          "api_secret": MASK_SEC if a.get("api_secret") else ""}
                          for a in accts_box["list"]],
             "patterns": {"enabled": [p.key for p in engine.patterns],
                          "live_preview": engine.live_preview,
@@ -146,14 +157,22 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         """应用设置弹窗下发的变更：运行时热生效 + 持久化到 config.yaml。"""
         accounts = s.get("accounts")
         if isinstance(accounts, list):
+            prev = {a.get("name"): a for a in accts_box["list"]}
             clean = []
             for a in accounts:
                 if not isinstance(a, dict):
                     continue
                 name = str(a.get("name", "")).strip()[:40]
+                if not name:
+                    continue
                 key = str(a.get("api_key", "")).strip()
                 secret = str(a.get("api_secret", "")).strip()
-                if not name or not key or not secret:
+                # 掩码表示"沿用服务端原值"（前端从不持有明文凭据）
+                if MASK_KEY in key or key == MASK_SEC:
+                    key = str((prev.get(name) or {}).get("api_key", "") or "").strip()
+                if MASK_SEC in secret:
+                    secret = str((prev.get(name) or {}).get("api_secret", "") or "").strip()
+                if not key or not secret:
                     continue
                 clean.append({"name": name, "api_key": key, "api_secret": secret,
                               "icon": str(a.get("icon", ""))[:300000]})
@@ -203,10 +222,6 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     quant.enabled = bool(cfg.get("quant", {}).get("enabled", True))
     quant.broadcast_fn = lambda obj: asyncio.create_task(hub.broadcast(obj))
     hub.quant_fn = quant.snapshot
-    hub.quant_signal_fn = lambda msg: quant.on_signal({
-        "symbol": msg.get("symbol"), "direction": msg.get("direction"),
-        "pattern": msg.get("pattern"), "name_zh": msg.get("name_zh"),
-    })
 
     def on_evt(sym, iv, candle, closed, history):
         if closed:

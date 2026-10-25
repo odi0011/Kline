@@ -56,7 +56,6 @@ class BroadcastHub:
         self.settings_fn = None           # 当前可编辑设置（main 注入）
         self.on_settings = None           # 客户端下发设置时的回调：应用+持久化，返回新设置
         self.quant_fn = None              # 量化快照（main 注入）
-        self.quant_signal_fn = None       # 测试用：注入量化信号（main 注入）
 
     # ---- 聚合器回调（与 PatternEngine 并联） ----
 
@@ -79,6 +78,25 @@ class BroadcastHub:
         return [c.open_time // 1000, c.open, c.high, c.low, c.close, round(c.volume, 4)]
 
     # ---- WS 服务 ----
+
+    @staticmethod
+    def _same_origin(ws) -> bool:
+        """写操作只接受同源浏览器连接（防第三方页面跨站改配置/停量化）。
+        无 Origin（非浏览器客户端）或无法解析时放行——真正的身份认证不在本层。"""
+        try:
+            req = getattr(ws, "request", None)
+            headers = req.headers if req is not None else {}
+            origin = headers.get("Origin")
+            host = headers.get("Host", "")
+            if not origin:
+                return True
+            from urllib.parse import urlsplit
+            o = urlsplit(origin)
+            o_host = (o.hostname or "").lower()
+            h_host = (host.split(":")[0] or "").lower()
+            return bool(o_host) and o_host == h_host
+        except Exception:
+            return True
 
     async def start(self) -> None:
         logger = logging.getLogger("websockets.server")
@@ -131,15 +149,16 @@ class BroadcastHub:
                     msg = json.loads(raw)
                     mtype = msg.get("type")
                     if mtype == "set_detect_interval" and self.on_detect:
-                        self.on_detect(msg.get("interval"))
+                        if self._same_origin(ws):
+                            self.on_detect(msg.get("interval"))
                     elif mtype == "set_settings" and self.on_settings:
+                        if not self._same_origin(ws):
+                            print("[settings] 拒绝跨源 set_settings")
+                            continue
                         print(f"[settings] 收到 set_settings: {str(msg.get('settings'))[:150]}")
                         new_settings = self.on_settings(msg.get("settings") or {})
                         await ws.send(json.dumps({"type": "settings", "settings": new_settings},
                                                  separators=(",", ":")))
-                    elif mtype == "test_quant_signal" and self.quant_signal_fn:
-                        self.quant_signal_fn(msg)
-                        print(f"[quant] 收到测试信号: {msg.get('symbol')} {msg.get('direction')}")
                     elif mtype == "query_bar" and self.query_fn:
                         sym, iv = msg.get("symbol"), msg.get("interval")
                         ot = int(msg.get("open_time") or 0)
