@@ -3,12 +3,35 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 
 import websockets
 
 FLUSH_SEC = 0.2
 HISTORY_BARS = 200
+
+# 端口暴露在公网，扫描器/误连的 HTTP 客户端会反复触发握手异常。
+# 这些是预期内的客户端问题，只留一行摘要，不写 traceback，否则真正的故障会被刷没。
+_EXPECTED_WS_ERRORS = (
+    "InvalidUpgrade", "InvalidMessage", "InvalidStatus", "InvalidHandshake",
+    "NegotiationError", "ConnectionClosed", "ConnectionClosedOK", "ConnectionClosedError",
+)
+
+
+class _WSErrorNoiseFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        exc = record.exc_info[1] if record.exc_info else None
+        if exc is None or type(exc).__name__ not in _EXPECTED_WS_ERRORS:
+            return True
+        record.exc_info = None
+        record.exc_text = None
+        record.msg = f"{record.msg} ({type(exc).__name__})"
+        return True
+
+
+def _is_expected_ws_error(exc: BaseException) -> bool:
+    return type(exc).__name__ in _EXPECTED_WS_ERRORS
 
 
 class BroadcastHub:
@@ -58,7 +81,12 @@ class BroadcastHub:
     # ---- WS 服务 ----
 
     async def start(self) -> None:
-        server = await websockets.serve(self._handler, "0.0.0.0", self.port, max_size=2**22)
+        logger = logging.getLogger("websockets.server")
+        if not any(isinstance(f, _WSErrorNoiseFilter) for f in logger.filters):
+            logger.addFilter(_WSErrorNoiseFilter())
+        server = await websockets.serve(
+            self._handler, "0.0.0.0", self.port, max_size=2**22, logger=logger,
+        )
         print(f"[ws] 行情推送 ws://127.0.0.1:{self.port}")
         asyncio.create_task(self._flusher())
         return server
@@ -123,10 +151,13 @@ class BroadcastHub:
                 except Exception:
                     import traceback
                     traceback.print_exc()
-        except Exception:
-            import traceback
-            print("[ws] 连接异常关闭:")
-            traceback.print_exc()
+        except Exception as e:
+            if _is_expected_ws_error(e):
+                print(f"[ws] 客户端连接结束: {type(e).__name__}")
+            else:
+                import traceback
+                print("[ws] 连接异常关闭:")
+                traceback.print_exc()
         finally:
             self.clients.discard(ws)
             print(f"[ws] 客户端断开 ({len(self.clients)} 个在线)")
