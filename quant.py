@@ -32,7 +32,14 @@ BASE = "https://testnet.binancefuture.com"
 # +0.10~0.23% 区间，故止盈下调到 +0.18%（约 3m 振幅中位的 2 倍，可稳定触及）。
 SL_PCT = -0.005      # 止损 -0.50%（保持，避免被正常波动扫出）
 TP_PCT = 0.0018      # 止盈 +0.18%（可触及区间，配合超时兜底）
-MAX_HOLD_MIN = 60    # 超时平仓：45 分钟窗口多次证明来不及走完，放宽到 60 分钟
+MAX_HOLD_MIN = 60    # 超时平仓：持仓超过 60 分钟未触发止盈止损则市价了结，释放槽位
+# 移动止盈（解决"浮盈变浮亏"）：34 笔样本中 24 笔超时出场合计 -4.2，
+# 多数曾有小额浮盈但回落到超时平仓时已转亏。规则：
+#   · 浮盈 ≥ TRAIL_ARM（+0.10%）后启用保护
+#   · 从最高浮盈回撤 ≥ TRAIL_GAP（0.06%）即平仓，锁定剩余利润
+#   · 未达 +0.10% 的仓位不启用（避免正常波动频繁触发）
+TRAIL_ARM = 0.0010   # 启用移动止盈的浮盈门槛 +0.10%
+TRAIL_GAP = 0.0006   # 从峰值回撤多少平仓 0.06%
 MARGIN_PCT = 0.05    # 单仓保证金占可用余额比例
 MARGIN_MIN = 10.0    # 单仓保证金下限（USDT）
 MAX_POSITIONS = 4    # 每账户最大同时持仓数
@@ -386,9 +393,18 @@ class QuantEngine:
                 direction_up = pos["side"] == "BUY"
                 move = (price - pos["entry"]) / pos["entry"] * (1 if direction_up else -1)
                 hold_min = (now - pos.get("entryTs", now)) / 60000
+                # 记录峰值浮盈（移动止盈用）
+                peak = pos.get("peak", move)
+                if move > peak:
+                    peak = move
+                    pos["peak"] = move
                 if move <= SL_PCT or move >= TP_PCT:
                     reason = "止盈" if move >= TP_PCT else "止损"
                     self._close(name, a, symbol, price, f"{reason}({move * 100:.2f}%)")
+                elif peak >= TRAIL_ARM and move <= peak - TRAIL_GAP:
+                    # 移动止盈：浮盈曾达门槛，回撤到阈值 → 锁定剩余利润
+                    self._close(name, a, symbol, price,
+                                f"移动止盈(峰值{peak * 100:.2f}%→{move * 100:.2f}%)")
                 elif hold_min >= MAX_HOLD_MIN:
                     # 超时出场：避免窄幅震荡时仓位长期占满槽位（策略停摆兜底）
                     self._close(name, a, symbol, price, f"超时({hold_min:.0f}min,{move * 100:.2f}%)")
