@@ -393,11 +393,13 @@ class QuantEngine:
                 direction_up = pos["side"] == "BUY"
                 move = (price - pos["entry"]) / pos["entry"] * (1 if direction_up else -1)
                 hold_min = (now - pos.get("entryTs", now)) / 60000
-                # 记录峰值浮盈（移动止盈用）
-                peak = pos.get("peak", move)
+                # 记录峰值浮盈（移动止盈用）：首次进入即初始化，之后只升不降
+                prev_peak = pos.get("peak")
+                peak = move if prev_peak is None else prev_peak
                 if move > peak:
                     peak = move
-                    pos["peak"] = move
+                if prev_peak is None or peak > prev_peak + 0.0001:
+                    pos["peak"] = peak      # 首次/明显创新高才写盘，避免每 5 秒刷盘
                 if move <= SL_PCT or move >= TP_PCT:
                     reason = "止盈" if move >= TP_PCT else "止损"
                     self._close(name, a, symbol, price, f"{reason}({move * 100:.2f}%)")
