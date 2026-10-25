@@ -385,6 +385,7 @@ class QuantEngine:
             if not a:
                 continue
             st = self._st(name)
+            peak_dirty = False
             for symbol in list(st["positions"].keys()):
                 pos = st["positions"][symbol]
                 price = self._mark_price(a, symbol)
@@ -399,7 +400,8 @@ class QuantEngine:
                 if move > peak:
                     peak = move
                 if prev_peak is None or peak > prev_peak + 0.0001:
-                    pos["peak"] = peak      # 首次/明显创新高才写盘，避免每 5 秒刷盘
+                    pos["peak"] = peak      # 首次/明显创新高才标记，循环结束统一写盘
+                    peak_dirty = True
                 if move <= SL_PCT or move >= TP_PCT:
                     reason = "止盈" if move >= TP_PCT else "止损"
                     self._close(name, a, symbol, price, f"{reason}({move * 100:.2f}%)")
@@ -410,6 +412,8 @@ class QuantEngine:
                 elif hold_min >= MAX_HOLD_MIN:
                     # 超时出场：避免窄幅震荡时仓位长期占满槽位（策略停摆兜底）
                     self._close(name, a, symbol, price, f"超时({hold_min:.0f}min,{move * 100:.2f}%)")
+            if peak_dirty:
+                self._save_positions()      # 峰值更新落盘，重启后移动止盈仍可用
 
     def _live_amt(self, api_key: str, api_secret: str, symbol: str) -> float | None:
         """查交易所该币种真实持仓量（平仓必须用它，本地记录可能因部分成交而不准）。"""
