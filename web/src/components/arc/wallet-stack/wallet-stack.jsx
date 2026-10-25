@@ -1,13 +1,12 @@
 /* 钱包堆叠：悬停展开、点击置前。
-   卡片材质 = 账户色相衍生的水彩背景（gradient-engine paintRecipe 静态绘制）；
+   卡片材质 = 账户色相派生的淡雅渐变（CSS 变量 --acct-hue 驱动，styles.css 绘制）；
    内容 = 账户名 + 权益动画数字 + 未实现盈亏（跟随全局涨跌色）+ 权益迷你曲线
    （hover 联动上方两个动画数字）。 */
 import { useEffect, useRef, useState } from "react"
 import { motion } from "motion/react"
 import { AnimatedCounter } from "@/components/arc/animated-counter/animated-counter"
 import EquityCurve from "./equity-curve"
-import { accountHue, deriveStops, TEMPLATE_PRESET } from "@/lib/account-theme"
-import { paintWatercolor } from "@/lib/gradient-engine.js"
+import { accountHue } from "@/lib/account-theme"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 
 const spring = { type: "spring", stiffness: 420, damping: 36, mass: 0.9 }
@@ -17,52 +16,6 @@ const STACK_GAP = 12
 // 收起时最前一张卡底边落在 188（= 顶部留白2 + 形态卡186，同形态卡底线）
 const STACK_ZONE_H = 192
 const STACK_BOTTOM_LINE = 188
-
-/* 账户色相衍生的水彩背景（动态）：完全按引擎官方组件的驱动方式——
-   每帧 时间 += speed/100 × 1.2 × min(0.05, 帧间隔秒)，paintWatercolor 交互模式渲染。
-   无 WebGL（引擎退化为 CPU 逐像素）时只画静态一帧。 */
-function AccountBackdrop({ name }) {
-  const ref = useRef(null)
-  useEffect(() => {
-    const c = ref.current
-    if (!c) return
-    const hue = accountHue(name)
-    const stops = deriveStops(hue)
-    const params = TEMPLATE_PRESET.params
-    const seed = hue % 9999
-    const speed = TEMPLATE_PRESET.speed || 24
-    const glOk = !!document.createElement("canvas").getContext("webgl")
-    let raf = 0
-    let alive = true
-    let w = 0
-    let last = 0
-    const paint = (mode, time) => {
-      const cw = c.clientWidth, ch = c.clientHeight
-      if (!cw || !ch) return
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5)
-      const W = Math.round(cw * dpr), H = Math.round(ch * dpr)
-      if (c.width !== W) c.width = W
-      if (c.height !== H) c.height = H
-      const ctx = c.getContext("2d")
-      if (!ctx) return
-      try {
-        paintWatercolor(ctx, W, H, stops, params, seed, mode, time)
-      } catch { /* 保留渐变兜底 */ }
-    }
-    if (!glOk) { paint("export", 0); return () => { alive = false } }
-    const frame = (ne) => {
-      if (!alive) return
-      if (last) w += (speed / 100) * 1.2 * Math.min(0.05, (ne - last) / 1000)
-      last = ne
-      paint("interactive", w)
-      raf = requestAnimationFrame(frame)
-    }
-    raf = requestAnimationFrame(frame)
-    return () => { alive = false; cancelAnimationFrame(raf) }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name])
-  return <canvas ref={ref} className="wcard-bg" aria-hidden />
-}
 
 function rgba(hex, a) {
   const h = hex.replace("#", "")
@@ -81,8 +34,11 @@ function WalletCard({ account, front, series, chartColors, onPick }) {
   const dispBal = hoverS ? hoverS.bal : balance
 
   return (
-    <div className={"wcard" + (front ? " front" : "")} onClick={() => onPick(name)}>
-      <AccountBackdrop name={name} />
+    <div
+      className={"wcard" + (front ? " front" : "")}
+      style={{ "--acct-hue": hue }}
+      onClick={() => onPick(name)}
+    >
       <ScrollArea orientation="vertical" fade={10} className="wcard-scroll"
         style={{ position: "absolute", inset: "0 0 62px 0" }}>
         <div className="wcard-body">
