@@ -207,10 +207,10 @@ class QuantEngine:
         return r
 
     def _mark_unsupported(self, symbol: str, err: Exception) -> bool:
-        """识别"该合约未开通"类错误（如 TradFi 永续需先签协议 -4411），
+        """识别"该合约未开通"类错误（TradFi 永续需先签协议 -4411 或 -4131），
         标记后不再对该币种下单，避免反复失败刷日志。返回是否属于此类。"""
         msg = str(err)
-        if "-4411" in msg or "TradFi" in msg:
+        if any(code in msg for code in ("-4411", "-4131")) or "tradfi" in msg.lower():
             self._unsupported.add(symbol)
             self._save_unsupported()
             self._event("system",

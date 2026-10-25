@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -27,8 +28,17 @@ def signed_request(api_key: str, api_secret: str, path: str, params: dict | None
         data = b""
     req = urllib.request.Request(url, data=data, headers={"X-MBX-APIKEY": api_key},
                                  method=method.upper())
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        # 币安把错误码放在响应体里（如 -4411 未签 TradFi 协议）。
+        # 不读 body 就只能拿到 "HTTP Error 400"，上层无法区分错误类型。
+        try:
+            body = e.read().decode("utf-8", "replace")[:300]
+        except Exception:
+            body = ""
+        raise RuntimeError(f"HTTP {e.code}: {body or e.reason}") from e
 
 
 def fetch_positions(api_key: str, api_secret: str) -> list:
