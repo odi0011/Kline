@@ -13,6 +13,7 @@ import { AnimatedCounter } from '@/components/arc/animated-counter/animated-coun
 import CoinAvatar from '@/components/ui/coin-avatar'
 import SettingsDialog from '@/components/arc/settings-dialog/settings-dialog'
 import QuantPanel from '@/components/arc/quant-panel/quant-panel'
+import { hexHue } from './lib/account-theme'
 import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins, Settings } from 'lucide-react'
 
 const WS_PORT = 8765
@@ -70,8 +71,10 @@ export default function App() {
   settingsRef.current = settings
 
   // 外观即时生效：主题色 → --accent（菜单高亮/徽标等点缀），字体 → 全局
+  // 同时把主题色换算成色相变量，供账户卡等组件做同色系淡色材质
   useEffect(() => {
     document.documentElement.style.setProperty('--accent', ui.themeColor)
+    document.documentElement.style.setProperty('--accent-hue', String(hexHue(ui.themeColor).toFixed(1)))
   }, [ui.themeColor])
   useEffect(() => {
     const fonts = {
@@ -358,7 +361,7 @@ export default function App() {
             </ScrollArea>
           </div>
           <div className="wallet-zone">
-            <AccountCard account={account} series={accountSeries}
+            <AccountCard account={account} series={accountSeries} accent={ui.themeColor}
               chartColors={chartColors} />
           </div>
         </div>
