@@ -1,28 +1,33 @@
-/* 底部决策流水：单个无边框盒子，实时滚动显示引擎的全部决策与思考过程。
-   数据来自服务端 MySQL（按账户持久化，重启/刷新都不清空），
-   新事件到达时增量合并，滚动到底部时自动跟随。 */
-import { useEffect, useMemo, useRef, useState } from "react"
+/* 决策流水：只有记录列表，没有标题/状态/统计。
+   每条 = 图标（有币种用币种图标，否则用事件类型图标）+ 时间 + 内容 + tag + 盈亏。
+   内容单行显示，中间省略（保住括号尾注、价格等关键尾部信息）。
+   列表采用虚拟滚动：只渲染可视窗口内的行，历史几千条也不卡。
+   新到的行有入场动画（淡入 + 上滑 + 轻微缩放）。 */
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
-  Activity, AlertTriangle, ArrowRightLeft, CircleDot, Cog, PlayCircle,
-  Search, TrendingDown, TrendingUp, XCircle,
+  Activity, AlertTriangle, ArrowRightLeft, Cog, PlayCircle,
+  Search, XCircle,
 } from "lucide-react"
 import CoinAvatar from "@/components/ui/coin-avatar"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import styles from "./quant-panel.module.css"
 
+const ROW_H = 22          // 固定行高（虚拟滚动依赖固定高度）
+const OVERSCAN = 10       // 视口上下额外渲染行数
+const NEW_MS = 900        // 新行高亮/动画时长
+
 const KIND_META = {
-  signal: { label: "信号", Icon: Search, tone: "signal" },
-  open: { label: "开仓", Icon: PlayCircle, tone: "open" },
-  close: { label: "平仓", Icon: ArrowRightLeft, tone: "close" },
-  skip: { label: "跳过", Icon: XCircle, tone: "skip" },
-  error: { label: "错误", Icon: AlertTriangle, tone: "error" },
-  audit: { label: "审计", Icon: Activity, tone: "audit" },
-  system: { label: "系统", Icon: Cog, tone: "system" },
+  signal: { Icon: Search, tone: "signal" },
+  open: { Icon: PlayCircle, tone: "open" },
+  close: { Icon: ArrowRightLeft, tone: "close" },
+  skip: { Icon: XCircle, tone: "skip" },
+  error: { Icon: AlertTriangle, tone: "error" },
+  audit: { Icon: Activity, tone: "audit" },
+  system: { Icon: Cog, tone: "system" },
 }
 
 const pad = (n) => String(n).padStart(2, "0")
-
-/** 时间戳 → 北京时间 HH:MM:SS（ts 为 UTC 毫秒，+8h 后用 UTC 取值） */
+/** UTC 毫秒 → 北京时间 HH:MM:SS */
 const fmtClock = (ts) => {
   const d = new Date(ts + 8 * 3600 * 1000)
   return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`
@@ -38,35 +43,66 @@ const fmtMoney = (v) => {
   return (n > 0 ? "+" : n < 0 ? "-" : "") + s
 }
 
-/** 一条流水：时间 · 类型 · 币种 · 说明（含思考细节）· 盈亏 */
-function EventRow({ ev, chartColors, prevTs }) {
+/** 切分说明为「头 + 尾」，让中间省略时两端都保留有用信息。
+    优先把【动作/主体】留在头部、【结果/数值】留在尾部：
+      "做多 BTCUSDT 数量 0.619 @ 80262.2（保证金 2494.3）"
+        → 头 "做多 BTCUSDT 数量 0.619" + 尾 "@ 80262.2（保证金 2494.3）"
+      "移动止盈(峰值0.14%→0.06%)平仓 XRPUSDT，盈亏 1.63"
+        → 头 "移动止盈(峰值0.14%→0.06%)" + 尾 "平仓 XRPUSDT，盈亏 1.63"
+    括号注记不能当分隔点（否则会把"平仓 XXX"整段吞掉）。 */
+function splitReason(reason) {
+  const s = String(reason || "")
+  if (!s) return ["", ""]
+  // 1) 价格分隔：@ 之后（含保证金尾注）
+  const at = s.lastIndexOf(" @ ")
+  if (at > 0) return [s.slice(0, at), s.slice(at + 1)]
+  // 2) 结果分隔：平仓/，盈亏/，数量 这类"结果段"整体留尾部
+  const marks = ["，盈亏 ", "，平仓 ", "平仓 ", "，数量 "]
+  let best = -1
+  for (const m of marks) {
+    const i = s.lastIndexOf(m)
+    if (i > 0 && (best < 0 || i < best)) best = i
+  }
+  if (best > 0) return [s.slice(0, best), s.slice(best)]
+  // 3) 兜底：长文本切掉中间，留头 60% / 尾 24%
+  if (s.length > 22) {
+    const keepTail = Math.max(8, Math.round(s.length * 0.24))
+    return [s.slice(0, s.length - keepTail), s.slice(-keepTail)]
+  }
+  return [s, ""]
+}
+
+function EventRow({ ev, chartColors, prevTs, isNew }) {
   const meta = KIND_META[ev.kind] || KIND_META.system
   const { Icon } = meta
-  const DirIcon = ev.direction === "bearish" ? TrendingDown
-    : ev.direction === "bullish" ? TrendingUp : null
-  // 跨天时显示日期，方便回看历史
+  const [head, tail] = splitReason(ev.reason)
   const showDay = prevTs == null || fmtDay(prevTs) !== fmtDay(ev.ts)
+  const tags = []
+  // 形态名只加一次：说明文本里已经带了就不重复放 tag
+  if (ev.name_zh && ev.kind === "signal" && !String(ev.reason || "").includes(ev.name_zh)) {
+    tags.push(ev.name_zh)
+  }
+  if (typeof ev.winrate === "number") tags.push(`胜率${ev.winrate}%`)
+  if (ev.qty != null && ev.kind === "open") tags.push(`量${ev.qty}`)
+
   return (
-    <div className={styles.row} data-tone={meta.tone}>
+    <div className={styles.row} data-tone={meta.tone} data-new={isNew || undefined}
+      title={ev.reason}>
+      <span className={styles.lead}>
+        {ev.symbol
+          ? <CoinAvatar symbol={ev.symbol} size={13} />
+          : <Icon size={12} aria-hidden />}
+      </span>
       <span className={styles.time}>
-        {showDay && <em className={styles.day}>{fmtDay(ev.ts)}</em>}
-        {fmtClock(ev.ts)}
+        {showDay ? `${fmtDay(ev.ts)} ` : ""}{fmtClock(ev.ts)}
       </span>
-      <span className={styles.kind}>
-        <Icon size={11} aria-hidden />
-        {meta.label}
+      <span className={styles.text}>
+        <span className={styles.head}>{head}</span>
+        {tail && <span className={styles.tail}>{tail}</span>}
       </span>
-      <span className={styles.sym}>
-        {ev.symbol && <CoinAvatar symbol={ev.symbol} size={13} />}
-        {ev.symbol ? ev.symbol.replace(/usdt$/i, "").toUpperCase() : ""}
-      </span>
-      <span className={styles.text} title={ev.reason}>
-        {DirIcon && <DirIcon size={11} className={styles.dir} aria-hidden />}
-        <span className={styles.reason}>{ev.reason}</span>
-        {ev.name_zh && ev.kind === "signal" ? <em className={styles.meta}>{ev.name_zh}</em> : null}
-        {typeof ev.winrate === "number" ? <em className={styles.meta}>胜率 {ev.winrate}%</em> : null}
-        {ev.qty != null && ev.kind === "open" ? <em className={styles.meta}>量 {ev.qty}</em> : null}
-      </span>
+      {tags.slice(0, 2).map((t) => (
+        <span key={t} className={styles.tag}>{t}</span>
+      ))}
       {typeof ev.pnl === "number" && (
         <span className={styles.pnl}
           style={{ color: ev.pnl >= 0 ? chartColors.up : chartColors.down }}>
@@ -77,104 +113,122 @@ function EventRow({ ev, chartColors, prevTs }) {
   )
 }
 
-export default function QuantPanel({ snapshot, events: pushedEvents, chartColors, onToggle }) {
+export default function QuantPanel({ snapshot, events: pushedEvents, chartColors }) {
   const snap = snapshot || { enabled: false, stats: {} }
-  const stats = snap.stats || {}
   const [events, setEvents] = useState(() => pushedEvents || [])
-  const [follow, setFollow] = useState(true)      // 自动滚到底；用户上翻时不打断
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewH, setViewH] = useState(0)
+  const [follow, setFollow] = useState(true)
+  const [, setTick] = useState(0)
   const viewportRef = useRef(null)
   const seenRef = useRef(new Set())
+  const addedAtRef = useRef(new Map())
 
-  // 服务端下发的持久化历史（连接/重连时）
+  // 视口高度（虚拟窗口大小）
+  useLayoutEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    const measure = () => setViewH(el.clientHeight)
+    measure()
+    if (typeof ResizeObserver === "undefined") return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  // 服务端下发的持久化历史
   useEffect(() => {
     if (!pushedEvents) return
     setEvents(pushedEvents)
     seenRef.current = new Set(pushedEvents.map((e) => e.id ?? `${e.ts}-${e.reason}`))
   }, [pushedEvents])
 
-  // 实时增量：合并快照里的事件（按 id 去重）
+  // 实时增量：按 id 去重追加，记录到达时间用于入场动画
   useEffect(() => {
     const live = snap.events || []
     if (!live.length) return
     setEvents((cur) => {
       const merged = cur.slice()
-      let added = false
+      const now = Date.now()
+      let added = 0
       for (const ev of live) {
         const key = ev.id ?? `${ev.ts}-${ev.kind}-${ev.reason}`
         if (seenRef.current.has(key)) continue
         seenRef.current.add(key)
+        addedAtRef.current.set(key, now)
         merged.push({ ...ev, id: key })
-        added = true
+        added++
       }
       if (!added) return cur
       merged.sort((a, b) => (a.ts || 0) - (b.ts || 0))
-      return merged.slice(-800)
+      return merged.slice(-3000)
     })
   }, [snap.events])
 
-  // 自动跟随到底
+  // 动画到期后刷新一次，让 data-new 失效（避免一直高亮）
+  useEffect(() => {
+    if (!addedAtRef.current.size) return
+    const id = setTimeout(() => setTick((t) => t + 1), NEW_MS + 60)
+    return () => clearTimeout(id)
+  }, [events])
+
+  // 贴底跟随（初次瞬间、后续平滑）
   useEffect(() => {
     if (!follow) return
-    const vp = viewportRef.current
-    if (vp) vp.scrollTop = vp.scrollHeight
-  }, [events, follow])
+    const el = viewportRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: scrollTop === 0 ? "auto" : "smooth" })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events.length, follow])
 
-  const onScroll = () => {
-    const vp = viewportRef.current
-    if (!vp) return
-    setFollow(vp.scrollHeight - vp.scrollTop - vp.clientHeight < 24)
-  }
+  const onScroll = useCallback(() => {
+    const el = viewportRef.current
+    if (!el) return
+    setScrollTop(el.scrollTop)
+    setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < ROW_H * 1.5)
+  }, [])
 
-  const flow = useMemo(() => ([
-    ["信号", stats.signals ?? 0],
-    ["决策", stats.decisions ?? 0],
-    ["下单", stats.orders ?? 0],
-    ["平仓", stats.closes ?? 0],
-  ]), [stats])
+  // 虚拟窗口
+  const total = events.length
+  const winH = Math.max(viewH, 200)
+  const start = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN)
+  const end = Math.min(total, Math.ceil((scrollTop + winH) / ROW_H) + OVERSCAN)
+  const slice = useMemo(() => events.slice(start, end), [events, start, end])
+
+  const now = Date.now()
+  const isNew = (id) => now - (addedAtRef.current.get(id) || 0) < NEW_MS
 
   return (
     <section className={styles.wrap} aria-label="决策流水">
-      <header className={styles.head}>
-        <h3 className={styles.title}>决策流水</h3>
-        <span className={styles.state} data-on={snap.enabled || undefined}>
-          {snap.enabled ? "运行中" : "已停止"}
-        </span>
-        <div className={styles.flow}>
-          {flow.map(([label, v]) => (
-            <span key={label} className={styles.flowItem}><em>{label}</em>{v}</span>
-          ))}
-          <span className={styles.flowItem}>
-            <em>胜/负</em>
-            <b className={styles.win}>{stats.wins ?? 0}</b>/<b className={styles.loss}>{stats.losses ?? 0}</b>
-          </span>
-        </div>
-        <button type="button" className={styles.toggle} data-on={snap.enabled || undefined}
-          onClick={() => onToggle && onToggle(!snap.enabled)}>
-          {snap.enabled ? "停止" : "启动"}
-        </button>
-      </header>
-
-      <ScrollArea viewportRef={viewportRef} orientation="vertical" fade={22} scrollbars="auto"
+      <ScrollArea viewportRef={viewportRef} orientation="vertical" fade={18} scrollbars="auto"
         className={styles.stream} viewportClassName={styles.streamViewport}
         label="量化决策流水" onScroll={onScroll}>
-        {events.length === 0 ? (
+        {total === 0 ? (
           <div className={styles.empty}>暂无决策记录</div>
         ) : (
-          events.map((ev, i) => (
-            <EventRow key={ev.id ?? `${ev.ts}-${i}`} ev={ev}
-              chartColors={chartColors} prevTs={events[i - 1]?.ts} />
-          ))
+          <div className={styles.spacer} style={{ height: total * ROW_H }}>
+            {slice.map((ev, i) => {
+              const idx = start + i
+              return (
+                <div key={ev.id ?? idx} className={styles.rowSlot}
+                  style={{ transform: `translateY(${idx * ROW_H}px)` }}>
+                  <EventRow ev={ev} chartColors={chartColors}
+                    prevTs={events[idx - 1]?.ts} isNew={isNew(ev.id)} />
+                </div>
+              )
+            })}
+          </div>
         )}
       </ScrollArea>
 
-      {!follow && events.length > 0 && (
+      {!follow && total > 0 && (
         <button type="button" className={styles.jump}
           onClick={() => {
             setFollow(true)
-            const vp = viewportRef.current
-            if (vp) vp.scrollTop = vp.scrollHeight
+            const el = viewportRef.current
+            if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
           }}>
-          回到最新
+          最新
         </button>
       )}
     </section>

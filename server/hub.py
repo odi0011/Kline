@@ -164,7 +164,7 @@ class BroadcastHub:
                     acct = self.last_accounts[0]["name"] if self.last_accounts else ""
                     await ws.send(json.dumps({
                         "type": "quant_events",
-                        "events": self.quant_events_fn(acct, 400),
+                        "events": self.quant_events_fn(acct, 2000),
                     }, separators=(",", ":")))
                 except Exception:
                     pass
@@ -185,7 +185,7 @@ class BroadcastHub:
                                                  separators=(",", ":")))
                     elif mtype == "query_quant_events" and self.quant_events_fn:
                         acct = str(msg.get("account") or "")
-                        limit = int(msg.get("limit") or 400)
+                        limit = int(msg.get("limit") or 2000)
                         await ws.send(json.dumps({
                             "type": "quant_events", "events": self.quant_events_fn(acct, limit),
                         }, separators=(",", ":")))

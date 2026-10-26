@@ -272,3 +272,5 @@ class Storage:
         self._q("DELETE FROM hits WHERE ts < %s", (now_ms - self.hit_ms,))
         # 权益采样保留 2 天（曲线只看最近 8 小时，多留一天便于回看）
         self._q("DELETE FROM equity WHERE ts < %s", (now_ms - 2 * 86400_000,))
+        # 决策流水保留 3 天（数据更迭快，留够回看即可）
+        self._q("DELETE FROM quant_events WHERE ts < %s", (now_ms - 3 * 86400_000,))

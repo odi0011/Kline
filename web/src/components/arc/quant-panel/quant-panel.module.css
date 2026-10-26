@@ -1,132 +1,110 @@
-/* 决策流水：无边框单一盒子。头部一行（标题/状态/统计/开关）+ 下方滚动流水。
-   高度由外层 .row3 控制（约第一行的 4/3）。 */
+/* 决策流水：无边框、只占整行约 40% 宽，只有记录列表。
+   行高固定（虚拟滚动依赖），内容单行、中间省略。 */
 .wrap {
-  flex: 1;
+  flex: 0 0 40%;
   min-width: 0;
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 8px;
   padding: 0 2px;
 }
 
-/* 头部：无边框，只靠排版分层 */
-.head { display: flex; align-items: center; gap: 8px; min-width: 0; flex: none; height: 24px; }
-.title { margin: 0; font-size: 13px; font-weight: 700; color: #1c2333; flex: none; }
-.state {
-  flex: none;
-  font-size: 9.5px; font-weight: 700; letter-spacing: 0.4px;
-  padding: 2px 7px; border-radius: 7px;
-  background: rgba(28, 35, 51, 0.07); color: var(--text-muted, #8b949e);
-}
-.state[data-on] { background: color-mix(in srgb, var(--accent) 24%, transparent); color: var(--accent-deep, #b45309); }
-
-/* 统计条：紧凑一排，标签浅、数值深 */
-.flow { display: flex; align-items: baseline; gap: 10px; min-width: 0; overflow: hidden; }
-.flowItem {
-  display: inline-flex; align-items: baseline; gap: 3px;
-  font-size: 11px; font-weight: 700; color: #1c2333;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap; flex: none;
-}
-.flowItem em {
-  font-style: normal; font-size: 9.5px; font-weight: 400;
-  color: var(--text-muted, #8b949e); letter-spacing: 0.2px;
-}
-.win { color: #16a34a; font-weight: 700; }
-.loss { color: #dc2626; font-weight: 700; }
-
-.toggle {
-  margin-left: auto; flex: none;
-  height: 24px; padding: 0 11px; border-radius: 7px;
-  border: 1px solid rgba(28, 35, 51, 0.14);
-  background: transparent; color: var(--text-secondary, #5b6472);
-  font-size: 11px; font-weight: 600; cursor: pointer; font-family: inherit;
-  transition: background-color 130ms ease;
-}
-.toggle[data-on] { color: #b91c1c; border-color: rgba(185, 28, 28, 0.3); }
-.toggle:hover { background: rgba(28, 35, 51, 0.05); }
-
-/* 流水滚动区：吃掉剩余高度 */
 .stream { flex: 1 1 0; min-height: 0; }
 .streamViewport { padding-right: 2px; }
 
-/* 一条流水：等宽列对齐，方便纵向比对 */
+/* 虚拟滚动容器：总高由 JS 撑开，行绝对定位 */
+.spacer { position: relative; width: 100%; padding-bottom: 4px; }
+.rowSlot {
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  height: 22px;              /* 与 ROW_H 一致 */
+  will-change: transform;
+}
+
+/* 一条记录：图标 · 时间 · 内容（中间省略）· tag · 盈亏 */
 .row {
-  display: flex; align-items: baseline; gap: 7px;
-  padding: 2px 6px;
+  display: flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 5px;
   border-radius: 5px;
   font-size: 11px; color: #1c2333;
-  line-height: 1.4;
+  overflow: hidden;
 }
-.row:nth-child(odd) { background: rgba(28, 35, 51, 0.022); }
 .row:hover { background: rgba(28, 35, 51, 0.05); }
 
+/* 图标列：有币种显示币种图标，否则显示事件类型图标（颜色区分类型） */
+.lead {
+  flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px;
+}
+.row[data-tone="signal"] .lead { color: #2563eb; }
+.row[data-tone="open"] .lead { color: #15803d; }
+.row[data-tone="close"] .lead { color: #b45309; }
+.row[data-tone="skip"] .lead { color: #94a3b8; }
+.row[data-tone="error"] .lead { color: #b91c1c; }
+.row[data-tone="audit"] .lead { color: #7c3aed; }
+.row[data-tone="system"] .lead { color: #64748b; }
+
 .time {
-  flex: none; width: 58px;
-  font-size: 10px; color: var(--text-muted, #8b949e);
+  flex: none;
+  font-size: 9.5px; color: var(--text-muted, #8b949e);
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-.day { display: inline; font-style: normal; margin-right: 4px; opacity: 0.7; }
 
-.kind {
-  flex: none; width: 44px;
-  display: inline-flex; align-items: center; gap: 3px;
-  font-size: 10px; font-weight: 600;
-  white-space: nowrap;
-}
-/* 类型配色：靠文字色区分，不用色块背景（大面积底色会显得脏） */
-.row[data-tone="signal"] .kind { color: #2563eb; }
-.row[data-tone="open"] .kind { color: #15803d; }
-.row[data-tone="close"] .kind { color: #b45309; }
-.row[data-tone="skip"] .kind { color: #8b949e; }
-.row[data-tone="error"] .kind { color: #b91c1c; }
-.row[data-tone="audit"] .kind { color: #7c3aed; }
-.row[data-tone="system"] .kind { color: #64748b; }
-
-.sym {
-  flex: none; width: 74px;
-  display: inline-flex; align-items: center; gap: 4px;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.2px;
-  white-space: nowrap; overflow: hidden;
-}
-
-/* 说明区：图标、正文、徽标在同一行内 baseline 对齐，超长省略 */
+/* 内容：头部可收缩并省略；尾部固定 → 视觉上就是"中间省略" */
 .text {
-  flex: 1; min-width: 0;
-  display: flex; align-items: center; gap: 4px;
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center;
   overflow: hidden;
-  color: rgba(28, 35, 51, 0.82);
 }
-.reason {
+.head {
   min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: rgba(28, 35, 51, 0.82);
 }
-.dir { flex: none; }
-.row[data-tone="signal"] .dir { color: #2563eb; }
-.meta {
-  flex: none; font-style: normal; font-size: 9.5px;
-  color: var(--text-muted, #8b949e);
-  background: rgba(28, 35, 51, 0.05);
-  padding: 0.5px 4px; border-radius: 4px;
+.tail {
+  flex: none;
+  white-space: nowrap;
+  color: rgba(28, 35, 51, 0.82);
+}
+
+/* tag：形态名 / 胜率 / 数量 */
+.tag {
+  flex: none;
+  font-size: 9px; line-height: 1;
+  padding: 2px 4px; border-radius: 3px;
+  background: rgba(28, 35, 51, 0.06);
+  color: var(--text-secondary, #5b6472);
+  white-space: nowrap;
+  max-width: 62px; overflow: hidden; text-overflow: ellipsis;
 }
 
 .pnl {
-  flex: none; min-width: 54px; text-align: right;
-  font-size: 10.5px; font-weight: 700;
+  flex: none; min-width: 48px; text-align: right;
+  font-size: 10px; font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
 .empty { font-size: 11px; color: var(--text-muted, #8b949e); padding: 14px 6px; }
 
-/* 上翻后右下角的"回到最新" */
+/* 新到记录入场动画：淡入 + 上滑 + 轻微缩放 */
+@keyframes rowIn {
+  from { opacity: 0; transform: translateY(7px) scale(0.982); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.row[data-new] {
+  animation: rowIn 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+/* 上翻后右下角的"最新" */
 .jump {
-  position: absolute; right: 10px; bottom: 8px; z-index: 3;
-  height: 24px; padding: 0 10px; border-radius: 999px;
+  position: absolute; right: 6px; bottom: 4px; z-index: 3;
+  height: 20px; padding: 0 8px; border-radius: 999px;
   border: 1px solid rgba(28, 35, 51, 0.12);
   background: rgba(255, 255, 255, 0.94);
   color: var(--text-secondary, #5b6472);
-  font-size: 10.5px; font-weight: 600; cursor: pointer; font-family: inherit;
+  font-size: 10px; font-weight: 600; cursor: pointer; font-family: inherit;
   box-shadow: 0 2px 8px rgba(16, 24, 40, 0.12);
 }
 .jump:hover { background: #fff; color: #1c2333; }
