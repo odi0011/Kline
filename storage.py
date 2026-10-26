@@ -61,12 +61,82 @@ class Storage:
         self._q("""CREATE TABLE IF NOT EXISTS equity(
             acct VARCHAR(64), ts BIGINT, bal DOUBLE, upnl DOUBLE,
             PRIMARY KEY(acct, ts)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # 仓位历史（已平仓记录）：按账户隔离，保留 7 天
+        self._q("""CREATE TABLE IF NOT EXISTS quant_trades(
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            ts BIGINT, acct VARCHAR(64), symbol VARCHAR(16), side VARCHAR(8),
+            qty DOUBLE, entry DOUBLE, exit_price DOUBLE, pnl DOUBLE, move_pct DOUBLE,
+            reason VARCHAR(200), entry_ts BIGINT, hold_min DOUBLE, pattern VARCHAR(40),
+            order_id BIGINT, close_id BIGINT,
+            INDEX idx_qt_ts(ts), INDEX idx_qt_acct(acct, ts)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         # 量化决策流水：引擎的每个决策/思考都落库，按账户隔离，重启不清空
         self._q("""CREATE TABLE IF NOT EXISTS quant_events(
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             ts BIGINT, kind VARCHAR(16), acct VARCHAR(64), symbol VARCHAR(16),
             reason VARCHAR(600), pnl DOUBLE, extra TEXT,
             INDEX idx_qe_ts(ts), INDEX idx_qe_acct(acct, ts)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
+    # ---- 仓位历史（已平仓） ----
+
+    def save_quant_trade(self, t: dict) -> int:
+        """记录一笔已平仓交易。字段与 quant._record_trade 的 trade 结构对齐。"""
+        self._q(
+            "INSERT INTO quant_trades(ts,acct,symbol,side,qty,entry,exit_price,pnl,"
+            "move_pct,reason,entry_ts,hold_min,pattern,order_id,close_id) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (int(t.get("ts") or 0), str(t.get("account") or ""),
+             str(t.get("symbol") or ""), str(t.get("side") or ""),
+             float(t.get("qty") or 0), float(t.get("entry") or 0),
+             float(t.get("exit") or 0), float(t.get("pnl") or 0),
+             float(t.get("movePct") or 0), str(t.get("reason") or "")[:200],
+             int(t.get("entryTs") or 0), float(t.get("holdMin") or 0),
+             str(t.get("pattern") or ""),
+             int(t["orderId"]) if t.get("orderId") else None,
+             int(t["closeId"]) if t.get("closeId") else None))
+        row = self._qall("SELECT LAST_INSERT_ID()")
+        return int(row[0][0]) if row else 0
+
+    def quant_trades(self, acct: str = "", limit: int = 300) -> list[dict]:
+        """最近 limit 笔已平仓记录（时间倒序）。acct 非空时只取该账户。"""
+        if acct:
+            rows = self._qall(
+                "SELECT id,ts,acct,symbol,side,qty,entry,exit_price,pnl,move_pct,"
+                "reason,entry_ts,hold_min,pattern FROM quant_trades "
+                "WHERE acct=%s ORDER BY ts DESC LIMIT %s", (acct, limit))
+        else:
+            rows = self._qall(
+                "SELECT id,ts,acct,symbol,side,qty,entry,exit_price,pnl,move_pct,"
+                "reason,entry_ts,hold_min,pattern FROM quant_trades "
+                "ORDER BY ts DESC LIMIT %s", (limit,))
+        out = []
+        for r in rows:
+            out.append({
+                "id": int(r[0]), "ts": int(r[1]), "account": r[2] or "",
+                "symbol": r[3] or "", "side": r[4] or "",
+                "qty": float(r[5] or 0), "entry": float(r[6] or 0),
+                "exit": float(r[7] or 0), "pnl": float(r[8] or 0),
+                "movePct": float(r[9] or 0), "reason": r[10] or "",
+                "entryTs": int(r[11] or 0), "holdMin": float(r[12] or 0),
+                "pattern": r[13] or "",
+            })
+        return out
+
+    def trade_stats(self, acct: str = "", days: int = 7) -> dict:
+        """近 N 天已平仓胜负统计（胜率用）。"""
+        since = int(time.time() * 1000) - days * 86400_000
+        if acct:
+            rows = self._qall(
+                "SELECT COUNT(*), SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END), SUM(pnl) FROM quant_trades "
+                "WHERE acct=%s AND ts>=%s", (acct, since))
+        else:
+            rows = self._qall(
+                "SELECT COUNT(*), SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END), SUM(pnl) FROM quant_trades "
+                "WHERE ts>=%s", (since,))
+        r = rows[0] if rows else (0, 0, 0, 0)
+        return {"count": int(r[0] or 0), "wins": int(r[1] or 0),
+                "losses": int(r[2] or 0), "pnl": round(float(r[3] or 0), 2)}
 
     # ---- 量化决策流水 ----
 
@@ -274,3 +344,5 @@ class Storage:
         self._q("DELETE FROM equity WHERE ts < %s", (now_ms - 2 * 86400_000,))
         # 决策流水保留 3 天（数据更迭快，留够回看即可）
         self._q("DELETE FROM quant_events WHERE ts < %s", (now_ms - 3 * 86400_000,))
+        # 仓位历史保留 7 天
+        self._q("DELETE FROM quant_trades WHERE ts < %s", (now_ms - 7 * 86400_000,))

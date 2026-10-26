@@ -13,6 +13,8 @@ import { AnimatedCounter } from '@/components/arc/animated-counter/animated-coun
 import CoinAvatar from '@/components/ui/coin-avatar'
 import SettingsDialog from '@/components/arc/settings-dialog/settings-dialog'
 import QuantPanel from '@/components/arc/quant-panel/quant-panel'
+import PositionHistory from '@/components/arc/position-history/position-history'
+import NewsFeed from '@/components/arc/news-feed/news-feed' 
 import HitFlight from './HitFlight.jsx'
 import { hexHue } from './lib/account-theme'
 import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins, Settings } from 'lucide-react'
@@ -67,6 +69,8 @@ export default function App() {
   const [srvAccounts, setSrvAccounts] = useState(null)          // 服务端账户列表（含密钥）
   const [quantSnap, setQuantSnap] = useState(null)              // 量化引擎快照
   const [quantEvents, setQuantEvents] = useState(null)          // 持久化决策流水（MySQL）
+  const [quantTrades, setQuantTrades] = useState([])            // 仓位历史（MySQL，7 天）
+  const [newsItems, setNewsItems] = useState([])                // 交易所公告
   // 命中动画为 (币种,形态) 插入过流水行的时间戳：抑制引擎随后推送的重复信号
   const hitRowKeysRef = useRef(new Map())
   const liveRef = useRef(null)
@@ -172,6 +176,12 @@ export default function App() {
     })
     const offQuant = live.on('quant', (m) => setQuantSnap(m.snapshot))
     const offQEvents = live.on('quant_events', (m) => setQuantEvents(m.events || []))
+    const offTrades = live.on('quant_trades', (m) => setQuantTrades(m.trades || []))
+    const offTrade = live.on('quant_trade', (t) => {
+      if (!t) return
+      setQuantTrades((cur) => [t, ...(cur || [])].slice(0, 500))
+    })
+    const offNews = live.on('news', (m) => setNewsItems(m.items || []))
     // 单条实时事件：追加到主列表（前端负责逐条入场，不整批涌入）
     const offQEvent = live.on('quant_event', (ev) => {
       if (!ev) return
@@ -183,7 +193,7 @@ export default function App() {
       })
     })
     live.connect()
-    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offQEvent(); live.close() }
+    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offQEvent(); offTrades(); offTrade(); offNews(); live.close() }
   }, [])
 
   // ==================== 命中动画：串行队列 ====================
@@ -650,6 +660,8 @@ export default function App() {
         <QuantPanel snapshot={quantSnap} events={visibleEvents} chartColors={chartColors}
           reservedRows={reservedRows} streamRef={streamRef}
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
+        <PositionHistory trades={quantTrades} chartColors={chartColors} />
+        <NewsFeed items={newsItems} />
       </div>
       </aside>
 

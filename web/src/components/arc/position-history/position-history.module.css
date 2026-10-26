@@ -1,0 +1,111 @@
+/* 仓位历史：与决策流水同一套视觉（无边框、虚拟滚动、22px 行高） */
+.wrap {
+  flex: 0 0 30%;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 0 2px;
+  container-type: inline-size;
+}
+
+.stream { flex: 1 1 0; min-height: 0; }
+.streamViewport { padding-right: 2px; }
+
+.spacer { position: relative; width: 100%; padding-bottom: 4px; }
+.rowSlot {
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  height: 22px;
+  will-change: transform;
+}
+
+.row {
+  display: flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 5px;
+  border-radius: 5px;
+  font-size: 11px; color: #1c2333;
+  overflow: hidden;
+}
+.row:hover { background: rgba(28, 35, 51, 0.05); }
+
+.lead { flex: none; display: inline-flex; align-items: center; }
+.lead[data-side="long"] { box-shadow: inset 2px 0 0 rgba(22, 163, 74, 0.8); border-radius: 2px; }
+.lead[data-side="short"] { box-shadow: inset 2px 0 0 rgba(220, 38, 38, 0.8); border-radius: 2px; }
+
+.time {
+  flex: none;
+  font-size: 9.5px; color: var(--text-muted, #8b949e);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.sym {
+  flex: none;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+.side {
+  flex: none;
+  display: inline-flex; align-items: center; gap: 1px;
+  font-size: 9px; font-weight: 600;
+  padding: 1px 3px; border-radius: 3px;
+}
+.side[data-side="long"] { background: rgba(22, 163, 74, 0.12); color: #15803d; }
+.side[data-side="short"] { background: rgba(220, 38, 38, 0.12); color: #b91c1c; }
+
+.qty {
+  flex: none;
+  font-size: 9.5px; color: rgba(28, 35, 51, 0.55);
+  font-variant-numeric: tabular-nums;
+}
+/* 数量与原因之间自动留白，把盈亏推到最右 */
+.reason { margin-left: auto; }
+.reason {
+  flex: 0 0 auto;
+  font-size: 9.5px; color: rgba(28, 35, 51, 0.6);
+  white-space: nowrap;
+}
+.hold {
+  flex: none;
+  font-size: 9px; color: var(--text-muted, #8b949e);
+  font-variant-numeric: tabular-nums;
+}
+.pnl {
+  flex: none; min-width: 48px; text-align: right;
+  font-size: 10px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.empty { font-size: 11px; color: var(--text-muted, #8b949e); padding: 14px 6px; }
+
+/* 新记录入场：上滑 + 淡入 + 主题色底 */
+@keyframes tradeIn {
+  from { opacity: 0; transform: translateY(-7px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.row[data-new] {
+  animation: tradeIn 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* 窄容器：优先级 币种/方向/盈亏 > 数量 > 原因 > 持有时间。
+   276px 下仍保留数量（比"持有几分钟"重要得多）。 */
+@container (max-width: 380px) {
+  .hold { display: none; }
+}
+@container (max-width: 300px) {
+  .time { font-size: 9px; }
+  .pnl { min-width: 42px; font-size: 9.5px; }
+}
+
+/* 上翻后的"最新"（列表倒序，最新在顶部） */
+.jump {
+  position: absolute; left: 50%; bottom: 6px; z-index: 3;
+  transform: translateX(-50%);
+  height: 20px; padding: 0 9px; border-radius: 999px;
+  border: 1px solid rgba(28, 35, 51, 0.12);
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--text-secondary, #5b6472);
+  font-size: 10px; font-weight: 600; cursor: pointer; font-family: inherit;
+  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.12);
+}
+.jump:hover { background: #fff; color: #1c2333; }

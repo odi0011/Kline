@@ -1,0 +1,74 @@
+/* 交易所公告：与另两栏同一套视觉（无边框、22px 行高、虚拟滚动） */
+.wrap {
+  flex: 0 0 30%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 2px;
+  container-type: inline-size;
+}
+
+.stream { flex: 1 1 0; min-height: 0; }
+.streamViewport { padding-right: 2px; }
+
+.spacer { position: relative; width: 100%; padding-bottom: 4px; }
+.rowSlot {
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  height: 22px;
+  will-change: transform;
+}
+
+.row {
+  display: flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 5px;
+  border-radius: 5px;
+  font-size: 11px; color: #1c2333;
+  text-decoration: none;
+  overflow: hidden;
+}
+.row:hover { background: rgba(28, 35, 51, 0.05); }
+
+/* 来源标记：币安金黄、欧易黑白 */
+.src {
+  flex: none;
+  font-size: 8.5px; font-weight: 700; line-height: 1;
+  padding: 2px 4px; border-radius: 3px;
+  letter-spacing: 0.2px;
+}
+.src[data-src="binance"] { background: rgba(240, 185, 11, 0.2); color: #8a6400; }
+.src[data-src="okx"] { background: rgba(28, 35, 51, 0.1); color: #1c2333; }
+
+.time {
+  flex: none;
+  font-size: 9px; color: var(--text-muted, #8b949e);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+
+.text {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center;
+  overflow: hidden;
+}
+.head {
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  word-break: keep-all;
+  color: rgba(28, 35, 51, 0.82);
+}
+.tail {
+  flex: none;
+  white-space: nowrap;
+  color: rgba(28, 35, 51, 0.62);
+}
+.ext {
+  flex: none; color: rgba(28, 35, 51, 0.25);
+}
+.row:hover .ext { color: rgba(28, 35, 51, 0.5); }
+
+.empty { font-size: 11px; color: var(--text-muted, #8b949e); padding: 14px 6px; }
+
+/* 窄容器：隐藏时间，保留来源与标题 */
+@container (max-width: 340px) {
+  .time { display: none; }
+}

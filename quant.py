@@ -81,6 +81,7 @@ class QuantEngine:
         self.last_audit_ms = 0
         self.broadcast_fn = None           # main 注入：asyncio.create_task(hub.broadcast(obj))
         self.storage_fn = None             # main 注入：storage.save_quant_event（事件落库）
+        self.trade_storage_fn = None       # main 注入：storage.save_quant_trade（仓位历史落库）
         # 交易范围：只处理前端实际展示的币种（None/空 = 不限制）。
         # 否则引擎会在用户没看K线的币上开仓，持仓出现"凭空冒出来"的仓位。
         self.symbol_filter: set[str] | None = None
@@ -149,6 +150,16 @@ class QuantEngine:
                 json.dump(self.trades[-500:], f, ensure_ascii=False, indent=1)
         except Exception:
             pass
+        # 落库（仓位历史，按账户保留 7 天）；返回 id 后单条广播给前端
+        if self.trade_storage_fn:
+            try:
+                tid = self.trade_storage_fn(trade)
+                if tid:
+                    trade["id"] = tid
+                    if self.broadcast_fn:
+                        self.broadcast_fn({"type": "quant_trade", "trade": {**trade, "id": tid}})
+            except Exception:
+                pass
 
     def _save_positions(self):
         """未平仓持仓落盘：重启/部署后恢复 entry 价与开仓时间，避免依赖审计补记。"""

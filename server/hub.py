@@ -62,6 +62,8 @@ class BroadcastHub:
         self.depths: dict[str, dict] = {}      # symbol -> 订单簿深度快照（真实挂单）
         self.depth_dirty: set[str] = set()     # 待广播的深度
         self.risk_fn = None                    # 账户风险敞口（main 注入）：() -> dict
+        self.trades_fn = None                  # 仓位历史查询（main 注入）：(acct, limit) -> list
+        self.news: list[dict] = []             # 交易所公告缓存（main 定时刷新）
         self.structures: dict[tuple, dict] = {}   # (sym, iv) -> 最近一次结构分析
 
     # ---- 聚合器回调（与 PatternEngine 并联） ----
@@ -169,6 +171,17 @@ class BroadcastHub:
             if self.quant_fn:
                 await ws.send(json.dumps({"type": "quant", "snapshot": self.quant_fn()},
                                          separators=(",", ":")))
+            if self.trades_fn:
+                try:
+                    acct = self.last_accounts[0]["name"] if self.last_accounts else ""
+                    await ws.send(json.dumps({
+                        "type": "quant_trades", "trades": self.trades_fn(acct, 300),
+                    }, separators=(",", ":")))
+                except Exception:
+                    pass
+            if self.news:
+                await ws.send(json.dumps({"type": "news", "items": self.news},
+                                         separators=(",", ":")))
             if self.quant_events_fn:
                 try:
                     acct = self.last_accounts[0]["name"] if self.last_accounts else ""
@@ -197,6 +210,15 @@ class BroadcastHub:
                         print(f"[settings] 收到 set_settings: {str(msg.get('settings'))[:150]}")
                         new_settings = self.on_settings(msg.get("settings") or {})
                         await ws.send(json.dumps({"type": "settings", "settings": new_settings},
+                                                 separators=(",", ":")))
+                    elif mtype == "query_quant_trades" and self.trades_fn:
+                        acct = str(msg.get("account") or "")
+                        limit = int(msg.get("limit") or 300)
+                        await ws.send(json.dumps({
+                            "type": "quant_trades", "trades": self.trades_fn(acct, limit),
+                        }, separators=(",", ":")))
+                    elif mtype == "query_news":
+                        await ws.send(json.dumps({"type": "news", "items": self.news},
                                                  separators=(",", ":")))
                     elif mtype == "query_depths":
                         await ws.send(json.dumps({

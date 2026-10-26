@@ -119,6 +119,15 @@ export class LiveClient {
     } else if (m.type === 'quant_events') {
       this.quantEvents = m.events || []
       this._emitKey('quant_events', m)
+    } else if (m.type === 'quant_trades') {
+      this.quantTrades = m.trades || []
+      this._emitKey('quant_trades', m)
+    } else if (m.type === 'quant_trade') {
+      this.quantTrades = [m.trade, ...(this.quantTrades || [])].slice(0, 500)
+      this._emitKey('quant_trade', m.trade)
+    } else if (m.type === 'news') {
+      this.news = m.items || []
+      this._emitKey('news', m)
     } else if (m.type === 'quant_event') {
       this._emitKey('quant_event', m.event)
     } else if (m.type === 'stats') {

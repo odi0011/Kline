@@ -20,6 +20,7 @@ from core.candle import INTERVAL_MS
 from feed.backfill import fetch_klines
 from feed.demo import DemoSource
 from feed.depth import DepthStream
+from feed.news import fetch_all as fetch_news
 from feed.source import BinanceFuturesStream
 from notify.notifier import Notifier
 from patterns.base import get_enabled
@@ -287,6 +288,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     quant.pattern_stats_fn = storage.pattern_stats
     # 决策流水落库：引擎线程内同步写 MySQL（连接已加锁，开销可忽略）
     quant.storage_fn = storage.save_quant_event
+    quant.trade_storage_fn = storage.save_quant_trade
     # 量化引擎在线程池中运行；广播用 call_soon_threadsafe 回到事件循环（线程安全）
     _loop = asyncio.get_running_loop()
     quant.broadcast_fn = lambda obj: _loop.call_soon_threadsafe(
@@ -302,6 +304,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     hub.on_quant_symbols = _set_quant_symbols
     # 决策流水查询：前端按账户拉历史（持久化，重启/刷新不清空）
     hub.quant_events_fn = storage.quant_events
+    hub.trades_fn = storage.quant_trades
 
     # 结构分析（支撑压力/趋势线/FVG/订单块/结构形态几何）：收线时由 hub 触发
     def _analyze(sym, iv, candles):
@@ -467,7 +470,21 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             except Exception:
                 pass
 
-    await asyncio.gather(supervisor(), sweep(), accounts_poller())
+    # 交易所公告（币安/OKX）：10 分钟拉一次，缓存给所有客户端
+    async def news_poller():
+        await asyncio.sleep(3)      # 等其它任务先起来
+        while True:
+            try:
+                items = await asyncio.to_thread(fetch_news, 12, proxy_cfg or None)
+                if items:
+                    hub.news = items
+                    await hub.broadcast({"type": "news", "items": items})
+                    print(f"[news] 已更新 {len(items)} 条交易所公告")
+            except Exception as e:
+                print(f"[news] 拉取失败: {e}")
+            await asyncio.sleep(600)
+
+    await asyncio.gather(supervisor(), sweep(), accounts_poller(), news_poller())
 
 
 def main() -> None:
