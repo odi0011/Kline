@@ -192,6 +192,9 @@ export default function App() {
   const [flight, setFlight] = useState(null)          // 当前飞线（arc / wobble）
   const [cardFill, setCardFill] = useState(null)      // 形态卡背景扩散 {pattern, ox, oy, grow}
   const [reservedRows, setReservedRows] = useState([]) // 流水占位行（先空白，飞线到达后揭示）
+  // 形态卡高亮是动画自己的状态，不能用 hits.find——hits 只留最近 6 条，
+  // 动画多时旧 hit 被挤出数组会导致卡片背景直接卸载。
+  const [cardActive, setCardActive] = useState(null)   // {pattern, direction, symbol}
   const flightKeyRef = useRef(0)
   const flightResolveRef = useRef(null)
   const landInfoRef = useRef(null)
@@ -232,6 +235,8 @@ export default function App() {
 
   /** 跑一条命中动画（完整链路） */
   const runOne = async (hit) => {
+    // 标记该形态卡为高亮态（滚动与背景扩散都用它）
+    setCardActive({ pattern: hit.pattern, direction: hit.direction || "neutral", symbol: hit.symbol })
     // 1) 形态卡滚动居中，等滚动动画结束（120ms 延迟 + 680ms 动画）
     scrollToPattern(hit.pattern)
     await sleep(860)
@@ -321,10 +326,18 @@ export default function App() {
     setReservedRows((prev) => prev.map((r) => (
       r.id === rowId ? { ...r, grow: true } : r
     )))
-    await sleep(860)
+    await sleep(760)
 
-    // 8) 卡片背景淡出，交棒下一条
+    // 8) 行背景收回并淡出（之前漏了这步，clip 一直停在 150% 不消散）
+    setReservedRows((prev) => prev.map((r) => (
+      r.id === rowId ? { ...r, fade: true } : r
+    )))
+    await sleep(420)
+    setReservedRows((prev) => prev.filter((r) => r.id !== rowId))
+
+    // 9) 卡片背景淡出，交棒下一条（仅当没有新任务接管时才清高亮）
     setCardFill(null)
+    if (!jobQueueRef.current.length) setCardActive(null)
     await sleep(120)
   }
 
@@ -584,7 +597,10 @@ export default function App() {
             <ScrollArea orientation="horizontal" scrollbars="auto" scrollButtons label="K线形态图鉴" viewportRef={cardsViewportRef}>
               <div className="cards-grid">
                 {Object.entries(PATTERN_META).map(([key, p]) => {
-                  const active = hits.find((h) => h.pattern === key)
+                  // 高亮来源：动画进行中的 cardActive（优先）→ 最近命中 → 悬停
+                  // 用 cardActive 而不是只查 hits，避免 hits 被挤出后背景层卸载
+                  const active = (cardActive && cardActive.pattern === key ? cardActive : null)
+                    || hits.find((h) => h.pattern === key)
                     || (hoverPattern?.pattern === key ? { symbol: hoverPattern.symbol } : null)
                   const st = patternStats[key] || { count: 0, wins: 0, losses: 0 }
                   const decided = st.wins + st.losses

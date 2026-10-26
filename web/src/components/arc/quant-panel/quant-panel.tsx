@@ -99,7 +99,8 @@ function EventRow({ ev, chartColors, prevTs, isNew, compact, fill }) {
       data-row-id={ev.id ?? undefined}
       title={ev.reason}>
       {fill && (
-        <span className={styles.fillLayer} data-tone={fill.tone || "neutral"} aria-hidden
+        <span className={styles.fillLayer} data-tone={fill.tone || "neutral"}
+          data-fade={fill.fade || undefined} aria-hidden
           style={{ clipPath: `circle(${fill.grow ? 150 : 0}% at ${fill.fx}% ${fill.fy}%)` }} />
       )}
       <span className={styles.lead}>
@@ -268,7 +269,7 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
                   {r.revealed ? (
                     <EventRow ev={r.ev} chartColors={chartColors} compact={compact}
                       prevTs={prev} isNew
-                      fill={{ tone: r.tone, fx: r.fx, fy: r.fy, grow: r.grow }} />
+                      fill={{ tone: r.tone, fx: r.fx, fy: r.fy, grow: r.grow, fade: r.fade }} />
                   ) : (
                     <div className={styles.row} data-pending="" />
                   )}
