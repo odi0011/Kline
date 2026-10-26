@@ -76,7 +76,7 @@ class Storage:
         return [{"t": int(r[0]), "bal": float(r[1]), "upnl": float(r[2])} for r in reversed(rows)]
 
     def migrate_equity(self, old_keys: list[str], new_key: str) -> int:
-        """把旧键（历史账户名）下的权益采样迁移到新键（稳定 ID）。
+        """把旧键（历史账户名 / 旧 ID）下的权益采样迁移到新键（稳定 ID）。
 
         账户改名/首次升级时调用：不迁移的话曲线会因为查不到历史而"重置"。
         时间戳冲突时保留新键已有数据（INSERT IGNORE 后再删旧行）。
@@ -94,6 +94,33 @@ class Storage:
                 moved += len(rows)
             except Exception as e:
                 print(f"[equity] 迁移 {old} -> {new_key} 失败: {e}")
+        return moved
+
+    def adopt_orphan_equity(self, new_key: str, known_keys: list[str]) -> int:
+        """认领"孤儿"权益数据：库里除 new_key 与已知账户键外的其他键，若是同一账户
+        改名留下的（例如改名发生在旧版本、没有留下 id 关联），搬到 new_key。
+
+        只认领与 new_key 现价接近的系列（同一账户的权益量级一致），避免误吞
+        其他账户的数据。返回迁移条数。
+        """
+        moved = 0
+        try:
+            rows = self._qall("SELECT acct, COUNT(*), AVG(bal) FROM equity GROUP BY acct")
+        except Exception:
+            return 0
+        protect = set(known_keys) | {new_key}
+        mine = next((r for r in rows if r[0] == new_key), None)
+        mine_avg = float(mine[2]) if mine else None
+        for acct, count, avg in rows:
+            if acct in protect:
+                continue
+            avg = float(avg or 0)
+            # 同一账户的量级应接近（改名前后权益不会突变一个数量级）
+            if mine_avg and mine_avg > 0 and not (0.5 <= avg / mine_avg <= 2.0):
+                continue
+            moved += self.migrate_equity([acct], new_key)
+            if moved:
+                print(f"[equity] 认领孤儿历史 {acct} -> {new_key}")
         return moved
 
     # ---- K线 ----

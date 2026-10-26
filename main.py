@@ -132,18 +132,24 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     # 账户列表可变盒子：设置弹窗改后热生效；refresh 标志触发立即拉取。
     # 单账户设计：config 里多余的账户在启动时裁掉（页面只展示一个账户卡）。
     accts_box = {"list": [dict(a) for a in cfg.get("accounts", [])][:1], "refresh": False}
-    # 旧配置没有 id：补一个稳定 ID（权益曲线按 id 存，改名不会丢历史），
-    # 并把原来按账户名存的历史采样迁移到该 ID 上。
+    # 旧配置没有 id：补一个稳定 ID（权益曲线按 id 存，改名不会丢历史）。
     if accts_box["list"] and not accts_box["list"][0].get("id"):
-        acc0 = accts_box["list"][0]
-        acc0["id"] = uuid.uuid4().hex[:12]
+        accts_box["list"][0]["id"] = uuid.uuid4().hex[:12]
         cfg["accounts"] = accts_box["list"]
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+    # 认领历史采样：把按账户名（旧版）或旧 ID 存下的数据搬到当前 ID 上。
+    # 每次都跑（一次 GROUP BY + 少量迁移），这样改名发生在旧版本、当时没留下
+    # id 关联的情况也能自动修好，曲线不会因为改名"重置"。
+    if accts_box["list"]:
+        acc0 = accts_box["list"][0]
         try:
             moved = storage.migrate_equity([acc0.get("name", "")], acc0["id"])
             if moved:
-                print(f"[equity] 升级为稳定 ID，迁移 {moved} 条历史采样")
+                print(f"[equity] 迁移 {moved} 条按名称存的历史采样 -> {acc0['name']}")
+            adopted = storage.adopt_orphan_equity(acc0["id"], [acc0.get("name", "")])
+            if adopted:
+                print(f"[equity] 认领孤儿历史 {adopted} 条 -> {acc0['name']}")
         except Exception as e:
             print(f"[equity] 历史迁移失败: {e}")
     if len(cfg.get("accounts", [])) > 1:
