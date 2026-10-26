@@ -22,22 +22,44 @@ class Storage:
         self.eval_ms = eval_minutes * 60_000    # 命中后10分钟的走势判定胜负
         self.eval_threshold = eval_threshold    # 窗口内有效波动门槛（先触及判定）
         self._lock = threading.Lock()
-        self._conn = pymysql.connect(
-            host=mysql.get("host", "127.0.0.1"), port=int(mysql.get("port", 3306)),
-            user=mysql.get("user", "kline"), password=mysql.get("password", ""),
-            database=mysql.get("database", "kline"), autocommit=True,
-            charset="utf8mb4", connect_timeout=5,
-        )
+        self._conn = None
+        self.enabled = False
+        # 空白部署时 mysql 段是空的/库不存在 → 不能让整个服务起不来。
+        # 降级为"无持久化"模式：行情/形态/量化照常跑，只是不落库。
+        if not mysql or not mysql.get("user"):
+            print("[storage] 未配置 MySQL，以无持久化模式运行"
+                  "（K线记录/命中统计/权益曲线/决策流水将不保存）")
+        else:
+            try:
+                self._conn = pymysql.connect(
+                    host=mysql.get("host", "127.0.0.1"), port=int(mysql.get("port", 3306)),
+                    user=mysql.get("user", "kline"), password=mysql.get("password", ""),
+                    database=mysql.get("database", "kline"), autocommit=True,
+                    charset="utf8mb4", connect_timeout=5,
+                )
+                self.enabled = True
+            except Exception as e:
+                print(f"[storage] MySQL 连接失败，以无持久化模式运行: {e}")
         self._last_prune = 0
-        self._init()
+        if self.enabled:
+            try:
+                self._init()
+            except Exception as e:
+                print(f"[storage] 建表失败，降级为无持久化模式: {e}")
+                self.enabled = False
+                self._conn = None
 
     def _q(self, sql: str, args: tuple = ()) -> None:
+        if not self.enabled:
+            return
         with self._lock:
             self._conn.ping(reconnect=True)
             with self._conn.cursor() as cur:
                 cur.execute(sql, args)
 
     def _qall(self, sql: str, args: tuple = ()) -> list[tuple]:
+        if not self.enabled:
+            return []
         with self._lock:
             self._conn.ping(reconnect=True)
             with self._conn.cursor() as cur:

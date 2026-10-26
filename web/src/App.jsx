@@ -25,9 +25,13 @@ const HIT_TTL_MS = 9_000
 const SETTINGS_KEY = 'kline.settings.v1'
 const MIN_SYMBOLS = 4
 const MAX_SYMBOLS = 10
+const SETTINGS_VERSION = 2
 const DEFAULT_SETTINGS = {
+  v: SETTINGS_VERSION,
   interval: '3m', visibleBars: 70, showVolume: true, showGrid: true,
-  symbols: ['btcusdt', 'tslausdt', 'xauusdt', 'xagusdt'],   // 默认展示的四个币种（浏览器本地）
+  // 空数组 = 尚未选择 → 自动取服务端监控池的前 MIN_SYMBOLS 个。
+  // 不再硬编码币种名：换项目/换配置时旧的默认值会与实际池不符。
+  symbols: [],
 }
 const DEFAULT_UI = {
   themeColor: '#f0b90b', font: 'douyin',
@@ -36,7 +40,12 @@ const DEFAULT_UI = {
 
 function loadSettings() {
   try {
-    return { ...DEFAULT_SETTINGS, ...(JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}) }
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}
+    // 版本不一致：旧结构（硬编码币种、旧字段语义）直接丢弃，用新默认值
+    if (saved.v !== SETTINGS_VERSION) {
+      return { ...DEFAULT_SETTINGS }
+    }
+    return { ...DEFAULT_SETTINGS, ...saved }
   } catch {
     return { ...DEFAULT_SETTINGS }
   }
@@ -107,9 +116,16 @@ export default function App() {
     ? (meta.intervals.includes(settings.interval) ? settings.interval : meta.intervals[0])
     : settings.interval
   // 监控池 = 服务端 config symbols；展示 = 池 ∩ 用户选择（本地持久化）
-  const pool = meta?.symbols || DEFAULT_SETTINGS.symbols
-  const displayed = pool.filter((s) => settings.symbols.includes(s))
-  const shownSymbols = displayed.length ? displayed : pool.slice(0, MIN_SYMBOLS)
+  const pool = (meta?.symbols || []).filter(Boolean)
+  const valid = settings.symbols.filter((s) => pool.includes(s))
+  // 选择与当前池交集不足（换项目/配置缩水/首次访问）→ 自动补成池的前几个，
+  // 否则会只剩一两个币、看起来像"币种丢失"。
+  const shownSymbols = (() => {
+    if (!pool.length) return []
+    if (valid.length >= MIN_SYMBOLS) return valid
+    const fill = pool.filter((s) => !valid.includes(s)).slice(0, MIN_SYMBOLS - valid.length)
+    return [...valid, ...fill]
+  })()
 
   // 决策流水只显示当前展示币种的记录（无币种的系统/审计事件始终保留）：
   // 引擎可能在其它币上产生决策，但用户看不到那些K线，显示出来只会造成困惑。
@@ -439,6 +455,15 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownSymbols.join(","), connected])
 
+  // 选择与池不一致时回写（补齐后持久化，下次直接可用）
+  useEffect(() => {
+    if (!pool.length || !shownSymbols.length) return
+    const same = shownSymbols.length === settings.symbols.length
+      && shownSymbols.every((s, i) => s === settings.symbols[i])
+    if (!same) setSettings((s) => ({ ...s, symbols: shownSymbols }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pool.join(","), shownSymbols.join(",")])
+
   // meta 的周期列表里没有已存设置时回退
   useEffect(() => {
     if (meta && !meta.intervals.includes(settings.interval)) {
@@ -511,7 +536,7 @@ export default function App() {
     }, 120)
   }
 
-  const sel = settings.symbols || []
+  const sel = shownSymbols || []   // 勾选状态 = 实际展示，避免未回写时全不勾
   const atMax = sel.length >= MAX_SYMBOLS
   const atMin = sel.length <= MIN_SYMBOLS
   const menuGroups = [
@@ -657,12 +682,16 @@ export default function App() {
             </div>
           </div>
         </div>
-      <div className="row3">
+      {/* 第二行：决策流水 / 仓位历史 / 交易所公告（各 1/3） */}
+      <div className="row2">
         <QuantPanel snapshot={quantSnap} events={visibleEvents} chartColors={chartColors}
           reservedRows={reservedRows} streamRef={streamRef}
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
         <PositionHistory trades={quantTrades} chartColors={chartColors} />
         <NewsFeed items={newsItems} />
+      </div>
+      {/* 第三行：策略分析（独占整行，铺满剩余视窗高度） */}
+      <div className="row3">
         <StrategyPanel analysis={quantSnap && quantSnap.analysis} chartColors={chartColors} />
       </div>
       </aside>

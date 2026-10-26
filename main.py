@@ -34,9 +34,45 @@ MASK_SEC = "••••••••"
 MASK_KEY = "····"
 
 
+# 空白部署（全新机器、仓库里没有 config.yaml）时的默认配置。
+# 没有它 load_config 会 FileNotFoundError，服务起不来——这是"部署空白项目就崩"的根因。
+DEFAULT_SYMBOLS = [
+    "btcusdt", "tslausdt", "xauusdt", "xagusdt",
+    "ethusdt", "bnbusdt", "solusdt", "xrpusdt", "dogeusdt", "adausdt",
+]
+DEFAULT_CONFIG: dict = {
+    "web_port": 8000,
+    "ws_port": 8765,
+    "symbols": list(DEFAULT_SYMBOLS),
+    "intervals": ["1m", "3m"],
+    "feed": {"mode": "auto", "proxy": "", "backfill_bars": 300},
+    "patterns": {"enabled": "all", "live_preview": True},
+    "storage": {"minutes": 30, "eval_minutes": 10},
+    "accounts": [],
+    "quant": {"enabled": True},
+    "notify": {},
+}
+
+
 def load_config(path: str) -> dict:
+    """读配置。文件缺失时自动生成一份默认配置并落盘，保证空白部署开箱即用。"""
+    if not os.path.exists(path):
+        print(f"[config] 未找到 {path}，自动生成默认配置（{len(DEFAULT_SYMBOLS)} 个币种）")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(DEFAULT_CONFIG, f, allow_unicode=True, sort_keys=False)
+        except Exception as e:
+            print(f"[config] 默认配置写入失败（将使用内存配置运行）: {e}")
+        return {k: (v.copy() if isinstance(v, (dict, list)) else v)
+                for k, v in DEFAULT_CONFIG.items()}
     with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        cfg = yaml.safe_load(f) or {}
+    # 补齐缺失的关键项（老配置/手工精简配置也能跑）
+    for k, v in DEFAULT_CONFIG.items():
+        if k not in cfg or cfg[k] in (None, "", [], {}):
+            cfg[k] = v.copy() if isinstance(v, (dict, list)) else v
+            print(f"[config] 缺失项 {k} 已用默认值补齐")
+    return cfg
 
 
 def start_static(dist_dir: str, port: int) -> None:
@@ -87,8 +123,13 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     enabled = get_enabled(pcfg.get("enabled", "all"))
     print(f"[engine] 已启用形态 {len(enabled)} 个")
 
-    symbols = cfg["symbols"]
-    intervals = cfg["intervals"]
+    symbols = [str(x).lower() for x in (cfg.get("symbols") or DEFAULT_SYMBOLS)]
+    intervals = [str(x) for x in (cfg.get("intervals") or ["1m", "3m"])]
+    if not symbols:
+        symbols = list(DEFAULT_SYMBOLS)
+    if not intervals:
+        intervals = ["1m", "3m"]
+    print(f"[config] 监控 {len(symbols)} 个币种 / 周期 {intervals}")
 
     aggs: dict[tuple, KlineAggregator] = {}
     for sym in symbols:
@@ -497,6 +538,37 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             except Exception:
                 pass
 
+    # 历史回补的重试任务：启动时若某些币回补失败（网络抖动/代理未就绪），
+    # 会一直是空历史、只能靠实时成交慢慢累积。这里每 90 秒补一次，直到够了为止。
+    async def backfill_retry():
+        await asyncio.sleep(20)
+        while True:
+            need = [(sym, iv, agg) for (sym, iv), agg in aggs.items()
+                    if len(agg.history) < 60]
+            for sym, iv, agg in need:
+                try:
+                    candles = await asyncio.to_thread(
+                        fetch_klines, sym, iv, limit, proxy_cfg or None)
+                    if not candles:
+                        continue
+                    # 清掉实时累积的少量K线再整体 seed，避免历史重复
+                    agg.history.clear()
+                    agg.current = None
+                    agg.seed(candles)
+                    keep_from = KlineAggregator.now_ms() - int(scfg.get("minutes", 30)) * 60_000
+                    for c in candles:
+                        if c.open_time >= keep_from:
+                            storage.save_candle(sym, iv, c)
+                    try:
+                        hub.structures[(sym, iv)] = analyze_structure(
+                            list(agg.history)[-160:])
+                    except Exception:
+                        pass
+                    print(f"[backfill] 重试成功 {sym} {iv}: {len(candles)} 根")
+                except Exception as e:
+                    print(f"[backfill] 重试失败 {sym} {iv}: {e}")
+            await asyncio.sleep(90)
+
     # 交易所公告（币安/OKX）：10 分钟拉一次，缓存给所有客户端
     async def news_poller():
         await asyncio.sleep(3)      # 等其它任务先起来
@@ -511,7 +583,8 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 print(f"[news] 拉取失败: {e}")
             await asyncio.sleep(600)
 
-    await asyncio.gather(supervisor(), sweep(), accounts_poller(), news_poller())
+    await asyncio.gather(supervisor(), sweep(), accounts_poller(),
+                         news_poller(), backfill_retry())
 
 
 def main() -> None:

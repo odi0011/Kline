@@ -1,7 +1,8 @@
 /* 决策流水：无边框、只占整行约 40% 宽，只有记录列表。
    行高固定（虚拟滚动依赖），内容单行、中间省略。 */
 .wrap {
-  flex: 0 0 22%;
+  flex: 1 1 0;
+  min-width: 0;
   min-width: 0;
   position: relative;
   display: flex;

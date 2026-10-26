@@ -1,6 +1,7 @@
 /* 仓位历史：与决策流水同一套视觉（无边框、虚拟滚动、22px 行高） */
 .wrap {
-  flex: 0 0 22%;
+  flex: 1 1 0;
+  min-width: 0;
   min-width: 0;
   position: relative;
   display: flex;

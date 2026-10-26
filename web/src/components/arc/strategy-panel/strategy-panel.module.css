@@ -1,8 +1,8 @@
 /* 策略分析面板：第三行剩余空间，铺满高度，无边框。
    内容按"指标 / 风控 / 参数"三个页签组织，指标页里每个币一张卡（2 列网格）。 */
 .wrap {
-  flex: 1 1 0;
-  min-width: 300px;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   padding: 0 2px;
@@ -52,12 +52,9 @@
 /* 币种指标网格：宽时两列，窄时一列 */
 .symGrid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 6px;
   align-content: start;
-}
-@container (max-width: 620px) {
-  .symGrid { grid-template-columns: 1fr; }
 }
 
 .symCard {
@@ -211,11 +208,8 @@
 
 /* 参数表 */
 .paramGrid {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 3px 10px;
-}
-@container (max-width: 520px) {
-  .paramGrid { grid-template-columns: 1fr; }
 }
 .paramRow {
   display: flex; align-items: baseline; gap: 6px;
