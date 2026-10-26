@@ -323,9 +323,6 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         agg.on_update = on_evt
         agg.on_close = on_evt
 
-    if mode != "demo" and depth_box["stream"]:
-        asyncio.create_task(depth_box["stream"].run())
-        print(f"[depth] 订单簿深度流已启动（{len(symbols)} 个币）")
 
     bcfg = cfg.get("feed", {})
     proxy_cfg = (bcfg.get("proxy") or "").strip()
@@ -382,6 +379,11 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     else:
         feed = BinanceFuturesStream(symbols, on_trade, proxy=proxy_cfg or True)
     feed_box["feed"] = feed
+
+    # 深度流必须在 mode 确定之后再启动（demo 模式没有真实挂单）
+    if mode != "demo" and depth_box["stream"]:
+        asyncio.create_task(depth_box["stream"].run())
+        print(f"[depth] 订单簿深度流已启动（{len(symbols)} 个币）")
 
     await hub.start()
 
