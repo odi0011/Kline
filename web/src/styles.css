@@ -359,6 +359,15 @@ body {
 /* ---------- 悬停K线：显示存储记录 ---------- */
 .chart-box { position: relative; }
 
+/* 结构叠加层：透明画布盖在图表上，只画线/区不拦截鼠标（十字线仍归图表） */
+.struct-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+.struct-overlay canvas { display: block; }
+
 .hover-tip {
   position: absolute;
   z-index: 30;

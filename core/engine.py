@@ -5,7 +5,7 @@ import time
 from core.candle import Candle, INTERVAL_MS
 from patterns.base import Pattern, PatternHit, get_enabled
 
-WINDOW = 60          # 传给形态的K线窗口（形态本体 + 趋势上下文）
+WINDOW = 120         # 传给形态的K线窗口（形态本体 + 趋势上下文；结构形态需要更长历史）
 DEDUPE_MAX = 20000
 DEDUPE_TTL_MS = 2 * 60 * 60 * 1000
 LIVE_MIN_RATIO = 0.92    # 盘中预警只在K线完成度≥92%时判定（此前形态未成型，误报率高）
@@ -76,9 +76,19 @@ class PatternEngine:
         best = max(candidates, key=lambda p: (p.priority, p.min_bars))
         if not self._dedupe_ok((symbol, interval, candle.open_time, mode)):
             return
+        # 结构形态自带几何点位与动态方向（如对称三角突破方向由突破侧决定）
+        geom = None
+        gfn = getattr(best, "geometry", None)
+        if callable(gfn):
+            try:
+                geom = gfn(window)
+            except Exception:
+                geom = None
+        direction = (geom or {}).get("direction") or best.direction
+        name_zh = (geom or {}).get("name_zh") or best.name_zh
         self.notifier(PatternHit(
             symbol=symbol, interval=interval, pattern=best.key,
-            name_zh=best.name_zh, direction=best.direction, mode=mode,
+            name_zh=name_zh, direction=direction, mode=mode,
             price=candle.close, bar_open_time=candle.open_time,
-            ts=int(time.time() * 1000),
+            ts=int(time.time() * 1000), geometry=geom,
         ))

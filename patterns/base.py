@@ -21,6 +21,7 @@ class PatternHit:
     price: float
     bar_open_time: int
     ts: int              # 本地检出时间 ms
+    geometry: dict | None = None   # 结构形态的几何点位（前端画图用）
 
 
 # ============ K线原语（写新形态直接用这些函数） ============

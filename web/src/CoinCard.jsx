@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, HistogramSeries, ColorType } from 'lightweight-charts'
 import { AnimatedCounter } from '@/components/arc/animated-counter/animated-counter'
 import CoinAvatar from '@/components/ui/coin-avatar'
+import StructureOverlay from './StructureOverlay.jsx'
 import { PATTERN_META } from './patterns_meta.js'
 
 const rgba = (hex, a) => {
@@ -39,6 +40,7 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
   const [tick, setTick] = useState(null)   // { price, dir }
   const [hover, setHover] = useState(null) // { x, y, timeMs } 十字悬停
   const [barDetail, setBarDetail] = useState(null)
+  const [structure, setStructure] = useState(null)   // 后端结构分析（画线/画区/形态）
   const base = symbol.replace(/usdt$/, '')
 
   intervalRef.current = settings.interval
@@ -192,6 +194,13 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
       if (m.hits && m.hits.length) onHoverHitsRef.current?.(m.hits, symbol)
       else onHoverHitsRef.current?.([], symbol)
     }))
+    // 结构分析（支撑压力/趋势线/FVG/订单块/结构形态）：收线时服务端推送
+    offs.push(live.on(`structure|${symbol}`, () => {
+      setStructure(live.structures[symbol]?.[intervalRef.current] || null)
+    }))
+    offs.push(live.on('init', () => {
+      setStructure(live.structures[symbol]?.[intervalRef.current] || null)
+    }))
 
     // 悬停K线：记录位置与时间，去抖后向服务端查询该根的存储记录
     let lastT = 0, lastQ = 0
@@ -214,10 +223,11 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol])
 
-  // 周期切换：重画 + 视图
+  // 周期切换：重画 + 视图 + 切换该周期的结构数据
   useEffect(() => {
     if (!chartRef.current) return
     setData()
+    setStructure(live.structures[symbol]?.[intervalRef.current] || null)
     prevCloseRef.current = null
     updateHeader()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -298,6 +308,8 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
         <span className="iv-label">{intervalRef.current}</span>
       </div>
       <div ref={boxRef} className="chart-box">
+        <StructureOverlay chartRef={chartRef} seriesRef={candleRef} structure={structure}
+          interval={intervalRef.current} visibleBars={settings.visibleBars} />
         {hover && (
           <div className="hover-tip"
             style={{

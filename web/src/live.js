@@ -9,6 +9,7 @@ export class LiveClient {
     this.url = url
     this.ws = null
     this.store = {}          // symbol -> interval -> { bars: [] }
+    this.structures = {}     // symbol -> interval -> 结构分析
     this.meta = null
     this.hits = []
     this.subs = new Map()    // key -> Set<fn>
@@ -59,9 +60,27 @@ export class LiveClient {
           cell[iv] = { bars: (m.history[sym]?.[iv] || []).map(toBar) }
         }
       }
+      if (m.structures) {
+        for (const [sym, byIv] of Object.entries(m.structures)) {
+          this.structures[sym] = { ...(this.structures[sym] || {}) }
+          for (const [iv, st] of Object.entries(byIv)) {
+            this.structures[sym][iv] = { ...st, __bars: (this.store[sym]?.[iv]?.bars || []).map((b) => ({ time: b.time })) }
+          }
+        }
+      }
       this.meta = m
       this.listeners.meta.forEach((f) => f(m))
       this._emitKey('init', m)
+    } else if (m.type === 'structure') {
+      const sym = m.symbol
+      const iv = m.interval
+      this.structures[sym] = { ...(this.structures[sym] || {}) }
+      this.structures[sym][iv] = {
+        ...m.structure,
+        __bars: (this.store[sym]?.[iv]?.bars || []).map((b) => ({ time: b.time })),
+      }
+      this._emitKey(`structure|${sym}|${iv}`, this.structures[sym][iv])
+      this._emitKey(`structure|${sym}`, this.structures[sym][iv])
     } else if (m.type === 'candle') {
       const cell = (this.store[m.symbol] ||= {})[m.interval] ||= { bars: [] }
       const bars = cell.bars

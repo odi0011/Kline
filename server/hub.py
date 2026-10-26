@@ -56,12 +56,21 @@ class BroadcastHub:
         self.settings_fn = None           # 当前可编辑设置（main 注入）
         self.on_settings = None           # 客户端下发设置时的回调：应用+持久化，返回新设置
         self.quant_fn = None              # 量化快照（main 注入）
+        self.analysis_fn = None           # 结构分析（main 注入）：(sym, iv, candles) -> dict
+        self.structures: dict[tuple, dict] = {}   # (sym, iv) -> 最近一次结构分析
 
     # ---- 聚合器回调（与 PatternEngine 并联） ----
 
     def on_update(self, symbol, interval, candle, closed, history):
         self.latest[(symbol, interval)] = self._bar(candle)
         self.dirty.add((symbol, interval))
+        # 结构分析只在收线时重算（每根K线一次，避免逐笔重算）
+        if closed and self.analysis_fn:
+            try:
+                self.structures[(symbol, interval)] = self.analysis_fn(
+                    symbol, interval, history[-160:])
+            except Exception:
+                pass
 
     on_close = on_update
 
@@ -111,17 +120,22 @@ class BroadcastHub:
 
     def _snapshot(self) -> str:
         history = {}
+        structures = {}
         for sym in self.symbols:
             history[sym] = {}
+            structures[sym] = {}
             for iv in self.intervals:
                 agg = self.aggs.get((sym, iv))
                 bars = [self._bar(c) for c in list(agg.history)[-HISTORY_BARS:]] if agg else []
                 if agg and agg.current is not None:
                     bars.append(self._bar(agg.current))
                 history[sym][iv] = bars
+                st = self.structures.get((sym, iv))
+                if st:
+                    structures[sym][iv] = st
         return json.dumps({
             "type": "init", "mode": self.mode, "symbols": self.symbols,
-            "intervals": self.intervals, "history": history,
+            "intervals": self.intervals, "history": history, "structures": structures,
         }, separators=(",", ":"))
 
     async def _handler(self, ws) -> None:
@@ -201,6 +215,12 @@ class BroadcastHub:
                             await self._broadcast({
                                 "type": "candle", "symbol": key[0],
                                 "interval": key[1], "bar": bar,
+                            })
+                        st = self.structures.get(key)
+                        if st:
+                            await self._broadcast({
+                                "type": "structure", "symbol": key[0],
+                                "interval": key[1], "structure": st,
                             })
                 self._flush_count += 1
                 if self._flush_count % 25 == 0:   # 约 5 秒一次状态

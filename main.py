@@ -10,7 +10,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 import yaml
 
-import patterns.builtin  # noqa: F401  导入即注册内置形态
+import patterns.builtin    # noqa: F401  导入即注册内置形态（单根/双根/三根）
+import patterns.structure  # noqa: F401  导入即注册结构形态（头肩/三重/双顶底/三角/楔形）
 import patterns.base as pbase
 from core.aggregator import KlineAggregator
 from core.engine import PatternEngine
@@ -20,6 +21,7 @@ from feed.demo import DemoSource
 from feed.source import BinanceFuturesStream
 from notify.notifier import Notifier
 from patterns.base import get_enabled
+from analysis.structure import analyze as analyze_structure
 from quant import QuantEngine
 from server.hub import BroadcastHub
 from storage import Storage
@@ -242,6 +244,12 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     quant.broadcast_fn = lambda obj: _loop.call_soon_threadsafe(
         lambda: asyncio.create_task(hub.broadcast(obj)))
     hub.quant_fn = quant.snapshot
+
+    # 结构分析（支撑压力/趋势线/FVG/订单块/结构形态几何）：收线时由 hub 触发
+    def _analyze(sym, iv, candles):
+        return analyze_structure(candles)
+
+    hub.analysis_fn = _analyze
 
     def on_evt(sym, iv, candle, closed, history):
         if closed:
