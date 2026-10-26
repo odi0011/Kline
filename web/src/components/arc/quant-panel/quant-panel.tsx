@@ -71,10 +71,15 @@ function splitReason(reason, compact = false) {
     if (i > 0 && (best < 0 || i < best)) best = i
   }
   if (best > 0) return [s.slice(0, best), s.slice(best)]
-  // 3) 兜底：长文本切掉中间，留头 60% / 尾 24%
+  // 3) 兜底：长文本切掉中间。切点不能落在数字/小数点上，
+  //    否则 0.0045 会被切成 "0.00"，读者完全看不懂那是什么。
   if (s.length > 22) {
     const keepTail = Math.max(8, Math.round(s.length * 0.24))
-    return [s.slice(0, s.length - keepTail), s.slice(-keepTail)]
+    let cut = s.length - keepTail
+    const isNum = (ch) => /[0-9.]/.test(ch || "")
+    while (cut > 2 && isNum(s[cut]) && isNum(s[cut - 1])) cut--
+    if (cut <= 4) cut = s.length - keepTail      // 实在避不开就按原比例
+    return [s.slice(0, cut), s.slice(cut)]
   }
   return [s, ""]
 }

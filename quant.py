@@ -366,23 +366,27 @@ class QuantEngine:
             return
         # 风控 1：该账户已有该币种持仓
         if symbol in st["positions"]:
-            self._event("skip", f"已经有这个币的仓位了（{st['positions'][symbol].get('qty')}），不重复开",
+            held = st["positions"][symbol].get("qty")
+            self._event("skip", f"该币已有 {fmt_qty(held)} 的仓位，不重复开",
                         account=name, symbol=symbol)
             return
         # 风控 2：最大持仓数
         if len(st["positions"]) >= MAX_POSITIONS:
-            self._event("skip", f"仓位已满（{len(st['positions'])}/{MAX_POSITIONS}），等先平掉一个",
+            self._event("skip",
+                        f"仓位已满 {len(st['positions'])}/{MAX_POSITIONS}，等先平掉一个",
                         account=name, symbol=symbol)
             return
         # 风控 3：同币种冷却
         if now - st["cooldown"].get(symbol, 0) < COOLDOWN_SEC * 1000:
             left = int((COOLDOWN_SEC * 1000 - (now - st["cooldown"].get(symbol, 0))) / 1000)
-            self._event("skip", f"刚动过这个币，冷却中（还要 {left} 秒）", account=name, symbol=symbol)
+            self._event("skip", f"刚平过这个币，还需等 {left} 秒",
+                        account=name, symbol=symbol)
             return
         # 风控 3.5：同方向持仓上限（防止同向信号聚集造成方向过度集中）
         same_dir = sum(1 for p in st["positions"].values() if p.get("side") == side)
         if same_dir >= MAX_SAME_DIR:
-            self._event("skip", f"同方向的仓位已经 {same_dir}/{MAX_SAME_DIR} 个了，不再往一个方向加",
+            self._event("skip",
+                        f"同方向已持 {same_dir} 个仓（上限 {MAX_SAME_DIR}），不再加",
                         account=name, symbol=symbol)
             return
         # 风控 3.7：形态历史胜率质量门——胜率过低的形态不入场（与形态统计系统联动）
@@ -394,21 +398,23 @@ class QuantEngine:
                     wr = pst["wins"] / n_dec
                     if wr < self.min_pattern_winrate:
                         self._event("skip",
-                                    f"这个形态历史胜率只有 {round(wr * 100)}%（{n_dec} 次样本），跳过",
+                                    f"该形态历史胜率仅 {round(wr * 100)}%，低于门槛 {round(self.min_pattern_winrate * 100)}%，跳过",
                                     account=name, symbol=symbol)
                         return
         # 风控 4：可用余额与保证金
         avail = self._available(a)
         margin = max(MARGIN_MIN, round(avail * MARGIN_PCT, 2))
         if avail < MARGIN_MIN:
-            self._event("skip", f"可用余额不够（{round(avail, 2)} U，最少要 {MARGIN_MIN} U）",
+            self._event("skip",
+                        f"可用余额 {fmt_qty(avail)} U，不够最低 {fmt_qty(MARGIN_MIN)} U",
                         account=name, symbol=symbol)
             return
         qty_raw = margin / price
         step = self._step_size(a["api_key"], a["api_secret"], symbol)
         qty = self._quantize(qty_raw, step)
         if qty <= 0:
-            self._event("skip", f"按最小下单单位算是 0 张（保证金 {margin} U 太小），跳过",
+            self._event("skip",
+                        f"保证金 {fmt_qty(margin)} U 太少，按最小下单量算出 0，跳过",
                         account=name, symbol=symbol)
             return
         # 下单
@@ -706,6 +712,31 @@ class QuantEngine:
             "accounts": list(self.state.keys()),
             "unsupported": sorted(self._unsupported),
         }
+
+
+def fmt_qty(q) -> str:
+    """持仓/下单数量的可读格式。
+
+    直接用 str(qty) 或两位小数都不行：BTC 仓位 0.0045 会显示成 0.0045
+    （太长）或 0.00（信息全丢）。按量级选有效位数，并去掉多余的尾零。
+    """
+    try:
+        v = float(q)
+    except (TypeError, ValueError):
+        return "--"
+    a = abs(v)
+    if a >= 1000:
+        out = f"{a:,.2f}"
+    elif a >= 1:
+        out = f"{a:.4f}"
+    elif a >= 0.01:
+        out = f"{a:.4f}"
+    else:
+        out = f"{a:.6f}"
+    # 去尾零（保留至少一位小数）
+    if "." in out:
+        out = out.rstrip("0").rstrip(".")
+    return ("-" if v < 0 else "") + out
 
 
 def now_ms() -> int:
