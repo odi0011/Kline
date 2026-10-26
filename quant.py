@@ -119,7 +119,13 @@ class QuantEngine:
         # 持久化到 MySQL（按账户隔离，重启/刷新不清空）；main 注入 storage
         if self.storage_fn:
             try:
-                self.storage_fn(ev)
+                ev["id"] = self.storage_fn(ev)
+            except Exception:
+                pass
+        # 单条实时推送：前端据此逐条入场；不要等 5 秒快照（那样会同批涌入一堆）
+        if self.broadcast_fn and ev.get("id"):
+            try:
+                self.broadcast_fn({"type": "quant_event", "event": ev})
             except Exception:
                 pass
         return ev

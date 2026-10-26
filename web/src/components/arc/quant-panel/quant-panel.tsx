@@ -9,12 +9,14 @@ import {
   Search, XCircle,
 } from "lucide-react"
 import CoinAvatar from "@/components/ui/coin-avatar"
+import { LiquidGlass } from "@/components/ui/liquid-glass"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import styles from "./quant-panel.module.css"
 
 const ROW_H = 22          // 固定行高（虚拟滚动依赖固定高度）
 const OVERSCAN = 10       // 视口上下额外渲染行数
 const NEW_MS = 900        // 新行高亮/动画时长
+const ENTER_GAP = 150     // 逐条入场间隔（同批到多条时一条条冒出来）
 
 const KIND_META = {
   signal: { Icon: Search, tone: "signal" },
@@ -123,6 +125,8 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
   const viewportRef = useRef(null)
   const seenRef = useRef(new Set())
   const addedAtRef = useRef(new Map())
+  const pendingRef = useRef([])          // 待入场的事件队列
+  const drainTimerRef = useRef(null)
 
   // 视口高度（虚拟窗口大小）
   useLayoutEffect(() => {
@@ -141,29 +145,39 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
     if (!pushedEvents) return
     setEvents(pushedEvents)
     seenRef.current = new Set(pushedEvents.map((e) => e.id ?? `${e.ts}-${e.reason}`))
+    pendingRef.current = []          // 历史一次性铺好，不做逐条动画
   }, [pushedEvents])
 
-  // 实时增量：按 id 去重追加，记录到达时间用于入场动画
+  // 新事件先入队；由下面的定时器逐条展示（避免同批多条一起冒出来）
   useEffect(() => {
-    const live = snap.events || []
-    if (!live.length) return
-    setEvents((cur) => {
-      const merged = cur.slice()
-      const now = Date.now()
-      let added = 0
-      for (const ev of live) {
-        const key = ev.id ?? `${ev.ts}-${ev.kind}-${ev.reason}`
-        if (seenRef.current.has(key)) continue
-        seenRef.current.add(key)
-        addedAtRef.current.set(key, now)
-        merged.push({ ...ev, id: key })
-        added++
-      }
-      if (!added) return cur
-      merged.sort((a, b) => (a.ts || 0) - (b.ts || 0))
-      return merged.slice(-3000)
-    })
-  }, [snap.events])
+    if (pushedEvents) return
+    for (const ev of (snap.events || [])) {
+      const key = ev.id ?? `${ev.ts}-${ev.kind}-${ev.reason}`
+      if (seenRef.current.has(key)) continue
+      seenRef.current.add(key)
+      pendingRef.current.push({ ...ev, id: key })
+    }
+  }, [snap.events, pushedEvents])
+
+  // 逐条入场：每 ENTER_GAP 毫秒放一条，每条各自触发入场动画
+  useEffect(() => {
+    if (drainTimerRef.current) return
+    const drain = () => {
+      const next = pendingRef.current.shift()
+      if (!next) { drainTimerRef.current = null; return }
+      addedAtRef.current.set(next.id, Date.now())
+      setEvents((cur) => {
+        const merged = cur.concat(next)
+        merged.sort((a, b) => (a.ts || 0) - (b.ts || 0))
+        return merged.slice(-3000)
+      })
+      drainTimerRef.current = setTimeout(drain, ENTER_GAP)
+    }
+    if (pendingRef.current.length) drain()
+    return () => {
+      if (drainTimerRef.current) { clearTimeout(drainTimerRef.current); drainTimerRef.current = null }
+    }
+  }, [snap.events, pushedEvents])
 
   // 动画到期后刷新一次，让 data-new 失效（避免一直高亮）
   useEffect(() => {
@@ -222,14 +236,19 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
       </ScrollArea>
 
       {!follow && total > 0 && (
-        <button type="button" className={styles.jump}
-          onClick={() => {
-            setFollow(true)
-            const el = viewportRef.current
-            if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
-          }}>
-          最新
-        </button>
+        <div className={styles.jumpWrap}>
+          <LiquidGlass radius={999} scale={22} aberration={0} frost={2} tint={0.14}
+            className={styles.jumpGlass}>
+            <button type="button" className={styles.jumpBtn}
+              onClick={() => {
+                setFollow(true)
+                const el = viewportRef.current
+                if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+              }}>
+              最新
+            </button>
+          </LiquidGlass>
+        </div>
       )}
     </section>
   )

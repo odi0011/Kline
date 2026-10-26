@@ -150,8 +150,18 @@ export default function App() {
     })
     const offQuant = live.on('quant', (m) => setQuantSnap(m.snapshot))
     const offQEvents = live.on('quant_events', (m) => setQuantEvents(m.events || []))
+    // 单条实时事件：追加到主列表（前端负责逐条入场，不整批涌入）
+    const offQEvent = live.on('quant_event', (ev) => {
+      if (!ev) return
+      setQuantEvents((cur) => {
+        const list = cur || []
+        const key = ev.id ?? `${ev.ts}-${ev.reason}`
+        if (list.some((x) => (x.id ?? `${x.ts}-${x.reason}`) === key)) return list
+        return [...list, { ...ev, id: key }]
+      })
+    })
     live.connect()
-    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); live.close() }
+    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offQEvent(); live.close() }
   }, [])
 
   // 命中时：滚动到最新命中的形态卡片
