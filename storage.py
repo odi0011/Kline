@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 
@@ -60,6 +61,53 @@ class Storage:
         self._q("""CREATE TABLE IF NOT EXISTS equity(
             acct VARCHAR(64), ts BIGINT, bal DOUBLE, upnl DOUBLE,
             PRIMARY KEY(acct, ts)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # 量化决策流水：引擎的每个决策/思考都落库，按账户隔离，重启不清空
+        self._q("""CREATE TABLE IF NOT EXISTS quant_events(
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            ts BIGINT, kind VARCHAR(16), acct VARCHAR(64), symbol VARCHAR(16),
+            reason VARCHAR(600), pnl DOUBLE, extra TEXT,
+            INDEX idx_qe_ts(ts), INDEX idx_qe_acct(acct, ts)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
+    # ---- 量化决策流水 ----
+
+    def save_quant_event(self, ev: dict) -> int:
+        """写一条决策/事件流水。extra 里放结构化细节（形态、胜率、数量、价格等）。"""
+        extra = {k: v for k, v in ev.items()
+                 if k not in ("ts", "kind", "account", "symbol", "reason", "pnl")}
+        self._q("INSERT INTO quant_events(ts,kind,acct,symbol,reason,pnl,extra) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s)",
+                (int(ev.get("ts") or 0), str(ev.get("kind") or ""),
+                 str(ev.get("account") or ""), str(ev.get("symbol") or ""),
+                 str(ev.get("reason") or "")[:600],
+                 float(ev["pnl"]) if isinstance(ev.get("pnl"), (int, float)) else None,
+                 json.dumps(extra, ensure_ascii=False) if extra else None))
+        row = self._qall("SELECT LAST_INSERT_ID()")
+        return int(row[0][0]) if row else 0
+
+    def quant_events(self, acct: str = "", limit: int = 400) -> list[dict]:
+        """取最近 limit 条决策流水（升序）。acct 非空时只取该账户 + 全局事件
+        （无账户归属的信号/系统消息对所有账户可见）。"""
+        if acct:
+            rows = self._qall(
+                "SELECT id,ts,kind,acct,symbol,reason,pnl,extra FROM quant_events "
+                "WHERE acct=%s OR acct='' ORDER BY id DESC LIMIT %s", (acct, limit))
+        else:
+            rows = self._qall(
+                "SELECT id,ts,kind,acct,symbol,reason,pnl,extra FROM quant_events "
+                "ORDER BY id DESC LIMIT %s", (limit,))
+        out = []
+        for r in reversed(rows):
+            ev = {"id": int(r[0]), "ts": int(r[1]), "kind": r[2] or "",
+                  "account": r[3] or "", "symbol": r[4] or "", "reason": r[5] or ""}
+            if r[6] is not None:
+                ev["pnl"] = float(r[6])
+            if r[7]:
+                try:
+                    ev.update(json.loads(r[7]))
+                except Exception:
+                    pass
+            out.append(ev)
+        return out
 
     # ---- 账户权益 ----
 

@@ -142,11 +142,12 @@ body {
 }
 
 /* 量化交易区：删掉第二行账户面板后填满剩余高度 */
+/* 底部决策流水：高度 = 第一行(192) 的 4/3 ≈ 256，不再占满剩余空间 */
 .row3 {
   display: flex;
   gap: var(--gap);
-  flex: 1 1 auto;
-  min-height: 300px;
+  flex: 0 0 auto;
+  height: 256px;
 }
 
 .combo-card {

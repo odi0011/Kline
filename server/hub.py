@@ -56,6 +56,7 @@ class BroadcastHub:
         self.settings_fn = None           # 当前可编辑设置（main 注入）
         self.on_settings = None           # 客户端下发设置时的回调：应用+持久化，返回新设置
         self.quant_fn = None              # 量化快照（main 注入）
+        self.quant_events_fn = None       # 决策流水查询（main 注入）：(acct, limit) -> list
         self.analysis_fn = None           # 结构分析（main 注入）：(sym, iv, candles) -> dict
         self.structures: dict[tuple, dict] = {}   # (sym, iv) -> 最近一次结构分析
 
@@ -158,6 +159,15 @@ class BroadcastHub:
             if self.quant_fn:
                 await ws.send(json.dumps({"type": "quant", "snapshot": self.quant_fn()},
                                          separators=(",", ":")))
+            if self.quant_events_fn:
+                try:
+                    acct = self.last_accounts[0]["name"] if self.last_accounts else ""
+                    await ws.send(json.dumps({
+                        "type": "quant_events",
+                        "events": self.quant_events_fn(acct, 400),
+                    }, separators=(",", ":")))
+                except Exception:
+                    pass
             async for raw in ws:
                 try:
                     msg = json.loads(raw)
@@ -173,6 +183,12 @@ class BroadcastHub:
                         new_settings = self.on_settings(msg.get("settings") or {})
                         await ws.send(json.dumps({"type": "settings", "settings": new_settings},
                                                  separators=(",", ":")))
+                    elif mtype == "query_quant_events" and self.quant_events_fn:
+                        acct = str(msg.get("account") or "")
+                        limit = int(msg.get("limit") or 400)
+                        await ws.send(json.dumps({
+                            "type": "quant_events", "events": self.quant_events_fn(acct, limit),
+                        }, separators=(",", ":")))
                     elif mtype == "query_bar" and self.query_fn:
                         sym, iv = msg.get("symbol"), msg.get("interval")
                         ot = int(msg.get("open_time") or 0)

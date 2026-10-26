@@ -65,6 +65,7 @@ export default function App() {
   const [livePreview, setLivePreview] = useState(true)
   const [srvAccounts, setSrvAccounts] = useState(null)          // 服务端账户列表（含密钥）
   const [quantSnap, setQuantSnap] = useState(null)              // 量化引擎快照
+  const [quantEvents, setQuantEvents] = useState(null)          // 持久化决策流水（MySQL）
   const liveRef = useRef(null)
   const cardsViewportRef = useRef(null)
   const settingsRef = useRef(settings)
@@ -148,8 +149,9 @@ export default function App() {
       if (Array.isArray(s.accounts)) setSrvAccounts(s.accounts)
     })
     const offQuant = live.on('quant', (m) => setQuantSnap(m.snapshot))
+    const offQEvents = live.on('quant_events', (m) => setQuantEvents(m.events || []))
     live.connect()
-    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); live.close() }
+    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); live.close() }
   }, [])
 
   // 命中时：滚动到最新命中的形态卡片
@@ -366,7 +368,7 @@ export default function App() {
           </div>
         </div>
       <div className="row3">
-        <QuantPanel snapshot={quantSnap} chartColors={chartColors}
+        <QuantPanel snapshot={quantSnap} events={quantEvents} chartColors={chartColors}
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
       </div>
       </aside>

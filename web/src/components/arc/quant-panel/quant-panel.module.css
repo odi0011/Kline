@@ -1,105 +1,132 @@
+/* 决策流水：无边框单一盒子。头部一行（标题/状态/统计/开关）+ 下方滚动流水。
+   高度由外层 .row3 控制（约第一行的 4/3）。 */
 .wrap {
-  flex: 1; min-width: 0;
-  display: flex; flex-direction: column; gap: 10px;
-  padding: 14px 16px;
-  border-radius: 12px;
-  background: #fff;
-  border: 1px solid rgba(28, 35, 51, 0.08);
-  border-top: 2px solid rgba(28, 35, 51, 0.12);
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 2px;
 }
 
-.head { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.title { margin: 0; font-size: 14px; font-weight: 700; color: #1c2333; flex: none; }
+/* 头部：无边框，只靠排版分层 */
+.head { display: flex; align-items: center; gap: 8px; min-width: 0; flex: none; height: 24px; }
+.title { margin: 0; font-size: 13px; font-weight: 700; color: #1c2333; flex: none; }
 .state {
-  font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
-  padding: 2px 8px; border-radius: 8px;
-  background: rgba(28, 35, 51, 0.08); color: var(--text-muted, #8b949e);
+  flex: none;
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.4px;
+  padding: 2px 7px; border-radius: 7px;
+  background: rgba(28, 35, 51, 0.07); color: var(--text-muted, #8b949e);
 }
-.state[data-on] { background: #16a34a; color: #fff; }
-.meta { font-size: 10.5px; color: var(--text-muted, #8b949e); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.state[data-on] { background: color-mix(in srgb, var(--accent) 24%, transparent); color: var(--accent-deep, #b45309); }
+
+/* 统计条：紧凑一排，标签浅、数值深 */
+.flow { display: flex; align-items: baseline; gap: 10px; min-width: 0; overflow: hidden; }
+.flowItem {
+  display: inline-flex; align-items: baseline; gap: 3px;
+  font-size: 11px; font-weight: 700; color: #1c2333;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; flex: none;
+}
+.flowItem em {
+  font-style: normal; font-size: 9.5px; font-weight: 400;
+  color: var(--text-muted, #8b949e); letter-spacing: 0.2px;
+}
+.win { color: #16a34a; font-weight: 700; }
+.loss { color: #dc2626; font-weight: 700; }
+
 .toggle {
   margin-left: auto; flex: none;
-  height: 26px; padding: 0 12px; border-radius: 8px;
+  height: 24px; padding: 0 11px; border-radius: 7px;
   border: 1px solid rgba(28, 35, 51, 0.14);
   background: transparent; color: var(--text-secondary, #5b6472);
-  font-size: 11.5px; font-weight: 600; cursor: pointer; font-family: inherit;
+  font-size: 11px; font-weight: 600; cursor: pointer; font-family: inherit;
+  transition: background-color 130ms ease;
 }
 .toggle[data-on] { color: #b91c1c; border-color: rgba(185, 28, 28, 0.3); }
 .toggle:hover { background: rgba(28, 35, 51, 0.05); }
 
-/* 流程条：信号 → 决策 → 下单 → 平仓 → 胜负 */
-.flow {
-  display: flex; align-items: stretch; gap: 0;
-  padding: 8px 10px; border-radius: 10px;
-  background: rgba(28, 35, 51, 0.04);
-  border: 1px solid rgba(28, 35, 51, 0.06);
-}
-.flowStep {
-  flex: 1; display: flex; align-items: baseline; gap: 6px;
-  position: relative; justify-content: center;
-}
-.flowLabel { font-size: 10px; color: var(--text-muted, #8b949e); }
-.flowVal { font-size: 15px; font-weight: 700; color: #1c2333; font-variant-numeric: tabular-nums; }
-.flowVal b { font-weight: 700; }
-.win { color: #16a34a; }
-.loss { color: #dc2626; }
-.flowArrow { position: absolute; right: -6px; top: 50%; transform: translateY(-50%); color: rgba(28, 35, 51, 0.2); }
+/* 流水滚动区：吃掉剩余高度 */
+.stream { flex: 1 1 0; min-height: 0; }
+.streamViewport { padding-right: 2px; }
 
-.grid3 { display: flex; gap: 10px; flex: 1; min-height: 0; }
-.col {
-  flex: 1; min-width: 0;
-  display: flex; flex-direction: column; gap: 6px;
-  padding: 8px 10px; border-radius: 10px;
-  background: rgba(28, 35, 51, 0.03);
-  border: 1px solid rgba(28, 35, 51, 0.05);
-}
-.colHead { display: flex; align-items: baseline; justify-content: space-between; }
-.colTitle { font-size: 11px; font-weight: 600; color: var(--text-secondary, #5b6472); letter-spacing: 0.4px; }
-.colHint { font-size: 10px; color: var(--text-muted, #8b949e); }
-.winRate { font-size: 10px; font-weight: 700; color: var(--accent-deep, #b45309); }
-
-/* 滚动区改用 uiarc ScrollArea（规范约定）：容器只负责弹性占位 */
-.scrollArea { flex: 1; min-height: 0; }
-.list { display: flex; flex-direction: column; gap: 3px; }
-
-/* 决策流水行 */
-.evRow {
-  display: flex; align-items: center; gap: 5px;
-  padding: 3px 6px; border-radius: 6px;
+/* 一条流水：等宽列对齐，方便纵向比对 */
+.row {
+  display: flex; align-items: baseline; gap: 7px;
+  padding: 2px 6px;
+  border-radius: 5px;
   font-size: 11px; color: #1c2333;
-  background: rgba(255, 255, 255, 0.7);
+  line-height: 1.4;
+}
+.row:nth-child(odd) { background: rgba(28, 35, 51, 0.022); }
+.row:hover { background: rgba(28, 35, 51, 0.05); }
+
+.time {
+  flex: none; width: 58px;
+  font-size: 10px; color: var(--text-muted, #8b949e);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.day { display: inline; font-style: normal; margin-right: 4px; opacity: 0.7; }
+
+.kind {
+  flex: none; width: 44px;
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 10px; font-weight: 600;
+  white-space: nowrap;
+}
+/* 类型配色：靠文字色区分，不用色块背景（大面积底色会显得脏） */
+.row[data-tone="signal"] .kind { color: #2563eb; }
+.row[data-tone="open"] .kind { color: #15803d; }
+.row[data-tone="close"] .kind { color: #b45309; }
+.row[data-tone="skip"] .kind { color: #8b949e; }
+.row[data-tone="error"] .kind { color: #b91c1c; }
+.row[data-tone="audit"] .kind { color: #7c3aed; }
+.row[data-tone="system"] .kind { color: #64748b; }
+
+.sym {
+  flex: none; width: 74px;
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.2px;
+  white-space: nowrap; overflow: hidden;
+}
+
+/* 说明区：图标、正文、徽标在同一行内 baseline 对齐，超长省略 */
+.text {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 4px;
+  overflow: hidden;
+  color: rgba(28, 35, 51, 0.82);
+}
+.reason {
   min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.evIcon { flex: none; color: var(--text-muted, #8b949e); }
-.evRow[data-kind="open"] .evIcon { color: #16a34a; }
-.evRow[data-kind="close"] .evIcon { color: #2563eb; }
-.evRow[data-kind="skip"] .evIcon { color: #d97706; }
-.evRow[data-kind="error"] .evIcon { color: #dc2626; }
-.evTime { flex: none; font-size: 10px; color: var(--text-muted, #8b949e); font-variant-numeric: tabular-nums; }
-.evLabel { flex: none; font-size: 10px; font-weight: 700; padding: 0 4px; border-radius: 4px; background: rgba(28, 35, 51, 0.07); }
-.evText { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.evAcct { flex: none; font-size: 9.5px; color: var(--text-muted, #8b949e); }
-.evPnl { flex: none; font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
-
-/* 持仓行 */
-.posRow, .tradeRow {
-  display: flex; align-items: center; gap: 6px;
-  padding: 5px 7px; border-radius: 7px;
-  background: rgba(255, 255, 255, 0.78);
-  font-size: 11.5px;
+.dir { flex: none; }
+.row[data-tone="signal"] .dir { color: #2563eb; }
+.meta {
+  flex: none; font-style: normal; font-size: 9.5px;
+  color: var(--text-muted, #8b949e);
+  background: rgba(28, 35, 51, 0.05);
+  padding: 0.5px 4px; border-radius: 4px;
 }
-.posSym { font-weight: 700; letter-spacing: 0.2px; flex: none; }
-.posSide { flex: none; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 6px; }
-.posSide[data-side="long"] { background: #16a34a; color: #fff; }
-.posSide[data-side="short"] { background: #dc2626; color: #fff; }
-.posQty { flex: none; color: var(--text-secondary, #5b6472); font-variant-numeric: tabular-nums; }
-.posPnl { margin-left: auto; flex: none; font-weight: 700; font-variant-numeric: tabular-nums; display: inline-flex; align-items: baseline; gap: 4px; }
-/* 计数器根节点自带 color:var(--foreground)，须继承外层涨跌色，否则只有 +/- 号是彩色的 */
-.posPnl [class*="counter"] { color: inherit; }
-.posPnl [class*="symbol"] { color: inherit; }
-.posPnl em { font-style: normal; font-size: 9.5px; font-weight: 600; opacity: 0.75; }
-.tTime { flex: none; font-size: 10px; color: var(--text-muted, #8b949e); font-variant-numeric: tabular-nums; }
-.tReason { flex: 1; min-width: 0; font-size: 10px; color: var(--text-muted, #8b949e); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tHold { flex: none; font-size: 9.5px; color: var(--text-muted, #8b949e); }
 
-.empty { font-size: 11px; color: var(--text-muted, #8b949e); padding: 10px 4px; text-align: center; }
+.pnl {
+  flex: none; min-width: 54px; text-align: right;
+  font-size: 10.5px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.empty { font-size: 11px; color: var(--text-muted, #8b949e); padding: 14px 6px; }
+
+/* 上翻后右下角的"回到最新" */
+.jump {
+  position: absolute; right: 10px; bottom: 8px; z-index: 3;
+  height: 24px; padding: 0 10px; border-radius: 999px;
+  border: 1px solid rgba(28, 35, 51, 0.12);
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--text-secondary, #5b6472);
+  font-size: 10.5px; font-weight: 600; cursor: pointer; font-family: inherit;
+  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.12);
+}
+.jump:hover { background: #fff; color: #1c2333; }

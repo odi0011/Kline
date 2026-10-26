@@ -284,11 +284,15 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                         min_pattern_samples=int(qcfg.get("min_pattern_samples", 5)))
     quant.enabled = bool(qcfg.get("enabled", True))
     quant.pattern_stats_fn = storage.pattern_stats
+    # 决策流水落库：引擎线程内同步写 MySQL（连接已加锁，开销可忽略）
+    quant.storage_fn = storage.save_quant_event
     # 量化引擎在线程池中运行；广播用 call_soon_threadsafe 回到事件循环（线程安全）
     _loop = asyncio.get_running_loop()
     quant.broadcast_fn = lambda obj: _loop.call_soon_threadsafe(
         lambda: asyncio.create_task(hub.broadcast(obj)))
     hub.quant_fn = quant.snapshot
+    # 决策流水查询：前端按账户拉历史（持久化，重启/刷新不清空）
+    hub.quant_events_fn = storage.quant_events
 
     # 结构分析（支撑压力/趋势线/FVG/订单块/结构形态几何）：收线时由 hub 触发
     def _analyze(sym, iv, candles):

@@ -80,6 +80,7 @@ class QuantEngine:
         self.stats = {"signals": 0, "decisions": 0, "orders": 0, "closes": 0, "errors": 0, "wins": 0, "losses": 0}
         self.last_audit_ms = 0
         self.broadcast_fn = None           # main 注入：asyncio.create_task(hub.broadcast(obj))
+        self.storage_fn = None             # main 注入：storage.save_quant_event（事件落库）
         self._err_dedupe: dict[str, int] = {}
         self._mark_cache: dict[str, tuple] = {}
         self._unsupported: set[str] = set()   # 未开通合约权限的币种（如 TradFi 需签协议）
@@ -115,6 +116,12 @@ class QuantEngine:
                 f.write(json.dumps(ev, ensure_ascii=False) + "\n")
         except Exception:
             pass
+        # 持久化到 MySQL（按账户隔离，重启/刷新不清空）；main 注入 storage
+        if self.storage_fn:
+            try:
+                self.storage_fn(ev)
+            except Exception:
+                pass
         return ev
 
     def _load_trades(self):
@@ -209,6 +216,12 @@ class QuantEngine:
             if a.get("name") == name:
                 return a
         return None
+
+    def _primary_account(self) -> str:
+        """当前唯一账户名（单账户模式）。用于给"信号入口"这类尚未分派到账户
+        的事件补归属，保证决策流水按账户筛得到。"""
+        accs = self._tradable_accounts()
+        return accs[0].get("name", "") if accs else ""
 
     def _step_size(self, api_key: str, api_secret: str, symbol: str) -> float:
         if symbol in self._step_sizes:
@@ -307,12 +320,21 @@ class QuantEngine:
                 return
             if direction not in ("bullish", "bearish"):
                 # 中性形态（十字星等）不指示方向，无法决定多空 → 明确记录，便于核对决策流水完整性
-                self._event("skip", f"中性形态不参与交易({hit.get('name_zh') or 'neutral'})", symbol=symbol)
+                self._event("skip", f"中性形态不参与交易（{hit.get('name_zh') or 'neutral'} 无方向）",
+                            account=self._primary_account(), symbol=symbol,
+                            pattern=hit.get("pattern"), name_zh=hit.get("name_zh"))
                 return
             price = (self.price_fn or (lambda s: None))(symbol)
             if not price or price <= 0:
-                self._event("skip", "无最新价", symbol=symbol)
+                self._event("skip", "无最新价，无法计算下单数量", account=self._primary_account(), symbol=symbol)
                 return
+            # 记录一次"收到信号"的思考过程：形态 / 方向 / 价格
+            self._event("signal",
+                        f"收到 {hit.get('name_zh') or hit.get('pattern')} "
+                        f"{'看涨' if direction == 'bullish' else '看跌'}信号 @ {price}",
+                        account=self._primary_account(), symbol=symbol,
+                        pattern=hit.get("pattern"), name_zh=hit.get("name_zh"),
+                        direction=direction, price=float(price))
             side = "BUY" if direction == "bullish" else "SELL"
             for a in self._tradable_accounts():
                 name = a.get("name", "")
@@ -333,20 +355,24 @@ class QuantEngine:
             return
         # 风控 1：该账户已有该币种持仓
         if symbol in st["positions"]:
-            self._event("skip", "已有该币种持仓", account=name, symbol=symbol)
+            self._event("skip", f"该币种已有持仓（{st['positions'][symbol].get('qty')}），不重复开仓",
+                        account=name, symbol=symbol)
             return
         # 风控 2：最大持仓数
         if len(st["positions"]) >= MAX_POSITIONS:
-            self._event("skip", "已达最大持仓数", account=name, symbol=symbol)
+            self._event("skip", f"已达最大持仓数（{len(st['positions'])}/{MAX_POSITIONS}）",
+                        account=name, symbol=symbol)
             return
         # 风控 3：同币种冷却
         if now - st["cooldown"].get(symbol, 0) < COOLDOWN_SEC * 1000:
-            self._event("skip", "冷却中", account=name, symbol=symbol)
+            left = int((COOLDOWN_SEC * 1000 - (now - st["cooldown"].get(symbol, 0))) / 1000)
+            self._event("skip", f"冷却中（还需 {left}s）", account=name, symbol=symbol)
             return
         # 风控 3.5：同方向持仓上限（防止同向信号聚集造成方向过度集中）
         same_dir = sum(1 for p in st["positions"].values() if p.get("side") == side)
         if same_dir >= MAX_SAME_DIR:
-            self._event("skip", f"同方向持仓已达上限({MAX_SAME_DIR})", account=name, symbol=symbol)
+            self._event("skip", f"同方向持仓已达上限（{same_dir}/{MAX_SAME_DIR}）",
+                        account=name, symbol=symbol)
             return
         # 风控 3.7：形态历史胜率质量门——胜率过低的形态不入场（与形态统计系统联动）
         if self.pattern_stats_fn:
@@ -364,13 +390,15 @@ class QuantEngine:
         avail = self._available(a)
         margin = max(MARGIN_MIN, round(avail * MARGIN_PCT, 2))
         if avail < MARGIN_MIN:
-            self._event("skip", "可用余额不足", account=name, symbol=symbol)
+            self._event("skip", f"可用余额不足（{round(avail, 2)} < 最低 {MARGIN_MIN}）",
+                        account=name, symbol=symbol)
             return
         qty_raw = margin / price
         step = self._step_size(a["api_key"], a["api_secret"], symbol)
         qty = self._quantize(qty_raw, step)
         if qty <= 0:
-            self._event("skip", f"数量过小(保证金{margin})", account=name, symbol=symbol)
+            self._event("skip", f"数量过小（保证金 {margin}，按步长 {step} 取整后为 0）",
+                        account=name, symbol=symbol)
             return
         # 下单
         try:
@@ -393,8 +421,12 @@ class QuantEngine:
         st["cooldown"][symbol] = now
         self.stats["decisions"] += 1
         self._save_positions()
-        self._event("open", f"确认信号开仓: {hit.get('name_zh')}", account=name, symbol=symbol,
-                    side=side, qty=qty, entry=pos["entry"], orderId=pos["orderId"], margin=margin)
+        self._event("open",
+                    f"{'做多' if side == 'BUY' else '做空'} {symbol.upper()} "
+                    f"数量 {qty} @ {pos['entry']}（保证金 {margin}）",
+                    account=name, symbol=symbol, side=side, qty=qty, entry=pos["entry"],
+                    orderId=pos["orderId"], margin=margin, pattern=hit.get("pattern"),
+                    name_zh=hit.get("name_zh"), direction=direction)
         self._broadcast_positions()
 
     def _available(self, a) -> float:
@@ -549,7 +581,9 @@ class QuantEngine:
             self.stats["wins"] += 1
         elif pnl < 0:
             self.stats["losses"] += 1
-        self._event("close", f"{reason}平仓: {symbol} 盈亏 {pnl}", account=name, symbol=symbol, pnl=pnl)
+        self._event("close", f"{reason}平仓 {symbol.upper()}，盈亏 {pnl}",
+                    account=name, symbol=symbol, pnl=pnl, side=pos["side"],
+                    qty=close_qty, entry=pos["entry"], exit=price)
         self._broadcast_positions()
 
     # ---------- 每 5 分钟自审计（对账 + 兜底） ----------
