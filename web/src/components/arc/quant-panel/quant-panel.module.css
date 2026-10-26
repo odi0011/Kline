@@ -1,12 +1,13 @@
 /* 决策流水：无边框、只占整行约 40% 宽，只有记录列表。
    行高固定（虚拟滚动依赖），内容单行、中间省略。 */
 .wrap {
-  flex: 0 0 40%;
+  flex: 0 0 30%;
   min-width: 0;
   position: relative;
   display: flex;
   flex-direction: column;
   padding: 0 2px;
+  container-type: inline-size;   /* 让下面能按盒子自身宽度适配 */
 }
 
 .stream { flex: 1 1 0; min-height: 0; }
@@ -57,15 +58,19 @@
   display: flex; align-items: center;
   overflow: hidden;
 }
+/* 头部优先显示（动作+币种信息量最大）；尾部只在有余量时补全，
+   空间不够时尾部自身也省略——否则窄容器会被尾部挤得只剩几个字 */
 .head {
-  min-width: 0;
+  flex: 1 1 auto; min-width: 3.2em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* 不让浏览器在 "n=" 这类位置断词，保证省略号是完整的"..." */
+  word-break: keep-all; overflow-wrap: normal;
   color: rgba(28, 35, 51, 0.82);
 }
 .tail {
   flex: none;
-  white-space: nowrap;
-  color: rgba(28, 35, 51, 0.82);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: rgba(28, 35, 51, 0.62);
 }
 
 /* tag：形态名 / 胜率 / 数量 */
@@ -114,3 +119,16 @@
   transition: background-color 140ms ease;
 }
 .jumpBtn:hover { background: rgba(255, 255, 255, 0.45); }
+
+
+/* ---------- 窄容器适配（30% 宽时约 276px） ----------
+   空间不够时按优先级丢弃：尾部补充 > tag > 秒。
+   主内容（图标+动作+币种）优先，完整信息仍在 hover title 里。 */
+@container (max-width: 340px) {
+  .tail { display: none; }
+  .tag { display: none; }
+}
+@container (max-width: 300px) {
+  .time { font-size: 9px; }
+  .pnl { min-width: 42px; font-size: 9.5px; }
+}

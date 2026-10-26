@@ -52,9 +52,14 @@ const fmtMoney = (v) => {
       "移动止盈(峰值0.14%→0.06%)平仓 XRPUSDT，盈亏 1.63"
         → 头 "移动止盈(峰值0.14%→0.06%)" + 尾 "平仓 XRPUSDT，盈亏 1.63"
     括号注记不能当分隔点（否则会把"平仓 XXX"整段吞掉）。 */
-function splitReason(reason) {
-  const s = String(reason || "")
+function splitReason(reason, compact = false) {
+  let s = String(reason || "")
   if (!s) return ["", ""]
+  // 窄容器：只剥掉"长括号"（峰值/涨幅这类型细节描述）；
+  // 短括号往往本身是关键数值（还需 32s、2/2、4/4），必须保留。
+  if (compact) {
+    s = s.replace(/[（(][^）)]{12,}[）)]/g, "").replace(/\s{2,}/g, " ").trim()
+  }
   // 1) 价格分隔：@ 之后（含保证金尾注）
   const at = s.lastIndexOf(" @ ")
   if (at > 0) return [s.slice(0, at), s.slice(at + 1)]
@@ -74,10 +79,10 @@ function splitReason(reason) {
   return [s, ""]
 }
 
-function EventRow({ ev, chartColors, prevTs, isNew }) {
+function EventRow({ ev, chartColors, prevTs, isNew, compact }) {
   const meta = KIND_META[ev.kind] || KIND_META.system
   const { Icon } = meta
-  const [head, tail] = splitReason(ev.reason)
+  const [head, tail] = splitReason(ev.reason, compact)
   const showDay = prevTs == null || fmtDay(prevTs) !== fmtDay(ev.ts)
   const tags = []
   // 形态名只加一次：说明文本里已经带了就不重复放 tag
@@ -102,7 +107,7 @@ function EventRow({ ev, chartColors, prevTs, isNew }) {
         <span className={styles.head}>{head}</span>
         {tail && <span className={styles.tail}>{tail}</span>}
       </span>
-      {tags.slice(0, 2).map((t) => (
+      {!compact && tags.slice(0, 2).map((t) => (
         <span key={t} className={styles.tag}>{t}</span>
       ))}
       {typeof ev.pnl === "number" && (
@@ -120,23 +125,30 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
   const [events, setEvents] = useState(() => pushedEvents || [])
   const [scrollTop, setScrollTop] = useState(0)
   const [viewH, setViewH] = useState(0)
+  const [compact, setCompact] = useState(false)   // 窄容器：省略次要信息
   const [follow, setFollow] = useState(true)
   const [, setTick] = useState(0)
+  const wrapRef = useRef(null)
   const viewportRef = useRef(null)
   const seenRef = useRef(new Set())
   const addedAtRef = useRef(new Map())
   const pendingRef = useRef([])          // 待入场的事件队列
   const drainTimerRef = useRef(null)
 
-  // 视口高度（虚拟窗口大小）
+  // 视口高度（虚拟窗口大小）+ 容器宽度（决定是否精简内容）
   useLayoutEffect(() => {
     const el = viewportRef.current
+    const wrap = wrapRef.current
     if (!el) return
-    const measure = () => setViewH(el.clientHeight)
+    const measure = () => {
+      setViewH(el.clientHeight)
+      if (wrap) setCompact(wrap.clientWidth < 340)
+    }
     measure()
     if (typeof ResizeObserver === "undefined") return
     const ro = new ResizeObserver(measure)
     ro.observe(el)
+    if (wrap) ro.observe(wrap)
     return () => ro.disconnect()
   }, [])
 
@@ -213,7 +225,7 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
   const isNew = (id) => now - (addedAtRef.current.get(id) || 0) < NEW_MS
 
   return (
-    <section className={styles.wrap} aria-label="决策流水">
+    <section ref={wrapRef} className={styles.wrap} aria-label="决策流水">
       <ScrollArea viewportRef={viewportRef} orientation="vertical" fade={18} scrollbars="auto"
         className={styles.stream} viewportClassName={styles.streamViewport}
         label="量化决策流水" onScroll={onScroll}>
@@ -226,7 +238,7 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
               return (
                 <div key={ev.id ?? idx} className={styles.rowSlot}
                   style={{ transform: `translateY(${idx * ROW_H}px)` }}>
-                  <EventRow ev={ev} chartColors={chartColors}
+                  <EventRow ev={ev} chartColors={chartColors} compact={compact}
                     prevTs={events[idx - 1]?.ts} isNew={isNew(ev.id)} />
                 </div>
               )
