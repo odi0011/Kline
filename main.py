@@ -289,6 +289,33 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     # 决策流水落库：引擎线程内同步写 MySQL（连接已加锁，开销可忽略）
     quant.storage_fn = storage.save_quant_event
     quant.trade_storage_fn = storage.save_quant_trade
+
+    # 指标计算用的K线源：优先检测周期，回落到第一个周期
+    def _bars_for(symbol: str):
+        iv = engine.detect_interval or iv0
+        agg = aggs.get((symbol, iv)) or aggs.get((symbol, iv0))
+        if not agg:
+            return []
+        hist = list(agg.history)
+        if agg.current is not None:
+            hist.append(agg.current)
+        return hist[-200:]
+
+    quant.bars_fn = _bars_for
+
+    # 回撤熔断的数据源：当前账户的权益采样（最近 24 小时）
+    def _equity_values():
+        for a in accts_box["list"]:
+            key = a.get("id") or a.get("name")
+            try:
+                rows = storage.equity_series(key, minutes=24 * 60, limit=2880)
+                if rows:
+                    return [r["bal"] for r in rows]
+            except Exception:
+                continue
+        return []
+
+    quant.equity_fn = _equity_values
     # 量化引擎在线程池中运行；广播用 call_soon_threadsafe 回到事件循环（线程安全）
     _loop = asyncio.get_running_loop()
     quant.broadcast_fn = lambda obj: _loop.call_soon_threadsafe(

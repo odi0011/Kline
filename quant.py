@@ -22,6 +22,7 @@ import time
 from collections import deque
 
 from accounts import signed_request
+from analysis import indicators as IND
 
 BASE = "https://testnet.binancefuture.com"
 
@@ -58,6 +59,26 @@ MAX_SAME_DIR = 3     # 同方向最大持仓数（防止信号聚集导致方向
 COOLDOWN_SEC = 900   # 同币种冷却 15 分钟
 AUDIT_SEC = 300      # 自审计间隔 5 分钟
 
+# ---- ATR 自适应止损止盈（替代固定百分比） ----
+# 固定 SL-0.5%/TP+0.18% 的问题是：低波动时止盈摸不到、高波动时止损被噪声扫掉。
+# 改成按 ATR 倍数给距离，再夹到 [min,max] 百分比区间兜底（ATR 异常时不会失控）。
+USE_ATR_STOPS = True
+ATR_SL_MULT = 1.5        # 止损 = 1.5 × ATR
+ATR_TP_MULT = 2.5        # 止盈 = 2.5 × ATR（盈亏比 1.67）
+SL_MIN_PCT = 0.004       # 止损距离下限 0.40%
+SL_MAX_PCT = 0.020       # 止损距离上限 2.0%
+TP_MIN_PCT = 0.0018      # 止盈距离下限 0.18%
+TP_MAX_PCT = 0.030       # 止盈距离上限 3.0%
+
+# ---- 回撤熔断 ----
+DD_LIMIT_PCT = 0.05      # 账户从峰值回撤超过 5% → 暂停开仓
+DD_PAUSE_MIN = 30        # 暂停多久（分钟）后自动尝试恢复
+DD_LOOKBACK_MS = 24 * 3600_000   # 回撤统计窗口：24 小时
+
+# ---- 市场状态过滤（第二层，形态之外） ----
+USE_MARKET_GATE = True
+GATE_MAX_LOG = 40        # 保留最近的拦截理由条数（给前端展示）
+
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
@@ -82,6 +103,11 @@ class QuantEngine:
         self.broadcast_fn = None           # main 注入：asyncio.create_task(hub.broadcast(obj))
         self.storage_fn = None             # main 注入：storage.save_quant_event（事件落库）
         self.trade_storage_fn = None       # main 注入：storage.save_quant_trade（仓位历史落库）
+        self.bars_fn = None                # main 注入：symbol -> list[Candle]（指标计算用）
+        self.equity_fn = None              # main 注入：() -> list[float]（回撤熔断用）
+        self.indicators: dict[str, dict] = {}   # symbol -> 市场状态（每轮刷新）
+        self.gate_log: deque = deque(maxlen=GATE_MAX_LOG)  # 最近的过滤器拦截记录
+        self.dd_state = {"paused_until": 0, "current": 0.0, "max": 0.0, "peak": 0.0}
         # 交易范围：只处理前端实际展示的币种（None/空 = 不限制）。
         # 否则引擎会在用户没看K线的币上开仓，持仓出现"凭空冒出来"的仓位。
         self.symbol_filter: set[str] | None = None
@@ -324,6 +350,56 @@ class QuantEngine:
                 self.state[name] = {"positions": {}, "cooldown": {}, "seq": 0}
             return self.state[name]
 
+    # ---------- 市场状态（指标 + 状态判定） ----------
+
+    def refresh_indicators(self) -> None:
+        """为每个持仓/候选币种刷新全部技术指标。由 manage 周期调用（5 秒一次）。"""
+        if not self.bars_fn:
+            return
+        syms = set()
+        for name in self.state:
+            syms.update(self._st(name)["positions"].keys())
+        # 也把最近有过信号的币纳入（前端展示需要）
+        for ev in list(self.events)[-20:]:
+            s = ev.get("symbol")
+            if s:
+                syms.add(s)
+        for sym in list(syms):
+            try:
+                cs = self.bars_fn(sym)
+                if cs and len(cs) >= 30:
+                    self.indicators[sym] = IND.market_state(cs)
+            except Exception:
+                continue
+        self._refresh_drawdown()
+
+    def _refresh_drawdown(self) -> None:
+        """回撤熔断状态：从权益采样算当前/最大回撤，超阈值则暂停开仓一段时间。"""
+        if not self.equity_fn:
+            return
+        try:
+            vals = self.equity_fn()
+            if not vals or len(vals) < 2:
+                return
+            dd = IND.drawdown(vals)
+            if not dd:
+                return
+            self.dd_state["current"] = round(dd["current"], 3)
+            self.dd_state["max"] = round(dd["max"], 3)
+            self.dd_state["peak"] = round(dd["peak"], 2)
+            now = _now_ms()
+            # 触发熔断：当前回撤超过阈值，且之前没在暂停期
+            if dd["current"] / 100 <= -DD_LIMIT_PCT and now >= self.dd_state["paused_until"]:
+                self.dd_state["paused_until"] = now + DD_PAUSE_MIN * 60_000
+                self._event("skip",
+                            f"账户回撤 {dd['current']:.2f}% 触及熔断线 "
+                            f"{-DD_LIMIT_PCT * 100:.0f}%，暂停开仓 {DD_PAUSE_MIN} 分钟")
+        except Exception:
+            pass
+
+    def _dd_paused(self) -> bool:
+        return _now_ms() < self.dd_state.get("paused_until", 0)
+
     # ---------- 信号入口（收线确认信号驱动） ----------
 
     @_serialized
@@ -350,6 +426,23 @@ class QuantEngine:
             if not price or price <= 0:
                 self._event("skip", "取不到最新价，这次信号跳过", account=self._primary_account(), symbol=symbol)
                 return
+            # 市场状态过滤（形态之外的第二层）：震荡/极端波动/超买超卖/逆势
+            if USE_MARKET_GATE:
+                st = self.indicators.get(symbol) or {}
+                if st:
+                    ok, why = IND.signal_gate(st, direction)
+                    if not ok:
+                        self.gate_log.append({
+                            "ts": _now_ms(), "symbol": symbol, "direction": direction,
+                            "reason": why, "state": {
+                                "regime": st.get("regime"), "rsi": st.get("rsi"),
+                                "z": st.get("z"), "adx": st.get("adx"),
+                                "volState": st.get("volState"), "squeeze": st.get("squeeze"),
+                            },
+                        })
+                        self._event("skip", f"市场状态过滤：{why}", account=self._primary_account(),
+                                    symbol=symbol, pattern=hit.get("pattern"))
+                        return
             # 记录一次"收到信号"的思考过程：形态 / 方向 / 价格
             self._event("signal",
                         f"收到 {hit.get('name_zh') or hit.get('pattern')} "
@@ -374,6 +467,12 @@ class QuantEngine:
         now = _now_ms()
         # 风控 0：该合约未开通权限（如 TradFi 需签协议）→ 不再尝试
         if symbol in self._unsupported:
+            return
+        # 风控 0.5：账户回撤熔断
+        if self._dd_paused():
+            left = int((self.dd_state["paused_until"] - now) / 1000)
+            self._event("skip", f"账户回撤熔断中，还需 {max(1, left)} 秒恢复",
+                        account=name, symbol=symbol)
             return
         # 风控 1：该账户已有该币种持仓
         if symbol in st["positions"]:
@@ -439,11 +538,33 @@ class QuantEngine:
             self._event("error", f"下单失败({name}/{symbol}): {e}", symbol=symbol)
             st["cooldown"][symbol] = now
             return
+        entry_price = float(r.get("avgPrice") or price)
+        # 按当前 ATR 给出该仓位的止损/止盈价（不再用全局固定百分比）
+        st_ind = self.indicators.get(symbol) or {}
+        if USE_ATR_STOPS:
+            plan = IND.adaptive_sl_tp(
+                entry_price, st_ind.get("atr"), side,
+                sl_mult=ATR_SL_MULT, tp_mult=ATR_TP_MULT,
+                sl_min_pct=SL_MIN_PCT, tp_min_pct=TP_MIN_PCT,
+                sl_max_pct=SL_MAX_PCT, tp_max_pct=TP_MAX_PCT)
+        else:
+            plan = IND.adaptive_sl_tp(
+                entry_price, None, side,
+                sl_min_pct=abs(SL_PCT), tp_min_pct=TP_PCT,
+                sl_max_pct=abs(SL_PCT), tp_max_pct=TP_PCT)
         pos = {
             "symbol": symbol, "side": side, "qty": qty, "margin": margin,
-            "entry": float(r.get("avgPrice") or price), "entryTs": now,
+            "entry": entry_price, "entryTs": now,
             "orderId": r.get("orderId"), "pattern": hit.get("pattern"),
             "name_zh": hit.get("name_zh"), "direction": direction,
+            # 自适应止损止盈（监控时优先用这两个价，缺失则退回全局百分比）
+            "sl": round(plan["sl"], 8) if plan["sl"] else None,
+            "tp": round(plan["tp"], 8) if plan["tp"] else None,
+            "slPct": round(plan["slPct"], 3),
+            "tpPct": round(plan["tpPct"], 3),
+            "atrAtEntry": st_ind.get("atr"),
+            "regimeAtEntry": st_ind.get("regime"),
+            "rsiAtEntry": st_ind.get("rsi"),
         }
         st["positions"][symbol] = pos
         st["cooldown"][symbol] = now
@@ -454,7 +575,8 @@ class QuantEngine:
                     f"数量 {qty} @ {pos['entry']}（保证金 {margin}）",
                     account=name, symbol=symbol, side=side, qty=qty, entry=pos["entry"],
                     orderId=pos["orderId"], margin=margin, pattern=hit.get("pattern"),
-                    name_zh=hit.get("name_zh"), direction=direction)
+                    name_zh=hit.get("name_zh"), direction=direction,
+                    slPct=pos["slPct"], tpPct=pos["tpPct"], atr=pos["atrAtEntry"])
         self._broadcast_positions()
 
     def _available(self, a) -> float:
@@ -494,9 +616,10 @@ class QuantEngine:
 
     @_serialized
     def manage(self) -> None:
-        """每 5 秒调用：盯每仓盈亏，触发止损/止盈即平仓。"""
+        """每 5 秒调用：刷新技术指标 → 盯每仓盈亏 → 触发止损/止盈即平仓。"""
         if not self.enabled:
             return
+        self.refresh_indicators()
         now = _now_ms()
         # 只管理"参与交易"的账户（按 API Key 去重），避免别名账户重复平仓
         tradable = {a.get("name") for a in self._tradable_accounts()}
@@ -527,10 +650,23 @@ class QuantEngine:
                 if prev_peak is None or peak > prev_peak + 0.0001:
                     pos["peak"] = peak      # 首次/明显创新高才标记，循环结束统一写盘
                     peak_dirty = True
-                if move <= SL_PCT or move >= TP_PCT:
-                    reason = "止盈" if move >= TP_PCT else "止损"
-                    self._close(name, a, symbol, price, f"{reason}({move * 100:.2f}%)")
-                elif peak >= TRAIL_ARM and move <= peak - TRAIL_GAP:
+                # 优先用开仓时按 ATR 算出的止损/止盈价；缺失时退回全局百分比
+                hit_sl = hit_tp = False
+                if pos.get("sl") or pos.get("tp"):
+                    if pos.get("sl"):
+                        hit_sl = (price <= pos["sl"]) if direction_up else (price >= pos["sl"])
+                    if pos.get("tp"):
+                        hit_tp = (price >= pos["tp"]) if direction_up else (price <= pos["tp"])
+                else:
+                    hit_sl = move <= SL_PCT
+                    hit_tp = move >= TP_PCT
+                if hit_sl or hit_tp:
+                    reason = "止盈" if hit_tp else "止损"
+                    detail = (f"目标{pos.get('tpPct', 0):.2f}%" if hit_tp
+                              else f"止损{pos.get('slPct', 0):.2f}%")
+                    self._close(name, a, symbol, price,
+                                f"{reason}({move * 100:.2f}%, {detail})")
+                elif peak >= max(TRAIL_ARM, (pos.get("slPct") or 0) / 100 * 0.5) and move <= peak - max(TRAIL_GAP, (pos.get("slPct") or 0) / 100 * 0.15):
                     # 移动止盈：浮盈曾达门槛，回撤到阈值 → 锁定剩余利润
                     self._close(name, a, symbol, price,
                                 f"移动止盈(峰值{peak * 100:.2f}%→{move * 100:.2f}%)")
@@ -704,6 +840,14 @@ class QuantEngine:
             except Exception:
                 pass
 
+    @staticmethod
+    def _public_state(st: dict) -> dict:
+        """给前端的市场状态（保留可 JSON 化的数值字段）。"""
+        keys = ("price", "bars", "atr", "atrPct", "realizedVol", "boll", "bwPct",
+                "rsi", "z", "adx", "plusDI", "minusDI", "roc", "regime",
+                "volState", "squeeze")
+        return {k: st.get(k) for k in keys if k in st}
+
     def snapshot(self) -> dict:
         positions = []
         for name in self.state:
@@ -722,6 +866,44 @@ class QuantEngine:
             "trades": self.trades[-20:],
             "accounts": list(self.state.keys()),
             "unsupported": sorted(self._unsupported),
+            # ---- 策略分析（第三行可视化用） ----
+            "analysis": {
+                # 每个币种的完整指标与状态
+                "symbols": {sym: self._public_state(st) for sym, st in self.indicators.items()},
+                # 账户回撤与熔断
+                "drawdown": {
+                    "current": self.dd_state.get("current", 0),
+                    "max": self.dd_state.get("max", 0),
+                    "peak": self.dd_state.get("peak", 0),
+                    "paused": self._dd_paused(),
+                    "pausedUntil": self.dd_state.get("paused_until", 0),
+                    "limit": -DD_LIMIT_PCT * 100,
+                },
+                # 过滤器拦截记录（最近 N 条）
+                "gateLog": list(self.gate_log)[-20:],
+                # 当前策略参数（前端展示"系统在用哪些规则"）
+                "params": {
+                    "atrSlMult": ATR_SL_MULT, "atrTpMult": ATR_TP_MULT,
+                    "slMinPct": SL_MIN_PCT * 100, "slMaxPct": SL_MAX_PCT * 100,
+                    "tpMinPct": TP_MIN_PCT * 100, "tpMaxPct": TP_MAX_PCT * 100,
+                    "ddLimitPct": -DD_LIMIT_PCT * 100, "ddPauseMin": DD_PAUSE_MIN,
+                    "maxPositions": MAX_POSITIONS, "maxSameDir": MAX_SAME_DIR,
+                    "cooldownSec": COOLDOWN_SEC, "maxHoldMin": MAX_HOLD_MIN,
+                    "trailArm": TRAIL_ARM * 100, "trailGap": TRAIL_GAP * 100,
+                    "marginPct": MARGIN_PCT * 100,
+                    "rsiOverbought": IND.RSI_OVERBOUGHT, "rsiOversold": IND.RSI_OVERSOLD,
+                    "zExtreme": IND.Z_EXTREME, "adxTrend": IND.ADX_TREND,
+                    "adxRange": IND.ADX_RANGE, "squeezePct": IND.BW_SQUEEZE_PCT,
+                },
+                # 当前持仓的开仓依据（供"为什么开了这个仓"回看）
+                "positionPlans": [
+                    {k: p.get(k) for k in ("symbol", "side", "entry", "sl", "tp", "slPct",
+                                           "tpPct", "atrAtEntry", "regimeAtEntry",
+                                           "rsiAtEntry", "pattern", "name_zh")}
+                    for name in self.state
+                    for p in self._st(name)["positions"].values()
+                ],
+            },
         }
 
 

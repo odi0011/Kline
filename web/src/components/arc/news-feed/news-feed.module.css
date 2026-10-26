@@ -1,6 +1,6 @@
 /* 交易所公告：与另两栏同一套视觉（无边框、22px 行高、虚拟滚动） */
 .wrap {
-  flex: 0 0 30%;
+  flex: 0 0 22%;
   min-width: 0;
   display: flex;
   flex-direction: column;

@@ -1,7 +1,7 @@
 /* 决策流水：无边框、只占整行约 40% 宽，只有记录列表。
    行高固定（虚拟滚动依赖），内容单行、中间省略。 */
 .wrap {
-  flex: 0 0 30%;
+  flex: 0 0 22%;
   min-width: 0;
   position: relative;
   display: flex;
@@ -171,4 +171,11 @@
 .row[data-pending] {
   background: rgba(28, 35, 51, 0.035);
   border-radius: 5px;
+}
+
+/* 三栏布局下更窄（约 200px）：只留 图标+时间+内容，盈亏仍可见 */
+@container (max-width: 240px) {
+  .time { font-size: 9px; }
+  .tag { display: none; }
+  .pnl { min-width: 38px; font-size: 9.5px; }
 }

@@ -14,7 +14,8 @@ import CoinAvatar from '@/components/ui/coin-avatar'
 import SettingsDialog from '@/components/arc/settings-dialog/settings-dialog'
 import QuantPanel from '@/components/arc/quant-panel/quant-panel'
 import PositionHistory from '@/components/arc/position-history/position-history'
-import NewsFeed from '@/components/arc/news-feed/news-feed' 
+import NewsFeed from '@/components/arc/news-feed/news-feed'
+import StrategyPanel from '@/components/arc/strategy-panel/strategy-panel' 
 import HitFlight from './HitFlight.jsx'
 import { hexHue } from './lib/account-theme'
 import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins, Settings } from 'lucide-react'
@@ -662,6 +663,7 @@ export default function App() {
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
         <PositionHistory trades={quantTrades} chartColors={chartColors} />
         <NewsFeed items={newsItems} />
+        <StrategyPanel analysis={quantSnap && quantSnap.analysis} chartColors={chartColors} />
       </div>
       </aside>
 

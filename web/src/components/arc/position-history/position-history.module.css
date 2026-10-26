@@ -1,6 +1,6 @@
 /* 仓位历史：与决策流水同一套视觉（无边框、虚拟滚动、22px 行高） */
 .wrap {
-  flex: 0 0 30%;
+  flex: 0 0 22%;
   min-width: 0;
   position: relative;
   display: flex;
@@ -92,9 +92,11 @@
 @container (max-width: 380px) {
   .hold { display: none; }
 }
-@container (max-width: 300px) {
-  .time { font-size: 9px; }
-  .pnl { min-width: 42px; font-size: 9.5px; }
+@container (max-width: 240px) {
+  .time { display: none; }
+  .reason { display: none; }
+  .qty { font-size: 9px; }
+  .pnl { min-width: 40px; font-size: 9.5px; }
 }
 
 /* 上翻后的"最新"（列表倒序，最新在顶部） */
