@@ -8,6 +8,7 @@
 import { useMemo, useState } from "react"
 import { useId } from "react"
 import { Activity, BarChart3, Layers, ShieldAlert } from "lucide-react"
+import { LiquidGlass } from "@/components/ui/liquid-glass"
 import styles from "./chart-overlay.module.css"
 
 const TABS = [
@@ -286,7 +287,17 @@ export default function ChartOverlay({ symbol, bars, depth, account, series, cha
   })()
 
   return (
-    <div className={styles.overlay} aria-label={`${symbol} 辅助面板`}>
+    <LiquidGlass
+      radius={10}
+      bevelDepth={18}
+      scale={36}
+      aberration={0}
+      frost={1.4}
+      tint={0.6}
+      className={styles.overlay}
+      contentClassName={styles.overlayInner}
+      aria-label={`${symbol} 辅助面板`}
+    >
       <div className={styles.tabs}>
         {TABS.map(({ id, label, Icon, hint }) => (
           <button key={id} type="button" className={styles.tab}
@@ -298,6 +309,6 @@ export default function ChartOverlay({ symbol, bars, depth, account, series, cha
         ))}
       </div>
       <div className={styles.body}>{body}</div>
-    </div>
+    </LiquidGlass>
   )
 }

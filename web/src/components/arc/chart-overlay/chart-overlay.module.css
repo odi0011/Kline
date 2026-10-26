@@ -1,27 +1,21 @@
-/* K线卡片左侧玻璃面板：悬浮覆盖图表左半侧（45% 宽）。
-   材质与全局玻璃组件一致（半透明白 + 背景模糊 + 发丝边）。 */
+/* K线卡片左侧辅助面板：悬浮覆盖图表左半侧（45% 宽）。
+   材质由 LiquidGlass 组件提供（Snell 折射位移 + 边缘高光），
+   这里只管定位与内部布局。上下各留 10px，比卡片本身矮一圈。 */
 .overlay {
   position: absolute;
-  left: 4px;
-  top: 4px;
-  bottom: 4px;
+  left: 5px;
+  top: 14px;
+  bottom: 22px;
   width: 45%;
   z-index: 4;                 /* 盖在K线上方，但低于悬停提示 */
+  pointer-events: auto;
+}
+.overlayInner {
+  height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 5px 7px 6px;
-  border-radius: 10px;
-  /* 玻璃材质：和 LiquidGlass 观感一致（半透明白 + 模糊 + 白边） */
-  /* 玻璃要"能透出氛围但不干扰读数"：提高白度 + 加大模糊，
-     否则下面的K线和成交量柱会从面板里透出来 */
-  background: rgba(255, 255, 255, 0.82);
-  -webkit-backdrop-filter: blur(20px) saturate(1.15);
-  backdrop-filter: blur(20px) saturate(1.15);
-  border: 1px solid rgba(255, 255, 255, 0.85);
-  box-shadow: 0 2px 10px rgba(16, 24, 40, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.6);
-  overflow: hidden;
-  pointer-events: auto;
+  gap: 3px;
+  padding: 4px 7px 5px;
 }
 
 /* 标签页 */
