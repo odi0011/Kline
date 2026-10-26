@@ -1,22 +1,13 @@
-/* K线卡片左侧玻璃面板：悬浮覆盖在图表左半侧（默认 45% 宽）。
-   四个真实数据视图轮播/切换：
-     1. 买卖力量：每根K线的主动买量 vs 主动卖量（来自 aggTrade 的 isBuyerMaker）
-     2. 深度图：订单簿真实挂单累积量（/public depth 流，20 档）
-     3. 资金曲线：账户权益采样 + 从峰值回撤（MySQL equity 表）
-     4. 风险敞口：持仓保证金占用 / 名义价值 / 距爆仓距离
-   全部数据来自服务端，没有随机数。 */
-import { useMemo, useState } from "react"
-import { useId } from "react"
-import { Activity, BarChart3, Layers, ShieldAlert } from "lucide-react"
+/* K线卡片左侧玻璃面板：悬浮覆盖在图表左半侧（45% 宽）。
+   三个真实数据图同屏纵向排列，不再用 tab 切换：
+     1. 买卖力量：每根K线的主动买量 vs 主动卖量（aggTrade 的 isBuyerMaker）
+     2. 订单簿深度：真实挂单累积量（/public depth 流，20 档）
+     3. 权益与回撤：账户权益采样 + 从峰值回撤（MySQL equity 表）
+   全部数据来自服务端，没有随机数。风险敞口移至别处。 */
+import { useMemo } from "react"
 import { LiquidGlass } from "@/components/ui/liquid-glass"
 import styles from "./chart-overlay.module.css"
 
-const TABS = [
-  { id: "flow", label: "买卖", Icon: BarChart3, hint: "主动买卖量" },
-  { id: "depth", label: "深度", Icon: Layers, hint: "订单簿挂单" },
-  { id: "equity", label: "权益", Icon: Activity, hint: "资金曲线与回撤" },
-  { id: "risk", label: "风险", Icon: ShieldAlert, hint: "敞口与爆仓距离" },
-]
 
 const fmtNum = (v, d = 2) => {
   const n = Number(v) || 0
@@ -45,23 +36,18 @@ function BuySellView({ bars, chartColors }) {
 
   return (
     <div className={styles.view}>
-      <div className={styles.ratioRow}>
-        <span className={styles.ratioLabel}>主动买</span>
-        <span className={styles.ratioVal} style={{ color: chartColors.up }}>{buyPct.toFixed(1)}%</span>
-        <span className={styles.ratioLabel}>主动卖</span>
-        <span className={styles.ratioVal} style={{ color: chartColors.down }}>{(100 - buyPct).toFixed(1)}%</span>
+      <div className={styles.metricRow}>
+        <span style={{ color: chartColors.up }}>买 {buyPct.toFixed(0)}%</span>
+        <span style={{ color: chartColors.down }}>卖 {(100 - buyPct).toFixed(0)}%</span>
+        <span className={styles.metricHint}>{rows.length} 根</span>
       </div>
-      <div className={styles.ratioBar}>
-        <span style={{ width: `${buyPct}%`, background: chartColors.up }} />
-        <span style={{ width: `${100 - buyPct}%`, background: chartColors.down }} />
-      </div>
-      {!hasData && <div className={styles.hint}>等待成交数据…</div>}
+      {!hasData && <div className={styles.hint}>等待成交…</div>}
       <div className={styles.bars}>
         {rows.map((b, i) => {
           const bv = b.buyVol || 0, sv = b.sellVol || 0
           return (
             <div className={styles.barCol} key={b.time ?? i}
-              title={`${new Date((b.time || 0) * 1000).toLocaleTimeString("zh-CN", { hour12: false })}  买 ${fmtNum(bv, 3)} / 卖 ${fmtNum(sv, 3)}`}>
+              title={`买 ${fmtNum(bv, 3)} / 卖 ${fmtNum(sv, 3)}`}>
               <span className={styles.barBuy}
                 style={{ height: `${(bv / max) * 100}%`, background: chartColors.up }} />
               <span className={styles.barSell}
@@ -69,11 +55,6 @@ function BuySellView({ bars, chartColors }) {
             </div>
           )
         })}
-      </div>
-      <div className={styles.axisRow}>
-        <span>{rows.length ? String(rows[0].time ? new Date(rows[0].time * 1000).toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" }) : "") : ""}</span>
-        <span>最近 {rows.length} 根</span>
-        <span>{rows.length ? String(rows[rows.length - 1].time ? new Date(rows[rows.length - 1].time * 1000).toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" }) : "") : ""}</span>
       </div>
     </div>
   )
@@ -118,30 +99,25 @@ function DepthView({ depth, chartColors }) {
     }
   }, [depth])
 
-  if (!geo) return <div className={styles.hint}>等待订单簿数据…</div>
+  if (!geo) return <div className={styles.hint}>等待订单簿…</div>
   const ratio = geo.bidSum + geo.askSum > 0 ? (geo.bidSum / (geo.bidSum + geo.askSum)) * 100 : 50
 
   return (
     <div className={styles.view}>
-      <div className={styles.ratioRow}>
-        <span className={styles.ratioLabel}>买盘</span>
-        <span className={styles.ratioVal} style={{ color: chartColors.up }}>{ratio.toFixed(1)}%</span>
-        <span className={styles.ratioLabel}>卖盘</span>
-        <span className={styles.ratioVal} style={{ color: chartColors.down }}>{(100 - ratio).toFixed(1)}%</span>
-        <span className={styles.midPrice}>{geo.mid.toFixed(geo.mid >= 1000 ? 1 : 4)}</span>
+      <div className={styles.metricRow}>
+        <span style={{ color: chartColors.up }}>买 {ratio.toFixed(0)}%</span>
+        <span style={{ color: chartColors.down }}>卖 {(100 - ratio).toFixed(0)}%</span>
+        <span className={styles.metricHint}>{geo.mid.toFixed(geo.mid >= 1000 ? 0 : 4)}</span>
       </div>
+      <div className={styles.chartEnv}>
       <svg className={styles.depthSvg} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden>
-        <path d={geo.bidPath} fill={chartColors.up} opacity="0.28" />
-        <path d={geo.bidPath} fill="none" stroke={chartColors.up} strokeWidth="0.7" vectorEffect="non-scaling-stroke" />
-        <path d={geo.askPath} fill={chartColors.down} opacity="0.24" />
-        <path d={geo.askPath} fill="none" stroke={chartColors.down} strokeWidth="0.7" vectorEffect="non-scaling-stroke" />
+        <path d={geo.bidPath} fill={chartColors.up} opacity="0.3" />
+        <path d={geo.bidPath} fill="none" stroke={chartColors.up} strokeWidth="0.8" vectorEffect="non-scaling-stroke" />
+        <path d={geo.askPath} fill={chartColors.down} opacity="0.26" />
+        <path d={geo.askPath} fill="none" stroke={chartColors.down} strokeWidth="0.8" vectorEffect="non-scaling-stroke" />
         <line x1={geo.midX} y1="0" x2={geo.midX} y2="100"
-          stroke="rgba(28,35,51,0.35)" strokeWidth="0.8" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
+          stroke="rgba(28,35,51,0.3)" strokeWidth="0.8" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
       </svg>
-      <div className={styles.axisRow}>
-        <span style={{ color: chartColors.up }}>买 {fmtNum(geo.bidSum, 1)}</span>
-        <span>{geo.levels.bids}/{geo.levels.asks} 档</span>
-        <span style={{ color: chartColors.down }}>卖 {fmtNum(geo.askSum, 1)}</span>
       </div>
     </div>
   )
@@ -176,139 +152,54 @@ function EquityView({ series, chartColors }) {
     }
   }, [series])
 
-  if (!geo) return <div className={styles.hint}>权益采样积累中…</div>
+  if (!geo) return <div className={styles.hint}>权益采样中…</div>
   return (
     <div className={styles.view}>
-      <div className={styles.ratioRow}>
-        <span className={styles.ratioLabel}>当前</span>
-        <span className={styles.ratioVal}>{geo.cur.toFixed(2)}</span>
-        <span className={styles.ratioLabel}>回撤</span>
-        <span className={styles.ratioVal} style={{ color: geo.curDD < -0.01 ? chartColors.down : "inherit" }}>
-          {geo.curDD.toFixed(2)}%
+      <div className={styles.metricRow}>
+        <span>{geo.cur.toFixed(1)}</span>
+        <span style={{ color: geo.curDD < -0.01 ? chartColors.down : "inherit" }}>
+          回撤 {geo.curDD.toFixed(2)}%
         </span>
-        <span className={styles.midPrice}>峰值 {geo.maxDD.toFixed(2)}%</span>
+        <span className={styles.metricHint}>峰值 {geo.maxDD.toFixed(2)}%</span>
       </div>
+      <div className={styles.chartEnv}>
       <svg className={styles.depthSvg} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden>
-        <path d={geo.area} fill={chartColors.up} opacity="0.16" />
+        <path d={geo.area} fill={chartColors.up} opacity="0.18" />
         <path d={geo.line} fill="none" stroke={chartColors.up} strokeWidth="1.1"
           vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
       </svg>
-      <div className={styles.axisRow}>
-        <span>{geo.min.toFixed(0)}</span>
-        <span>{geo.n} 个采样</span>
-        <span>{geo.max.toFixed(0)}</span>
-      </div>
-    </div>
-  )
-}
-
-/* ---------- 4. 风险敞口 ---------- */
-function RiskView({ account, chartColors }) {
-  const risk = useMemo(() => {
-    if (!account) return null
-    const pos = account.positions || []
-    let margin = 0, notional = 0, upnl = 0
-    let worst = null   // 距爆仓最近的仓位
-    for (const p of pos) {
-      margin += Number(p.margin) || 0
-      notional += Number(p.notional) || 0
-      upnl += Number(p.unrealized) || 0
-      const mark = Number(p.mark) || 0
-      const liq = Number(p.liquidation) || 0
-      if (mark > 0 && liq > 0) {
-        const dist = Math.abs((mark - liq) / mark) * 100
-        if (!worst || dist < worst.dist) worst = { symbol: p.symbol, dist, liq, mark }
-      }
-    }
-    const equity = Number(account.balance) || 0
-    return {
-      margin, notional, upnl,
-      marginRatio: equity > 0 ? (margin / equity) * 100 : 0,
-      leverage: equity > 0 ? notional / equity : 0,
-      worst,
-      count: pos.length,
-    }
-  }, [account])
-
-  if (!risk) return <div className={styles.hint}>未接入账户</div>
-  if (!risk.count) return <div className={styles.hint}>当前没有持仓，无风险敞口</div>
-
-  return (
-    <div className={styles.view}>
-      <div className={styles.kvGrid}>
-        <div className={styles.kv}><em>持仓</em><b>{risk.count}</b></div>
-        <div className={styles.kv}><em>名义价值</em><b>{fmtNum(risk.notional)}</b></div>
-        <div className={styles.kv}><em>占用保证金</em><b>{fmtNum(risk.margin)}</b></div>
-        <div className={styles.kv}>
-          <em>保证金占用率</em>
-          <b style={{ color: risk.marginRatio > 60 ? chartColors.down : "inherit" }}>
-            {risk.marginRatio >= 1 ? risk.marginRatio.toFixed(1) : risk.marginRatio.toFixed(2)}%
-          </b>
-        </div>
-        <div className={styles.kv}>
-          <em>账户杠杆</em>
-          <b style={{ color: risk.leverage > 10 ? chartColors.down : "inherit" }}>
-            {risk.leverage >= 1 ? risk.leverage.toFixed(1) : risk.leverage.toFixed(2)}x
-          </b>
-        </div>
-        <div className={styles.kv}>
-          <em>浮动盈亏</em>
-          <b style={{ color: risk.upnl >= 0 ? chartColors.up : chartColors.down }}>
-            {risk.upnl >= 0 ? "+" : ""}{risk.upnl.toFixed(2)}
-          </b>
-        </div>
-      </div>
-      {risk.worst && (
-        <div className={styles.riskRow}>
-          <span>最近爆仓距离</span>
-          <b style={{ color: risk.worst.dist < 15 ? chartColors.down : "inherit" }}>
-            {risk.worst.symbol.replace(/usdt$/i, "").toUpperCase()} {risk.worst.dist.toFixed(2)}%
-          </b>
-        </div>
-      )}
-      <div className={styles.meter}>
-        <span style={{ width: `${Math.min(100, risk.marginRatio)}%`, background: risk.marginRatio > 60 ? chartColors.down : chartColors.up }} />
       </div>
     </div>
   )
 }
 
 export default function ChartOverlay({ symbol, bars, depth, account, series, chartColors }) {
-  const [tab, setTab] = useState("flow")
-  const gradId = useId().replace(/[^a-zA-Z0-9_-]/g, "")
-
-  const body = (() => {
-    switch (tab) {
-      case "depth": return <DepthView depth={depth} chartColors={chartColors} />
-      case "equity": return <EquityView series={series} chartColors={chartColors} />
-      case "risk": return <RiskView account={account} chartColors={chartColors} />
-      default: return <BuySellView bars={bars} chartColors={chartColors} />
-    }
-  })()
-
   return (
     <LiquidGlass
       radius={10}
       bevelDepth={18}
       scale={36}
       aberration={0}
-      frost={1.4}
-      tint={0.6}
+      frost={4.5}
+      tint={0.9}
       className={styles.overlay}
       contentClassName={styles.overlayInner}
       aria-label={`${symbol} 辅助面板`}
     >
-      <div className={styles.tabs}>
-        {TABS.map(({ id, label, Icon, hint }) => (
-          <button key={id} type="button" className={styles.tab}
-            data-on={tab === id || undefined} title={hint}
-            onClick={(e) => { e.stopPropagation(); setTab(id) }}>
-            <Icon size={10} aria-hidden />
-            {label}
-          </button>
-        ))}
+      <div className={styles.pane}>
+        <span className={styles.paneTitle}>买卖力量</span>
+        <BuySellView bars={bars} chartColors={chartColors} />
       </div>
-      <div className={styles.body}>{body}</div>
+      <div className={styles.hsep} />
+      <div className={styles.pane}>
+        <span className={styles.paneTitle}>订单簿深度</span>
+        <DepthView depth={depth} chartColors={chartColors} />
+      </div>
+      <div className={styles.hsep} />
+      <div className={styles.pane}>
+        <span className={styles.paneTitle}>权益与回撤</span>
+        <EquityView series={series} chartColors={chartColors} />
+      </div>
     </LiquidGlass>
   )
 }

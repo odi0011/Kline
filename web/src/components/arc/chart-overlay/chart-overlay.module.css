@@ -1,6 +1,6 @@
 /* K线卡片左侧辅助面板：悬浮覆盖图表左半侧（45% 宽）。
-   材质由 LiquidGlass 组件提供（Snell 折射位移 + 边缘高光），
-   这里只管定位与内部布局。上下各留 10px，比卡片本身矮一圈。 */
+   材质由 LiquidGlass 提供（Snell 折射 + 边缘高光）；
+   三个图纵向均分，中间用发丝线分隔，不再有 tab 栏。 */
 .overlay {
   position: absolute;
   left: 5px;
@@ -10,37 +10,53 @@
   z-index: 4;                 /* 盖在K线上方，但低于悬停提示 */
   pointer-events: auto;
 }
+/* LiquidGlass 的 tint 上限有限，K线蜡烛仍会透出来干扰读图。
+   在内容层再加一层高白度半透明底：既保留边缘折射，又压住背景细节。 */
 .overlayInner {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding: 4px 7px 5px;
+  padding: 5px 8px 6px;
+  background: rgba(255, 255, 255, 0.62);
+  /* 内层不被圆角裁切影响：让白底跟着外层圆角走 */
+  border-radius: 9px;
 }
 
-/* 标签页 */
-.tabs { display: flex; gap: 2px; flex: none; }
-.tab {
-  flex: 1;
-  display: inline-flex; align-items: center; justify-content: center; gap: 3px;
-  height: 17px; padding: 0 3px;
-  border-radius: 5px;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted, #8b949e);
-  font-size: 9.5px; font-weight: 600; font-family: inherit;
-  cursor: pointer;
-  transition: background-color 130ms ease, color 130ms ease;
+/* 每个小图：标题 + 内容，均分高度 */
+.pane {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
-.tab:hover { background: rgba(28, 35, 51, 0.06); color: var(--text-secondary, #5b6472); }
-.tab[data-on] {
-  background: rgba(255, 255, 255, 0.9);
-  color: #1c2333;
-  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.1);
+.paneTitle {
+  flex: none;
+  font-size: 8px; font-weight: 600; letter-spacing: 0.2px;
+  color: rgba(16, 24, 40, 0.4);
+  line-height: 1;
+}
+.hsep {
+  flex: none;
+  height: 1px;
+  margin: 2px 0;
+  background: rgba(28, 35, 51, 0.09);
 }
 
-.body { flex: 1; min-height: 0; display: flex; }
-.view { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+/* 小图内一行指标（替代原来的占比条 + 轴标注，省高度） */
+.metricRow {
+  flex: none;
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 9.5px; font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden;
+}
+.metricHint {
+  margin-left: auto;
+  font-size: 8.5px; font-weight: 400;
+  color: rgba(16, 24, 40, 0.42);
+}
 
 /* 顶部一行：标签 + 数值 */
 .ratioRow {
@@ -64,10 +80,17 @@
 .ratioBar span { display: block; height: 100%; transition: width 280ms ease; }
 
 /* 双色量柱（买在下、卖在上，堆叠对比） */
+.view {
+  position: relative;
+  flex: 1 1 0; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; gap: 1px;
+}
+/* SVG 容器：占满指标行以下的剩余空间 */
+.view > .chartEnv { flex: 1 1 0; min-height: 0; position: relative; }
+
 .bars {
   flex: 1; min-height: 0;
-  display: flex; align-items: flex-end; gap: 1.5px;
-  padding: 2px 0;
+  display: flex; align-items: flex-end; gap: 1px;
 }
 .barCol {
   flex: 1; min-width: 0; height: 100%;
@@ -80,7 +103,8 @@
   min-height: 0;
 }
 
-.depthSvg { flex: 1; min-height: 0; width: 100%; display: block; overflow: visible; }
+/* SVG 默认会被内容撑到 260px；用绝对定位填满剩余空间，避免撑破小 pane */
+.depthSvg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
 /* 轴标注 */
 .axisRow {
