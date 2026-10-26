@@ -276,6 +276,11 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             for c in candles:
                 if c.open_time >= keep_from:
                     storage.save_candle(sym, iv, c)
+            # 启动即算一次结构，否则要等到本周期收线（最长几分钟）画面上才有线
+            try:
+                hub.structures[(sym, iv)] = analyze_structure(list(agg.history)[-160:])
+            except Exception:
+                pass
             print(f"[backfill] {sym} {iv}: 回补 {len(candles)} 根")
         except Exception as e:
             print(f"[backfill] {sym} {iv} 失败: {e}（空历史启动）")
