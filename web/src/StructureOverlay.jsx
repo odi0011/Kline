@@ -145,9 +145,14 @@ export default function StructureOverlay({ chartRef, seriesRef, structure, inter
       ctx.fillStyle = lv.kind === 'support' ? COLORS.support : COLORS.resistance
       const label = `${lv.kind === 'support' ? '支撑' : '压力'} ${lv.price} ×${lv.touches}`
       ctx.textBaseline = 'bottom'
-      let ly = y - 2
-      while (usedLabelY.some((v) => Math.abs(v - ly) < 11)) ly -= 11
+      // 优先放线的上方；太靠顶（会被裁）或撞到已有标签时依次下移
+      let ly = y - 3
+      if (ly < 12) ly = y + 12
+      let guard = 0
+      while (usedLabelY.some((v) => Math.abs(v - ly) < 11) && guard++ < 8) ly += 11
+      if (ly > plotH - 4) ly = y - 3
       usedLabelY.push(ly)
+      ctx.textBaseline = ly > y ? 'top' : 'bottom'
       ctx.fillText(label, 34, ly)
     }
 
