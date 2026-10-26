@@ -161,3 +161,9 @@
   .time { font-size: 9px; }
   .pnl { min-width: 42px; font-size: 9.5px; }
 }
+
+/* 占位行：飞线还没到达时只留一块空白（不显示任何文字） */
+.row[data-pending] {
+  background: rgba(28, 35, 51, 0.035);
+  border-radius: 5px;
+}

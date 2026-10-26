@@ -21,7 +21,7 @@ const fmtCross = (t) => {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
 }
 
-export default function CoinCard({ symbol, intervals, settings, live, chartColors, activeHit, onHoverHits, account, accountSeries }) {
+export default function CoinCard({ symbol, intervals, settings, live, chartColors, activeHit, onHoverHits, account, accountSeries, registerAnchor }) {
   const hitActive = !!activeHit
   const boxRef = useRef(null)
   const chgRef = useRef(null)
@@ -237,6 +237,29 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
     return () => { offs.forEach((f) => f()); chart.remove() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol])
+
+  // 供命中飞线定位：返回最后一根蜡烛的屏幕坐标（x 取蜡烛中心、y 取收盘价）
+  useEffect(() => {
+    if (!registerAnchor) return
+    registerAnchor(symbol, () => {
+      const chart = chartRef.current
+      const series = candleRef.current
+      const box = boxRef.current
+      const bs = live.store[symbol]?.[intervalRef.current]?.bars || []
+      const last = bs[bs.length - 1]
+      if (!chart || !series || !box || !last) return null
+      const x = chart.timeScale().timeToCoordinate(last.time)
+      const y = series.priceToCoordinate(last.close)
+      if (x == null || y == null) return null
+      const r = box.getBoundingClientRect()
+      // 蜡烛可能滚出可视区：夹到图表范围内，避免飞线从屏幕外起步
+      const cx = Math.min(r.right - 6, Math.max(r.left + 6, r.left + x))
+      const cy = Math.min(r.bottom - 6, Math.max(r.top + 6, r.top + y))
+      return { x: cx, y: cy }
+    })
+    return () => registerAnchor(symbol, null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol, registerAnchor])
 
   // 周期切换：重画 + 视图 + 切换该周期的结构数据
   useEffect(() => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { LiveClient } from './live.js'
 import CoinCard from './CoinCard.jsx'
 import PatternGlyph from './PatternGlyph.jsx'
@@ -67,6 +67,8 @@ export default function App() {
   const [srvAccounts, setSrvAccounts] = useState(null)          // 服务端账户列表（含密钥）
   const [quantSnap, setQuantSnap] = useState(null)              // 量化引擎快照
   const [quantEvents, setQuantEvents] = useState(null)          // 持久化决策流水（MySQL）
+  // 命中动画为 (币种,形态) 插入过流水行的时间戳：抑制引擎随后推送的重复信号
+  const hitRowKeysRef = useRef(new Map())
   const liveRef = useRef(null)
   const cardsViewportRef = useRef(null)
   const settingsRef = useRef(settings)
@@ -109,7 +111,18 @@ export default function App() {
   const visibleEvents = useMemo(() => {
     if (!quantEvents) return null
     const set = new Set(shownSymbols)
-    return quantEvents.filter((ev) => !ev.symbol || set.has(ev.symbol))
+    const now = Date.now()
+    const hitKeys = hitRowKeysRef.current
+    return quantEvents.filter((ev) => {
+      if (ev.symbol && !set.has(ev.symbol)) return false
+      // 命中动画已为该 (币种, 形态) 插入了一行动画记录，
+      // 引擎随后推送的同一条信号不再重复显示（20 秒窗口）。
+      if (ev.kind === "signal" && ev.symbol && ev.pattern) {
+        const t = hitKeys.get(`${ev.symbol}|${ev.pattern}`)
+        if (t && now - t < 20000) return false
+      }
+      return true
+    })
   }, [quantEvents, shownSymbols.join(",")])
 
   // 唯一账户：持仓币种排前，池内持仓但未展示的自动添加到其后
@@ -173,100 +186,182 @@ export default function App() {
     return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offQEvent(); live.close() }
   }, [])
 
-  // 命中时：卡片滚动居中 → 等滚动稳定 → 从K线卡片放飞线 → 落点扩散填充卡片背景
-  const [flight, setFlight] = useState(null)
-  const [filled, setFilled] = useState(null)   // {pattern, ox, oy} 落点在卡内的百分比
+  // ==================== 命中动画：串行队列 ====================
+  // 多个币 / 多个形态同时触发时，逐条完整播放（第一段→卡片填充→第二段→行揭示），
+  // 后一条等前一条播完再开始。并发播会互相覆盖状态、导致飞线错乱。
+  const [flight, setFlight] = useState(null)          // 当前飞线（arc / wobble）
+  const [cardFill, setCardFill] = useState(null)      // 形态卡背景扩散 {pattern, ox, oy, grow}
+  const [reservedRows, setReservedRows] = useState([]) // 流水占位行（先空白，飞线到达后揭示）
   const flightKeyRef = useRef(0)
-  // 第二段：形态卡徽标 → 决策流水最新行
-  const [rowFlight, setRowFlight] = useState(null)
-  const [rowFill, setRowFill] = useState(null)   // {id, tone, fx, fy, grow}
+  const flightResolveRef = useRef(null)
+  const landInfoRef = useRef(null)
+  const jobQueueRef = useRef([])
+  const runningRef = useRef(false)
+  const queuedRef = useRef(new Set())
+  const anchorsRef = useRef({})      // symbol -> () => 最后一根蜡烛的屏幕坐标
   const streamRef = useRef(null)
-  const rowFlightKeyRef = useRef(0)
-  useEffect(() => {
-    if (!hits.length) return
-    const hit = hits[0]
-    setFilled(null)                     // 新命中：先清掉上一轮的填充
-    scrollToPattern(hit.pattern)
-    // 等滚动动画走完（scrollToPattern: 120ms 延迟 + 680ms 动画）再测终点，
-    // 否则拿到的是滚动前的位置，飞线会落偏。
-    const timer = setTimeout(() => {
-      const srcEl = document.querySelector(`.card[data-symbol="${hit.symbol}"]`)
-      const dstEl = document.querySelector(`.pattern-card[data-key="${hit.pattern}"]`)
-      if (!srcEl || !dstEl) return
-      const s = srcEl.getBoundingClientRect()
-      const d = dstEl.getBoundingClientRect()
-      if (!s.width || !d.width) return
-      flightKeyRef.current += 1
-      // 起点取源卡片的图表中心（不在视口内时夹到可见区域内，避免飞线从屏幕外起步）
-      const srcX = Math.min(window.innerWidth - 20, Math.max(20, s.left + s.width * 0.55))
-      const srcY = Math.min(window.innerHeight - 20, Math.max(20, s.top + s.height * 0.45))
-      const dstX = Math.min(window.innerWidth - 10, Math.max(10, d.left + d.width / 2))
-      const dstY = Math.min(window.innerHeight - 10, Math.max(10, d.top + d.height / 2))
-      setFlight({
-        key: flightKeyRef.current,
-        direction: hit.direction || "neutral",
-        pattern: hit.pattern,
-        from: { x: srcX, y: srcY },
-        to: { x: dstX, y: dstY },
-      })
-    }, 850)
-    return () => clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hits])
+  const rowSeqRef = useRef(0)
 
-  // 飞线抵达：把落点换算成目标卡片内的百分比，背景从这里向外铺开
-  const onFlightLand = (to, _dir, patternArg) => {
-    const pattern = patternArg || (flight && flight.pattern)
-    const dstEl = pattern ? document.querySelector(`.pattern-card[data-key="${pattern}"]`) : null
-    if (!dstEl) return
-    const d = dstEl.getBoundingClientRect()
-    if (!d.width || !d.height) return
-    const payload = {
-      pattern,
-      ox: Math.max(0, Math.min(100, ((to.x - d.left) / d.width) * 100)),
-      oy: Math.max(0, Math.min(100, ((to.y - d.top) / d.height) * 100)),
-    }
-    // 先挂载元素（clip 0%），下一帧再给终点半径，transition 才会真正跑起来
-    setFilled({ ...payload, grow: false })
-    requestAnimationFrame(() => requestAnimationFrame(() => setFilled({ ...payload, grow: true })))
-    // 卡片背景铺开后，接着从卡片左上角徽标飞向决策流水最新一行
-    const dir = (flight && flight.direction) || "neutral"
-    setTimeout(() => startRowFlight(pattern, dir), 700)
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+  const registerAnchor = useCallback((sym, fn) => {
+    if (fn) anchorsRef.current[sym] = fn
+    else delete anchorsRef.current[sym]
+  }, [])
+
+  /** 播放一段飞线；resolve 出落地信息（to/direction/pattern/mode） */
+  const fly = (cfg) => new Promise((resolve) => {
+    flightKeyRef.current += 1
+    landInfoRef.current = null
+    flightResolveRef.current = resolve          // 保存 resolve 函数本身
+    setFlight({ ...cfg, key: flightKeyRef.current })
+  })
+
+  const onFlightLand = (to, direction, pattern, mode) => {
+    landInfoRef.current = { to, direction, pattern, mode }
+  }
+  const onFlightDone = () => {
+    // 注意：这里必须调用保存的 resolve 函数（之前误写成把 info 赋给 ref，
+    // 导致 await fly() 永远不返回、整个串行队列卡死在第一条）
+    const info = landInfoRef.current || {}
+    const done = flightResolveRef.current
+    flightResolveRef.current = null
+    setFlight(null)
+    if (done) done(info)
   }
 
-  /** 第二段飞线：形态卡左上角徽标 → 决策流水最新一行。
-      落点扩散的颜色就是徽标方向色（bullish 青绿 / bearish 玫红 / neutral 灰蓝）。 */
-  const startRowFlight = (pattern, direction) => {
-    const cardEl = pattern ? document.querySelector(`.pattern-card[data-key="${pattern}"]`) : null
-    const streamEl = streamRef.current
-    if (!cardEl || !streamEl) return
-    const badge = cardEl.querySelector('[class*="dir-badge"]')
-    const b = (badge || cardEl).getBoundingClientRect()
-    // 终点：流水里最新一行的实际位置（没有行就退回视口底部）
-    const rows = [...streamEl.querySelectorAll('[class*="_row_"]')]
-    const lastRow = rows.length ? rows[rows.length - 1] : null
-    const lr = lastRow ? lastRow.getBoundingClientRect() : null
-    const sr = streamEl.getBoundingClientRect()
-    const from = { x: b.left + b.width / 2, y: b.top + b.height / 2 }
-    const to = lr && lr.width
-      ? { x: lr.left + lr.width * 0.62, y: lr.top + lr.height / 2 }
-      : { x: sr.left + sr.width * 0.5, y: sr.bottom - 14 }
-    const colors = direction === "bullish"
-      ? { core: "#0d9488", glow: "rgba(13,148,136,0.55)", tail: "#5eead4" }
-      : direction === "bearish"
-        ? { core: "#e11d48", glow: "rgba(225,29,72,0.55)", tail: "#fda4af" }
-        : { core: "#64748b", glow: "rgba(100,116,139,0.5)", tail: "#cbd5e1" }
-    rowFlightKeyRef.current += 1
-    setRowFlight({
-      key: rowFlightKeyRef.current,
+  /** 跑一条命中动画（完整链路） */
+  const runOne = async (hit) => {
+    // 1) 形态卡滚动居中，等滚动动画结束（120ms 延迟 + 680ms 动画）
+    scrollToPattern(hit.pattern)
+    await sleep(860)
+
+    const cardEl = document.querySelector(`.pattern-card[data-key="${hit.pattern}"]`)
+    if (!cardEl) return
+    const d = cardEl.getBoundingClientRect()
+    if (!d.width) return
+
+    // 2) 起点：源 K 线卡片中最后一根蜡烛的屏幕坐标（取不到退回卡片内偏右位置）
+    const anchorFn = anchorsRef.current[hit.symbol]
+    const src = anchorFn ? anchorFn() : null
+    const srcBox = document.querySelector(`.card[data-symbol="${hit.symbol}"]`)
+    const sb = srcBox ? srcBox.getBoundingClientRect() : null
+    const from1 = src || (sb ? { x: sb.left + sb.width * 0.62, y: sb.top + sb.height * 0.3 } : null)
+    if (!from1) return
+
+    // 3) 第一段：蜡烛 → 形态卡中心
+    const land1 = await fly({
+      mode: "arc",
+      from: from1,
+      to: { x: d.left + d.width / 2, y: d.top + d.height / 2 },
+      direction: hit.direction || "neutral",
+      pattern: hit.pattern,
+      dot: 3,
+      fly: 700,
+    })
+
+    // 4) 卡片背景从落点铺开
+    const p1 = {
+      pattern: hit.pattern,
+      ox: Math.max(0, Math.min(100, ((land1.to.x - d.left) / d.width) * 100)),
+      oy: Math.max(0, Math.min(100, ((land1.to.y - d.top) / d.height) * 100)),
+      grow: false,
+    }
+    setCardFill(p1)
+    await sleep(40)
+    setCardFill({ ...p1, grow: true })
+    await sleep(680)
+
+    // 5) 先留一行空白（此刻才插入，避免文字提前出现）
+    rowSeqRef.current += 1
+    const rowId = `hitrow-${rowSeqRef.current}`
+    const dirText = hit.direction === "bullish" ? "看涨" : hit.direction === "bearish" ? "看跌" : "中性"
+    const px = Number(hit.price) || 0
+    const ev = {
+      id: rowId,
+      ts: Date.now(),
+      kind: "signal",
+      account: account ? account.name : "",
+      symbol: hit.symbol,
+      reason: `收到 ${hit.name_zh || hit.pattern} ${dirText}信号 @ ${px >= 1000 ? px.toFixed(1) : px.toFixed(4)}`,
+      pattern: hit.pattern,
+      name_zh: hit.name_zh,
+      direction: hit.direction,
+    }
+    hitRowKeysRef.current.set(`${hit.symbol}|${hit.pattern}`, Date.now())
+    setReservedRows((prev) => [...prev, { id: rowId, ev, revealed: false }])
+    await sleep(340)      // 等占位行挂载并自动滚到底
+
+    // 6) 第二段：形态卡徽标 → 刚留出的那一行
+    const badge = cardEl.querySelector('[class*="dir-badge"]') || cardEl
+    const b = badge.getBoundingClientRect()
+    const rowEl = streamRef.current ? streamRef.current.querySelector(`[data-row-id="${rowId}"]`) : null
+    const rr = rowEl ? rowEl.getBoundingClientRect() : null
+    const sRect = streamRef.current ? streamRef.current.getBoundingClientRect() : null
+    const to2 = rr && rr.width
+      ? { x: rr.left + rr.width * 0.5, y: rr.top + rr.height / 2 }
+      : { x: (sRect ? sRect.left : 0) + 120, y: (sRect ? sRect.bottom : 0) - 14 }
+    const land2 = await fly({
       mode: "wobble",
-      from, to, colors,
-      direction,
-      pattern,
+      from: { x: b.left + b.width / 2, y: b.top + b.height / 2 },
+      to: to2,
+      direction: hit.direction || "neutral",
+      pattern: hit.pattern,
       dot: 2.6,
       fly: 620,
     })
+
+    // 7) 揭示：文本出现，背景从落点展开
+    const fx = rr ? Math.max(0, Math.min(100, ((land2.to.x - rr.left) / rr.width) * 100)) : 50
+    const fy = rr ? Math.max(0, Math.min(100, ((land2.to.y - rr.top) / rr.height) * 100)) : 50
+    setReservedRows((prev) => prev.map((r) => (
+      r.id === rowId ? { ...r, revealed: true, tone: hit.direction || "neutral", fx, fy, grow: false } : r
+    )))
+    await sleep(40)
+    setReservedRows((prev) => prev.map((r) => (
+      r.id === rowId ? { ...r, grow: true } : r
+    )))
+    await sleep(860)
+
+    // 8) 卡片背景淡出，交棒下一条
+    setCardFill(null)
+    await sleep(120)
   }
+
+  /** 队列驱动：一次只跑一条 */
+  const pump = () => {
+    if (runningRef.current) return
+    runningRef.current = true
+    ;(async () => {
+      while (jobQueueRef.current.length) {
+        const job = jobQueueRef.current.shift()
+        try {
+          await runOne(job)
+        } catch (e) {
+          console.error("[flight] job failed", e)
+        }
+      }
+      runningRef.current = false
+    })()
+  }
+
+  // 新命中入队（按时间正序播放；同一 hit 只入队一次）
+  useEffect(() => {
+    if (!hits.length) return
+    const fresh = []
+    for (const h of hits.slice(0, 8)) {
+      const key = h.id || `${h.ts}-${h.symbol}-${h.pattern}`
+      if (queuedRef.current.has(key)) continue
+      queuedRef.current.add(key)
+      fresh.push(h)
+    }
+    if (!fresh.length) return
+    // hits 最新在前 → 反转成时间正序；上限 8 条防止突发刷屏
+    jobQueueRef.current.push(...fresh.reverse())
+    if (jobQueueRef.current.length > 8) jobQueueRef.current.splice(0, jobQueueRef.current.length - 8)
+    pump()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hits])
 
   /** 演示：模拟一次形态命中（只在前端注入，不落库、不触发真实交易）。
       kind = "single" 单个形态 / "multi" 多个币同时触发 / "variety" 不同形态依次触发 */
@@ -284,63 +379,22 @@ export default function App() {
         ts: Date.now(),
       }
     }
-    // 演示时同步注入一条决策流水：让第二段飞线有落点（真实运行时由引擎产生）
-    const addFlowRow = (h) => {
-      const ev = {
-        id: `demo-ev-${h.id}`,
-        ts: Date.now(),
-        kind: "signal",
-        account: account ? account.name : "",
-        symbol: h.symbol,
-        reason: `收到 ${h.name_zh} ${h.direction === "bullish" ? "看涨" : h.direction === "bearish" ? "看跌" : "中性"}信号 @ ${h.price.toFixed(2)}`,
-        pattern: h.pattern,
-        name_zh: h.name_zh,
-        direction: h.direction,
-        winrate: 50 + Math.floor(Math.random() * 30),
-      }
-      setQuantEvents((cur) => [...(cur || []), ev])
-    }
-    const fire = (h) => {
-      setHits((x) => [h, ...x].slice(0, 6))
-      addFlowRow(h)
-    }
+    // 动画链会在第二段飞线前自行插入占位行，这里只注入 hit。
+    // 多个同时注入，用来验证串行队列：应一条条完整播放而不是齐飞。
+    const fire = (h) => setHits((x) => [h, ...x].slice(0, 8))
     if (kind === "multi") {
-      // 多个币同时触发（不同形态），逐个错开 260ms 注入以看清连续飞线
       const n = Math.min(pool.length, 4)
       const syms = [...pool].sort(() => Math.random() - 0.5).slice(0, n)
-      syms.forEach((sym, i) => setTimeout(() => fire(make(sym, pick(patterns))), i * 260))
+      syms.forEach((sym) => fire(make(sym, pick(patterns))))
       return
     }
     if (kind === "variety") {
-      // 同一币上不同形态依次触发
       const sym = pick(pool)
       const keys = [...patterns].sort(() => Math.random() - 0.5).slice(0, 3)
-      keys.forEach((key, i) => setTimeout(() => fire(make(sym, key)), i * 900))
+      keys.forEach((key) => fire(make(sym, key)))
       return
     }
     fire(make(pick(pool), pick(patterns)))
-  }
-
-  /** 第二段落点：换算成最新一行内的百分比，让该行背景从落点铺开 */
-  const onRowFlightLand = (to, direction, _pattern, _mode) => {
-    const streamEl = streamRef.current
-    if (!streamEl) return
-    // 找到当前可视区内最靠下的一行（即最新记录）
-    const rows = [...streamEl.querySelectorAll('[class*="_row_"]')]
-    if (!rows.length) return
-    const last = rows[rows.length - 1]
-    const r = last.getBoundingClientRect()
-    if (!r.width || !r.height) return
-    const payload = {
-      id: last.dataset.rowId || null,
-      tone: direction || "neutral",
-      fx: Math.max(0, Math.min(100, ((to.x - r.left) / r.width) * 100)),
-      fy: Math.max(0, Math.min(100, ((to.y - r.top) / r.height) * 100)),
-    }
-    setRowFill({ ...payload, grow: false })
-    // 等浏览器把 clip 0% 真正应用（一帧不够，用短延时兜底），再给终点半径
-    setTimeout(() => setRowFill({ ...payload, grow: true }), 60)
-    setTimeout(() => setRowFill(null), 1800)
   }
 
   // 设置持久化
@@ -504,6 +558,7 @@ export default function App() {
                 chartColors={chartColors}
                 account={account}
                 accountSeries={accountSeries}
+                registerAnchor={registerAnchor}
                 activeHit={hits.find((h) => h.symbol === s)}
                 onHoverHits={(hs, sym) => {
                   setHoverPattern(hs.length ? { pattern: hs[0].pattern, symbol: sym } : null)
@@ -539,8 +594,8 @@ export default function App() {
                     <div className={`pattern-card ${active ? 'hit' : ''}`} data-key={key} key={key}>
                       {active && (
                         <div className={`pn-hit-bg ${active.direction || p.dir}`} aria-hidden
-                          style={filled && filled.pattern === key
-                            ? { clipPath: `circle(${filled.grow ? 150 : 0}% at ${filled.ox}% ${filled.oy}%)` }
+                          style={cardFill && cardFill.pattern === key
+                            ? { clipPath: `circle(${cardFill.grow ? 150 : 0}% at ${cardFill.ox}% ${cardFill.oy}%)` }
                             : undefined} />
                       )}
                       <Card title={<span className="pc-title">{p.name}
@@ -577,7 +632,7 @@ export default function App() {
         </div>
       <div className="row3">
         <QuantPanel snapshot={quantSnap} events={visibleEvents} chartColors={chartColors}
-          rowFill={rowFill} streamRef={streamRef}
+          reservedRows={reservedRows} streamRef={streamRef}
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
       </div>
       </aside>
@@ -591,10 +646,7 @@ export default function App() {
         accounts={srvAccounts} onSaveAccount={saveAccount} />
 
       {/* 命中飞线：K线卡片 → 形态卡片，落地后触发卡片背景扩散 */}
-      <HitFlight flight={flight} onLand={onFlightLand}
-        onDone={() => setFlight(null)} />
-      <HitFlight flight={rowFlight} onLand={onRowFlightLand}
-        onDone={() => setRowFlight(null)} />
+      <HitFlight flight={flight} onLand={onFlightLand} onDone={onFlightDone} />
 
       {/* 形态信号通知：左上角 */}
       <NotificationViewport position="top-left">

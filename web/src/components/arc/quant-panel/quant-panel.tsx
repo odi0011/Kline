@@ -127,12 +127,13 @@ function EventRow({ ev, chartColors, prevTs, isNew, compact, fill }) {
   )
 }
 
-export default function QuantPanel({ snapshot, events: pushedEvents, chartColors, rowFill, streamRef }) {
+export default function QuantPanel({ snapshot, events: pushedEvents, chartColors, reservedRows, streamRef }) {
   const snap = snapshot || { enabled: false, stats: {} }
   const [events, setEvents] = useState(() => pushedEvents || [])
   const [scrollTop, setScrollTop] = useState(0)
   const [viewH, setViewH] = useState(0)
   const [compact, setCompact] = useState(false)   // 窄容器：省略次要信息
+  const reserved = reservedRows || []            // 末尾占位行（飞线落点）
   const [follow, setFollow] = useState(true)
   const [, setTick] = useState(0)
   const wrapRef = useRef(null)
@@ -212,7 +213,7 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
     if (!el) return
     el.scrollTo({ top: el.scrollHeight, behavior: scrollTop === 0 ? "auto" : "smooth" })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events.length, follow])
+  }, [events.length, reserved.length, follow])
 
   const onScroll = useCallback(() => {
     const el = viewportRef.current
@@ -221,12 +222,16 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
     setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < ROW_H * 1.5)
   }, [])
 
-  // 虚拟窗口
-  const total = events.length
+  // 虚拟窗口：真实事件行走虚拟滚动，末尾占位行数量很少直接渲染
+  const evTotal = events.length
+  const total = evTotal + reserved.length
   const winH = Math.max(viewH, 200)
   const start = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN)
   const end = Math.min(total, Math.ceil((scrollTop + winH) / ROW_H) + OVERSCAN)
-  const slice = useMemo(() => events.slice(start, end), [events, start, end])
+  const slice = useMemo(
+    () => events.slice(Math.min(start, evTotal), Math.min(end, evTotal)),
+    [events, start, end, evTotal]
+  )
 
   const now = Date.now()
   const isNew = (id) => now - (addedAtRef.current.get(id) || 0) < NEW_MS
@@ -249,8 +254,24 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
                 <div key={ev.id ?? idx} className={styles.rowSlot}
                   style={{ transform: `translateY(${idx * ROW_H}px)` }}>
                   <EventRow ev={ev} chartColors={chartColors} compact={compact}
-                    prevTs={events[idx - 1]?.ts} isNew={isNew(ev.id)}
-                    fill={(rowFill && idx === total - 1) ? rowFill : null} />
+                    prevTs={events[idx - 1]?.ts} isNew={isNew(ev.id)} />
+                </div>
+              )
+            })}
+            {reserved.map((r, i) => {
+              const idx = evTotal + i
+              if (idx < start || idx >= end) return null
+              const prev = evTotal > 0 ? events[evTotal - 1]?.ts : reserved[i - 1]?.ev?.ts
+              return (
+                <div key={r.id} className={styles.rowSlot} data-row-id={r.id}
+                  style={{ transform: `translateY(${idx * ROW_H}px)` }}>
+                  {r.revealed ? (
+                    <EventRow ev={r.ev} chartColors={chartColors} compact={compact}
+                      prevTs={prev} isNew
+                      fill={{ tone: r.tone, fx: r.fx, fy: r.fy, grow: r.grow }} />
+                  ) : (
+                    <div className={styles.row} data-pending="" />
+                  )}
                 </div>
               )
             })}
