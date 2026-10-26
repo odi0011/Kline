@@ -1,13 +1,17 @@
 /* K线卡片左侧辅助面板：悬浮覆盖图表左半侧（45% 宽）。
    材质由 LiquidGlass 提供（Snell 折射 + 边缘高光）；
    三个图纵向均分，中间用发丝线分隔，不再有 tab 栏。 */
+/* 定位由 JS 按"蜡烛区居中"算好后以内联 top/height 给出 */
+.host {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
 .overlay {
   position: absolute;
   left: 5px;
-  top: 14px;
-  bottom: 22px;
   width: 45%;
-  z-index: 4;                 /* 盖在K线上方，但低于悬停提示 */
   pointer-events: auto;
 }
 /* LiquidGlass 的 tint 上限有限，K线蜡烛仍会透出来干扰读图。
@@ -17,7 +21,7 @@
   display: flex;
   flex-direction: column;
   padding: 5px 8px 6px;
-  background: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.34);
   /* 内层不被圆角裁切影响：让白底跟着外层圆角走 */
   border-radius: 9px;
 }

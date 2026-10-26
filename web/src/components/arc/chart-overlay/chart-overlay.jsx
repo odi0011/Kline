@@ -4,7 +4,7 @@
      2. 订单簿深度：真实挂单累积量（/public depth 流，20 档）
      3. 权益与回撤：账户权益采样 + 从峰值回撤（MySQL equity 表）
    全部数据来自服务端，没有随机数。风险敞口移至别处。 */
-import { useMemo } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { LiquidGlass } from "@/components/ui/liquid-glass"
 import styles from "./chart-overlay.module.css"
 
@@ -173,17 +173,44 @@ function EquityView({ series, chartColors }) {
   )
 }
 
+/* 图表时间轴（X 轴标签行）的高度。lightweight-charts 没暴露稳定 API，
+   按容器高度比例估：时间轴约占底部 26px（字体 11px + padding）。
+   面板在做垂直居中时要把这部分排除。 */
+const TIME_AXIS_H = 26
+
 export default function ChartOverlay({ symbol, bars, depth, account, series, chartColors }) {
+  const boxRef = useRef(null)
+  const [geo, setGeo] = useState({ h: 0, top: 0 })
+  // 面板在"蜡烛区"（不含时间轴）内垂直居中：等分上下留白
+  useEffect(() => {
+    const host = boxRef.current?.parentElement
+    if (!host) return
+    const measure = () => {
+      const total = host.clientHeight
+      const plot = Math.max(1, total - TIME_AXIS_H)
+      // 面板高度取蜡烛区的 82%（比之前略矮，留出居中呼吸感）
+      const panelH = Math.round(plot * 0.82)
+      setGeo({ h: panelH, top: Math.round((plot - panelH) / 2) })
+    }
+    measure()
+    if (typeof ResizeObserver === "undefined") return
+    const ro = new ResizeObserver(measure)
+    ro.observe(host)
+    return () => ro.disconnect()
+  }, [])
+
   return (
+    <div ref={boxRef} className={styles.host}>
     <LiquidGlass
       radius={10}
       bevelDepth={18}
       scale={36}
       aberration={0}
-      frost={4.5}
-      tint={0.9}
+      frost={3.2}
+      tint={0.34}
       className={styles.overlay}
       contentClassName={styles.overlayInner}
+      style={geo.h ? { top: geo.top, height: geo.h, bottom: "auto" } : undefined}
       aria-label={`${symbol} 辅助面板`}
     >
       <div className={styles.pane}>
@@ -201,5 +228,6 @@ export default function ChartOverlay({ symbol, bars, depth, account, series, cha
         <EquityView series={series} chartColors={chartColors} />
       </div>
     </LiquidGlass>
+    </div>
   )
 }
