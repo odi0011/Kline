@@ -66,7 +66,6 @@ export default function App() {
   const [quantSnap, setQuantSnap] = useState(null)              // 量化引擎快照
   const liveRef = useRef(null)
   const cardsViewportRef = useRef(null)
-  const equityRef = useRef({})                       // 账户名 → [{t, bal, upnl}] 权益采样
   const settingsRef = useRef(settings)
   settingsRef.current = settings
 
@@ -114,19 +113,9 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownSymbols.join(","), posSyms.join(","), pool.join(",")])
 
-  // 账户权益采样（每 30s 广播时记一个点，供卡片迷你曲线；本地保留最近 120 点）
-  useEffect(() => {
-    const now = Date.now()
-    accounts.forEach((a) => {
-      if (a.balance == null) return
-      const arr = (equityRef.current[a.name] ||= [])
-      const last = arr[arr.length - 1]
-      if (!last || now - last.t > 25000) {
-        arr.push({ t: now, bal: a.balance, upnl: a.unrealized ?? 0 })
-        if (arr.length > 120) arr.shift()
-      }
-    })
-  }, [accounts])
+  // 账户权益曲线：服务端每次广播都带最近 8 小时的采样（持久化在 MySQL），
+  // 前端不再本地采样——刷新页面也能立刻看到真实历史，而不是从一条平线开始。
+  const accountSeries = account && Array.isArray(account.series) ? account.series : undefined
 
   useEffect(() => {
     const live = new LiveClient(`ws://${location.hostname}:${WS_PORT}`)
@@ -209,10 +198,6 @@ export default function App() {
     const next = acct ? [acct] : []
     setSrvAccounts(next)
     liveRef.current && liveRef.current.sendSettings({ accounts: next })
-  }
-  const openAccountSettings = () => {
-    setSettingsSection('account')
-    setSettingsOpen(true)
   }
 
   // 币种勾选：最少 MIN_SYMBOLS 个、最多 MAX_SYMBOLS 个，超限直接忽略
@@ -373,8 +358,8 @@ export default function App() {
             </ScrollArea>
           </div>
           <div className="wallet-zone">
-            <AccountCard account={account} series={account ? equityRef.current[account.name] : undefined}
-              chartColors={chartColors} onOpenSettings={openAccountSettings} />
+            <AccountCard account={account} series={accountSeries}
+              chartColors={chartColors} />
           </div>
         </div>
       <div className="row3">

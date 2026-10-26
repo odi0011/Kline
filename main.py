@@ -327,7 +327,9 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     print("K线形态识别器已启动，Ctrl+C 退出")
 
-    # 账户权益轮询（30s；设置变更时立即刷新），广播给前端
+    # 账户权益轮询（30s；设置变更时立即刷新），广播给前端。
+    # 每次采样落库，广播时附带最近 8 小时的权益曲线（服务端持久化：
+    # 前端刷新/换设备都能立刻看到真实历史，不必从空白开始累积）。
     async def accounts_poller():
         while True:
             waited = 0.0
@@ -339,13 +341,27 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             for a in accts_box["list"]:
                 try:
                     d = await asyncio.to_thread(fetch_account, a["api_key"], a["api_secret"])
-                    results.append({"name": a["name"], "icon": a.get("icon", ""),
-                                    "balance": d["balance"], "unrealized": d["unrealized"],
-                                    "available": d["available"], "positions": d.get("positions", [])})
+                    row = {"name": a["name"], "icon": a.get("icon", ""),
+                           "balance": d["balance"], "unrealized": d["unrealized"],
+                           "available": d["available"], "positions": d.get("positions", [])}
+                    try:
+                        storage.save_equity(a["name"], d["ts"], d["balance"], d["unrealized"])
+                    except Exception as e:
+                        print(f"[accounts] 权益采样落库失败: {e}")
+                    try:
+                        row["series"] = storage.equity_series(a["name"])
+                    except Exception:
+                        row["series"] = []
+                    results.append(row)
                 except Exception as e:
-                    results.append({"name": a["name"], "icon": a.get("icon", ""),
-                                    "balance": None, "unrealized": None, "available": None,
-                                    "positions": [], "error": str(e)[:80]})
+                    row = {"name": a["name"], "icon": a.get("icon", ""),
+                           "balance": None, "unrealized": None, "available": None,
+                           "positions": [], "error": str(e)[:80]}
+                    try:
+                        row["series"] = storage.equity_series(a["name"])
+                    except Exception:
+                        row["series"] = []
+                    results.append(row)
             try:
                 hub.last_accounts = results
                 await hub.broadcast({"type": "accounts", "accounts": results})

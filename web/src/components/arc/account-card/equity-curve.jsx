@@ -92,5 +92,5 @@ export default function EquityCurve({ samples, hue, height = 62, onHover }) {
     })
   }, [hue])
 
-  return <div ref={wrapRef} className="ecurve" style={{ height }} />
+  return <div ref={wrapRef} className="ecurve" style={{ height, width: "100%" }} />
 }

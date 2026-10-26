@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import pymysql
 
@@ -55,6 +56,24 @@ class Storage:
             outcome VARCHAR(10) DEFAULT 'pending', eval_price DOUBLE,
             INDEX idx_hits_bar(symbol, `interval`, bar_open_time),
             INDEX idx_hits_pat(pattern)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # 账户权益采样：卡片迷你曲线用（服务端持久化，刷新页面/换设备都保留历史）
+        self._q("""CREATE TABLE IF NOT EXISTS equity(
+            acct VARCHAR(64), ts BIGINT, bal DOUBLE, upnl DOUBLE,
+            PRIMARY KEY(acct, ts)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
+    # ---- 账户权益 ----
+
+    def save_equity(self, acct: str, ts: int, bal: float, upnl: float) -> None:
+        self._q("REPLACE INTO equity VALUES(%s,%s,%s,%s)",
+                (acct, ts, round(bal, 4), round(upnl, 4)))
+
+    def equity_series(self, acct: str, minutes: int = 480, limit: int = 960) -> list[dict]:
+        """最近 minutes 分钟的权益采样（升序），供前端画权益曲线。"""
+        cutoff = int(time.time() * 1000) - minutes * 60_000
+        rows = self._qall(
+            "SELECT ts,bal,upnl FROM equity WHERE acct=%s AND ts>=%s ORDER BY ts DESC LIMIT %s",
+            (acct, cutoff, limit))
+        return [{"t": int(r[0]), "bal": float(r[1]), "upnl": float(r[2])} for r in reversed(rows)]
 
     # ---- K线 ----
 
@@ -155,3 +174,5 @@ class Storage:
         self._last_prune = now_ms
         self._q("DELETE FROM candles WHERE open_time < %s", (now_ms - self.keep_ms,))
         self._q("DELETE FROM hits WHERE ts < %s", (now_ms - self.hit_ms,))
+        # 权益采样保留 2 天（曲线只看最近 8 小时，多留一天便于回看）
+        self._q("DELETE FROM equity WHERE ts < %s", (now_ms - 2 * 86400_000,))
