@@ -42,18 +42,43 @@ def signed_request(api_key: str, api_secret: str, path: str, params: dict | None
 
 
 def fetch_positions(api_key: str, api_secret: str) -> list:
-    """拉取有仓位的合约（positionAmt != 0）：symbol / 数量 / 未实现盈亏。"""
+    """拉取有仓位的合约（positionAmt != 0）。
+
+    给出卡片需要的完整字段：数量、入场价、标记价、未实现盈亏与收益率、
+    杠杆、强平价、保证金、名义价值。收益率按保证金口径算（PnL / 占用保证金），
+    这样不同杠杆的仓位可以直接横向比较。
+    """
     rows = signed_request(api_key, api_secret, "/fapi/v2/positionRisk")
     out = []
     for p in rows:
         amt = float(p.get("positionAmt", 0))
         if abs(amt) < 1e-9:
             continue
+        entry = float(p.get("entryPrice", 0) or 0)
+        mark = float(p.get("markPrice", 0) or 0)
+        upnl = float(p.get("unRealizedProfit", 0) or 0)
+        margin = float(p.get("margin", 0) or 0)
+        notional = abs(float(p.get("notional", 0) or 0))
+        if notional <= 0 and mark > 0:
+            notional = abs(amt) * mark
+        # 收益率：优先用保证金口径；保证金为 0（全仓已用尽）时退回名义价值口径
+        base = margin if margin > 0 else notional
+        upnl_pct = (upnl / base * 100) if base > 0 else 0.0
         out.append({
             "symbol": p.get("symbol", "").lower(),
             "amt": amt,
-            "unrealized": round(float(p.get("unRealizedProfit", 0)), 2),
+            "entry": round(entry, 8),
+            "mark": round(mark, 8),
+            "unrealized": round(upnl, 2),
+            "unrealized_pct": round(upnl_pct, 2),
+            "leverage": int(float(p.get("leverage", 0) or 0)),
+            "liquidation": round(float(p.get("liquidationPrice", 0) or 0), 8),
+            "margin": round(margin, 2),
+            "notional": round(notional, 2),
+            "isolated": bool(p.get("isolated", False)),
         })
+    # 保证金占用大的排前面（主力仓位优先可见）
+    out.sort(key=lambda x: -x["margin"])
     return out
 
 

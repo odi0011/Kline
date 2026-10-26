@@ -1,5 +1,5 @@
 /* 单账户卡：188px × 第一行账户区宽度。
-   布局：标题行（头像+名称 | 权益曲线）→ 权益大数字 → 持仓标签流 */
+   布局：标题行（头像+名称 | 权益曲线）→ 权益大数字 → 持仓卡（横向滚动） */
 .card {
   --h: var(--acct-hue, 45);
   position: relative;
@@ -7,7 +7,7 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 10px 13px 10px;
+  padding: 10px 12px 9px;
   border-radius: 14px;
   overflow: hidden;
   background:
@@ -18,7 +18,7 @@
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 20px rgba(16, 24, 40, 0.05);
 }
 
-/* 标题行：头像 + 名称（名称区限宽），右侧留给权益曲线 */
+/* 标题行：头像 + 名称（限宽），右侧权益曲线 */
 .head { display: flex; align-items: center; gap: 8px; min-width: 0; flex: none; }
 .avatar {
   flex: none; display: grid; place-items: center;
@@ -37,7 +37,7 @@
 /* 权益曲线：吃掉标题行剩余宽度，hover 联动下方数字 */
 .curve { flex: 1 1 0; min-width: 72px; height: 46px; align-self: center; margin: -2px -2px -2px 2px; }
 
-/* 权益数字：大号数值 + 未实现盈亏 */
+/* 权益数字 */
 .eqLine {
   display: flex; align-items: baseline; gap: 7px;
   min-width: 0; flex: none; margin-top: 1px;
@@ -54,30 +54,94 @@
 }
 .eqPnl [class*="counter"] { font-size: 11.5px !important; font-weight: 700; }
 
-/* 持仓标签流：自动换行，标签紧凑 */
-.posArea { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: none; margin: 5px -3px 0; }
-.posArea::-webkit-scrollbar { display: none; }
-.posList { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 5px; padding: 0 3px 2px; }
-
-.tag {
-  display: inline-flex; align-items: center; gap: 4px;
-  height: 23px; padding: 0 8px 0 6px;
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.7);
-  border: 1px solid hsl(var(--h) 35% 88% / 0.95);
-  font-size: 10px; color: #1c2333;
-  white-space: nowrap;
-  cursor: default;
-  transition: background-color 130ms ease;
+/* ---------- 持仓：竖排小卡 + 横向滚动 ---------- */
+/* 固定为剩余空间，overflow hidden 保证内部滚动不会反向撑高卡片（否则上方数字会抖） */
+.posArea { flex: 1 1 0; min-height: 0; margin: 2px -2px 0; position: relative; overflow: hidden; }
+.posWrap { position: absolute; inset: 0; }
+.posScroll { height: 100%; }
+/* 横向用箭头翻页，隐藏原生滚动条轨道 */
+.posScroll [class*="track"],
+.posScroll [class*="thumb"] { display: none !important; }
+.posViewport { height: 100%; }
+.posList {
+  display: flex; align-items: stretch; gap: 6px;
+  padding: 1px 2px 2px;
+  height: 100%;
+  box-sizing: border-box;
 }
-.tag:hover { background: #fff; }
-/* 方向用左侧色条表示，不额外占文字位 */
-.tag[data-side="long"] { box-shadow: inset 2px 0 0 rgba(22, 163, 74, 0.75); }
-.tag[data-side="short"] { box-shadow: inset 2px 0 0 rgba(220, 38, 38, 0.75); }
-.tagSym { font-size: 10.5px; font-weight: 700; letter-spacing: 0.2px; }
-.tagAmt { color: rgba(28, 35, 51, 0.5); font-variant-numeric: tabular-nums; }
-.tagPnl { font-weight: 700; font-variant-numeric: tabular-nums; }
-.posEmpty { font-size: 10.5px; color: rgba(16, 24, 40, 0.42); padding: 6px 2px; }
+
+/* 单张持仓卡：小盒子，纵向排列信息 */
+.pcard {
+  flex: none;
+  width: 88px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 7px 6px 8px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid hsl(var(--h) 35% 88% / 0.95);
+  overflow: hidden;
+  cursor: default;
+  transition: background-color 130ms ease, border-color 130ms ease;
+}
+.pcard:hover { background: #fff; border-color: hsl(var(--h) 45% 80% / 1); }
+/* 方向：左侧色条 */
+.pcard[data-side="long"] { box-shadow: inset 2px 0 0 rgba(22, 163, 74, 0.8); }
+.pcard[data-side="short"] { box-shadow: inset 2px 0 0 rgba(220, 38, 38, 0.8); }
+
+.pcardTop { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.pcardSym {
+  font-size: 10.5px; font-weight: 700; color: #1c2333; letter-spacing: 0.2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pcardLev {
+  margin-left: auto; flex: none;
+  font-size: 8.5px; font-weight: 700; line-height: 1;
+  padding: 1.5px 3px; border-radius: 4px;
+  background: hsl(var(--h) 60% 90% / 0.9);
+  color: hsl(var(--h) 45% 34%);
+}
+.pcardPnl {
+  font-size: 14px; font-weight: 700; line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-top: 1px;
+}
+.pcardPct {
+  font-size: 9.5px; font-weight: 700; line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.pcardRow {
+  display: flex; align-items: baseline; gap: 3px;
+  font-size: 9px; line-height: 1.25; color: rgba(28, 35, 51, 0.72);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pcardRow:first-of-type { margin-top: auto; }
+.pcardKey { color: rgba(16, 24, 40, 0.38); font-size: 8.5px; flex: none; }
+
+/* 小箭头：只在悬停时出现，压在滚动区右侧 */
+.posNav {
+  position: absolute; right: 1px; top: 50%; transform: translateY(-50%);
+  display: flex; flex-direction: column; gap: 2px;
+  opacity: 0; pointer-events: none;
+  transition: opacity 140ms ease;
+}
+.posArea:hover .posNav { opacity: 1; pointer-events: auto; }
+.posNav button {
+  display: grid; place-items: center;
+  width: 15px; height: 15px; border-radius: 5px;
+  border: 1px solid hsl(var(--h) 35% 84% / 0.95);
+  background: rgba(255, 255, 255, 0.92);
+  color: rgba(28, 35, 51, 0.6);
+  cursor: pointer;
+}
+.posNav button:hover { color: #1c2333; background: #fff; }
+.posNav button:disabled { opacity: 0.35; cursor: default; }
+
+.posEmpty { font-size: 10.5px; color: rgba(16, 24, 40, 0.42); padding: 8px 2px; }
 
 /* 空状态 */
 .empty {
