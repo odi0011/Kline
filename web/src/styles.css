@@ -319,10 +319,11 @@ body {
 /* 标题后的小计数（uiarc 计数器默认 var(--text-3xl)=30px，这里压回小字号） */
 .pc-title { display: inline-flex; align-items: baseline; gap: 5px; }
 .cnt-mini { font-size: 10.5px; color: #a0a8b4; font-weight: 400; }
-.cnt-mini [class*="counter"] { font-size: 10.5px !important; }
+.cnt-mini [class*="counter"] { font-size: 10.5px !important; color: inherit; }
 
-/* 价格计数器压回头部字号 */
-.price [class*="counter"] { font-size: 17px !important; }
+/* 价格计数器压回头部字号，并继承涨跌色（组件自带 color:var(--foreground)） */
+.price [class*="counter"] { font-size: 17px !important; color: inherit; }
+.price [class*="symbol"] { color: inherit; }
 
 /* 命中卡片：全卡水墨流彩动态背景，墨色由形态方向决定 */
 .pn-hit-bg {

@@ -94,6 +94,9 @@
 .posSide[data-side="short"] { background: #dc2626; color: #fff; }
 .posQty { flex: none; color: var(--text-secondary, #5b6472); font-variant-numeric: tabular-nums; }
 .posPnl { margin-left: auto; flex: none; font-weight: 700; font-variant-numeric: tabular-nums; display: inline-flex; align-items: baseline; gap: 4px; }
+/* 计数器根节点自带 color:var(--foreground)，须继承外层涨跌色，否则只有 +/- 号是彩色的 */
+.posPnl [class*="counter"] { color: inherit; }
+.posPnl [class*="symbol"] { color: inherit; }
 .posPnl em { font-style: normal; font-size: 9.5px; font-weight: 600; opacity: 0.75; }
 .tTime { flex: none; font-size: 10px; color: var(--text-muted, #8b949e); font-variant-numeric: tabular-nums; }
 .tReason { flex: 1; min-width: 0; font-size: 10px; color: var(--text-muted, #8b949e); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
