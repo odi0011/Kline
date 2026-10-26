@@ -28,6 +28,9 @@ class Candle:
     trades: int = 0
     interval: str = ""
     closed: bool = False
+    # 主动买 / 主动卖成交量（由 aggTrade 的 isBuyerMaker 区分）
+    buy_vol: float = 0.0
+    sell_vol: float = 0.0
 
     @property
     def close_time(self) -> int:
@@ -38,9 +41,18 @@ def new_bucket(ts: int, iv_ms: int) -> int:
     return ts - ts % iv_ms
 
 
-def apply_trade(c: Candle, price: float, qty: float) -> None:
+def apply_trade(c: Candle, price: float, qty: float, buyer_maker: bool = False) -> None:
+    """累加一笔成交。
+
+    buyer_maker=True 表示买方挂单（被动买）→ 成交是主动卖出；
+    False 表示卖方挂单 → 成交是主动买入。用于买卖力量对比。
+    """
     c.high = max(c.high, price)
     c.low = min(c.low, price)
     c.close = price
     c.volume += qty
     c.trades += 1
+    if buyer_maker:
+        c.sell_vol += qty
+    else:
+        c.buy_vol += qty

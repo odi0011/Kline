@@ -502,6 +502,8 @@ export default function App() {
                 settings={{ ...settings, interval: defaultIv }}
                 live={liveRef.current}
                 chartColors={chartColors}
+                account={account}
+                accountSeries={accountSeries}
                 activeHit={hits.find((h) => h.symbol === s)}
                 onHoverHits={(hs, sym) => {
                   setHoverPattern(hs.length ? { pattern: hs[0].pattern, symbol: sym } : null)

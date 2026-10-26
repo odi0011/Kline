@@ -19,6 +19,7 @@ from core.engine import PatternEngine
 from core.candle import INTERVAL_MS
 from feed.backfill import fetch_klines
 from feed.demo import DemoSource
+from feed.depth import DepthStream
 from feed.source import BinanceFuturesStream
 from notify.notifier import Notifier
 from patterns.base import get_enabled
@@ -322,6 +323,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         agg.on_update = on_evt
         agg.on_close = on_evt
 
+    if mode != "demo" and depth_box["stream"]:
+        asyncio.create_task(depth_box["stream"].run())
+        print(f"[depth] 订单簿深度流已启动（{len(symbols)} 个币）")
+
     bcfg = cfg.get("feed", {})
     proxy_cfg = (bcfg.get("proxy") or "").strip()
     limit = int(bcfg.get("backfill_bars", 300))
@@ -346,9 +351,27 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     for (sym, _), agg in aggs.items():
         by_symbol[sym].append(agg)
 
-    def on_trade(symbol: str, price: float, qty: float, ts: int, _recv_ms: int) -> None:
+    def on_trade(symbol: str, price: float, qty: float, ts: int, _recv_ms: int,
+                 buyer_maker: bool = False) -> None:
         for agg in by_symbol.get(symbol, ()):
-            agg.on_trade(price, qty, ts)
+            agg.on_trade(price, qty, ts, buyer_maker)
+
+    # 订单簿深度（真实挂单）：独立 /public 路由，与 aggTrade 并行
+    depth_box: dict = {"stream": None}
+
+    def on_depth(symbol: str, snap: dict) -> None:
+        hub.depths[symbol] = snap
+        hub.depth_dirty.add(symbol)
+
+    if not bcfg.get("depth_disabled", False):
+        try:
+            depth_box["stream"] = DepthStream(
+                symbols, on_depth, proxy=proxy_cfg or True,
+                levels=int(bcfg.get("depth_levels", 20)),
+                speed_ms=int(bcfg.get("depth_speed_ms", 500)),
+            )
+        except Exception as e:
+            print(f"[depth] 初始化失败: {e}")
 
     feed_box: dict = {}
     mode = (bcfg.get("mode") or "auto").lower()

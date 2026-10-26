@@ -35,4 +35,4 @@ class DemoSource:
                 p = max(p * (1 + random.gauss(0, 0.00008)), 0.01)
                 self.prices[sym] = p
                 qty = round(random.expovariate(2.0) + 0.001, 4)
-                self.on_trade(sym, round(p, 2), qty, now_ms, now_ms)
+                self.on_trade(sym, round(p, 2), qty, now_ms, now_ms, random.random() < 0.5)

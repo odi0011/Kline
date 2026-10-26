@@ -1,0 +1,124 @@
+/* K线卡片左侧玻璃面板：悬浮覆盖图表左半侧（45% 宽）。
+   材质与全局玻璃组件一致（半透明白 + 背景模糊 + 发丝边）。 */
+.overlay {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  bottom: 4px;
+  width: 45%;
+  z-index: 4;                 /* 盖在K线上方，但低于悬停提示 */
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px 7px 6px;
+  border-radius: 10px;
+  /* 玻璃材质：和 LiquidGlass 观感一致（半透明白 + 模糊 + 白边） */
+  /* 玻璃要"能透出氛围但不干扰读数"：提高白度 + 加大模糊，
+     否则下面的K线和成交量柱会从面板里透出来 */
+  background: rgba(255, 255, 255, 0.82);
+  -webkit-backdrop-filter: blur(20px) saturate(1.15);
+  backdrop-filter: blur(20px) saturate(1.15);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 2px 10px rgba(16, 24, 40, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+/* 标签页 */
+.tabs { display: flex; gap: 2px; flex: none; }
+.tab {
+  flex: 1;
+  display: inline-flex; align-items: center; justify-content: center; gap: 3px;
+  height: 17px; padding: 0 3px;
+  border-radius: 5px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted, #8b949e);
+  font-size: 9.5px; font-weight: 600; font-family: inherit;
+  cursor: pointer;
+  transition: background-color 130ms ease, color 130ms ease;
+}
+.tab:hover { background: rgba(28, 35, 51, 0.06); color: var(--text-secondary, #5b6472); }
+.tab[data-on] {
+  background: rgba(255, 255, 255, 0.9);
+  color: #1c2333;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.1);
+}
+
+.body { flex: 1; min-height: 0; display: flex; }
+.view { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+
+/* 顶部一行：标签 + 数值 */
+.ratioRow {
+  display: flex; align-items: baseline; gap: 4px;
+  font-size: 9px; color: var(--text-muted, #8b949e);
+  white-space: nowrap; flex: none;
+}
+.ratioLabel { flex: none; }
+.ratioVal { flex: none; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.midPrice {
+  margin-left: auto; flex: none;
+  font-size: 9px; color: var(--text-muted, #8b949e);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 买卖占比条 */
+.ratioBar {
+  display: flex; height: 3px; border-radius: 2px; overflow: hidden;
+  background: rgba(28, 35, 51, 0.08); flex: none;
+}
+.ratioBar span { display: block; height: 100%; transition: width 280ms ease; }
+
+/* 双色量柱（买在下、卖在上，堆叠对比） */
+.bars {
+  flex: 1; min-height: 0;
+  display: flex; align-items: flex-end; gap: 1.5px;
+  padding: 2px 0;
+}
+.barCol {
+  flex: 1; min-width: 0; height: 100%;
+  display: flex; flex-direction: column; justify-content: flex-end; gap: 1px;
+}
+.barBuy, .barSell {
+  display: block; width: 100%;
+  border-radius: 1px;
+  transition: height 240ms ease;
+  min-height: 0;
+}
+
+.depthSvg { flex: 1; min-height: 0; width: 100%; display: block; overflow: visible; }
+
+/* 轴标注 */
+.axisRow {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 8.5px; color: var(--text-muted, #8b949e);
+  font-variant-numeric: tabular-nums; flex: none;
+}
+
+.hint { font-size: 9.5px; color: var(--text-muted, #8b949e); padding: 8px 2px; }
+
+/* 风险：键值网格 */
+.kvGrid {
+  flex: 1; min-height: 0;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 3px 8px;
+  align-content: start;
+}
+.kv { display: flex; align-items: baseline; justify-content: space-between; gap: 4px; }
+.kv em {
+  font-style: normal; font-size: 8.5px; color: var(--text-muted, #8b949e);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.kv b {
+  font-size: 10px; font-weight: 700; color: #1c2333;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.riskRow {
+  display: flex; align-items: baseline; justify-content: space-between;
+  font-size: 8.5px; color: var(--text-muted, #8b949e); flex: none;
+}
+.riskRow b { font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.meter {
+  height: 3px; border-radius: 2px; overflow: hidden;
+  background: rgba(28, 35, 51, 0.08); flex: none;
+}
+.meter span { display: block; height: 100%; transition: width 300ms ease; }

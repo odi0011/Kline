@@ -1,7 +1,10 @@
 // WS 客户端 + 数据仓库：消息同步写入 store（卡片挂载时读全量），再分发给订阅者。
 
 function toBar(a) {
-  return { time: a[0], open: a[1], high: a[2], low: a[3], close: a[4], volume: a[5] }
+  return {
+    time: a[0], open: a[1], high: a[2], low: a[3], close: a[4], volume: a[5],
+    buyVol: a[6] || 0, sellVol: a[7] || 0,
+  }
 }
 
 export class LiveClient {
@@ -10,6 +13,7 @@ export class LiveClient {
     this.ws = null
     this.store = {}          // symbol -> interval -> { bars: [] }
     this.structures = {}     // symbol -> interval -> 结构分析
+    this.depths = {}         // symbol -> 订单簿深度快照（真实挂单）
     this.meta = null
     this.hits = []
     this.subs = new Map()    // key -> Set<fn>
@@ -109,6 +113,9 @@ export class LiveClient {
     } else if (m.type === 'quant') {
       this.quant = m.snapshot
       this._emitKey('quant', m)
+    } else if (m.type === 'depths') {
+      this.depths = m.depths || {}
+      this._emitKey('depths', m)
     } else if (m.type === 'quant_events') {
       this.quantEvents = m.events || []
       this._emitKey('quant_events', m)

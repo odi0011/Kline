@@ -3,6 +3,7 @@ import { createChart, CandlestickSeries, HistogramSeries, ColorType } from 'ligh
 import { AnimatedCounter } from '@/components/arc/animated-counter/animated-counter'
 import CoinAvatar from '@/components/ui/coin-avatar'
 import StructureOverlay from './StructureOverlay.jsx'
+import ChartOverlay from '@/components/arc/chart-overlay/chart-overlay'
 import { PATTERN_META } from './patterns_meta.js'
 
 const rgba = (hex, a) => {
@@ -20,7 +21,7 @@ const fmtCross = (t) => {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
 }
 
-export default function CoinCard({ symbol, intervals, settings, live, chartColors, activeHit, onHoverHits }) {
+export default function CoinCard({ symbol, intervals, settings, live, chartColors, activeHit, onHoverHits, account, accountSeries }) {
   const hitActive = !!activeHit
   const boxRef = useRef(null)
   const chgRef = useRef(null)
@@ -41,6 +42,8 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
   const [hover, setHover] = useState(null) // { x, y, timeMs } 十字悬停
   const [barDetail, setBarDetail] = useState(null)
   const [structure, setStructure] = useState(null)   // 后端结构分析（画线/画区/形态）
+  const [depth, setDepth] = useState(null)           // 订单簿深度（真实挂单）
+  const [bars, setBars] = useState([])               // 当前周期的K线（供买卖力量面板）
   const base = symbol.replace(/usdt$/, '')
 
   intervalRef.current = settings.interval
@@ -119,6 +122,14 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
   }
 
   const drawBar = (b) => {
+    // 面板用的是同一份 bar 数据；这里同步最新一根（避免每 tick 全量浅拷贝）
+    setBars((prev) => {
+      const next = prev.slice()
+      const last = next[next.length - 1]
+      if (last && last.time === b.time) next[next.length - 1] = b
+      else next.push(b)
+      return next
+    })
     if (Date.now() < hitUntilRef.current) { applyLiveBar(); return }
     const cc = ccRef.current
     candleRef.current?.update({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })
@@ -129,6 +140,7 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
 
   const setData = () => {
     const bars = live.store[symbol]?.[intervalRef.current]?.bars || []
+    setBars(bars)
     candleRef.current?.setData(bars.map((b) => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })))
     volRef.current?.setData(bars.map((b) => ({ time: b.time, value: b.volume, color: b.close >= b.open ? rgba(ccRef.current.up, 0.3) : rgba(ccRef.current.down, 0.3) })))
     if (bars.length) {
@@ -194,6 +206,9 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
       if (m.hits && m.hits.length) onHoverHitsRef.current?.(m.hits, symbol)
       else onHoverHitsRef.current?.([], symbol)
     }))
+    // 订单簿深度：服务端按 flush 周期推送全部币种的快照
+    offs.push(live.on('depths', () => setDepth(live.depths[symbol] || null)))
+    setDepth(live.depths[symbol] || null)
     // 结构分析（支撑压力/趋势线/FVG/订单块/结构形态）：收线时服务端推送
     offs.push(live.on(`structure|${symbol}`, () => {
       setStructure(live.structures[symbol]?.[intervalRef.current] || null)
@@ -308,6 +323,8 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
         <span className="iv-label">{intervalRef.current}</span>
       </div>
       <div ref={boxRef} className="chart-box">
+        <ChartOverlay symbol={symbol} bars={bars} depth={depth}
+          account={account} series={accountSeries} chartColors={chartColors} />
         <StructureOverlay chartRef={chartRef} seriesRef={candleRef} structure={structure}
           interval={intervalRef.current} visibleBars={settings.visibleBars} />
         {hover && (

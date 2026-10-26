@@ -24,7 +24,7 @@ class BinanceFuturesStream:
     def __init__(
         self,
         symbols: list[str],
-        on_trade: Callable[[str, float, float, int, int], None],
+        on_trade: Callable[[str, float, float, int, int, bool], None],
         proxy: str | None = None,
         stall_sec: float = 8.0,
     ):
@@ -124,8 +124,10 @@ class BinanceFuturesStream:
             price = float(d["p"])
             qty = float(d["q"])
             trade_ms = int(d["T"])
+            # m = isBuyerMaker：True 时买方挂单 → 这笔记为主动卖出
+            buyer_maker = bool(d.get("m", False))
             self.last_trade_ms = recv_ms
             self.lags.append(recv_ms - trade_ms)
-            self.on_trade(symbol, price, qty, trade_ms, recv_ms)
+            self.on_trade(symbol, price, qty, trade_ms, recv_ms, buyer_maker)
         except Exception:
             return

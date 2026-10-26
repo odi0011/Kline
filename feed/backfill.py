@@ -27,9 +27,14 @@ def fetch_klines(symbol: str, interval: str, limit: int, proxy: str | None = Non
         rows = json.loads(resp.read().decode())
     out = []
     for r in rows:
+        vol = float(r[5])
+        # klines[9] = taker_buy_base_asset_volume（主动买成交量），
+        # 主动卖 = 总量 - 主动买。都是交易所返回的真实值，不用估算。
+        taker_buy = float(r[9]) if len(r) > 9 and r[9] is not None else 0.0
         out.append(Candle(
             open_time=int(r[0]),
             open=float(r[1]), high=float(r[2]), low=float(r[3]), close=float(r[4]),
-            volume=float(r[5]), trades=int(r[8]), interval=interval, closed=True,
+            volume=vol, trades=int(r[8]), interval=interval, closed=True,
+            buy_vol=taker_buy, sell_vol=max(0.0, vol - taker_buy),
         ))
     return out

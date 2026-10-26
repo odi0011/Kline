@@ -59,6 +59,9 @@ class BroadcastHub:
         self.quant_fn = None              # 量化快照（main 注入）
         self.quant_events_fn = None       # 决策流水查询（main 注入）：(acct, limit) -> list
         self.analysis_fn = None           # 结构分析（main 注入）：(sym, iv, candles) -> dict
+        self.depths: dict[str, dict] = {}      # symbol -> 订单簿深度快照（真实挂单）
+        self.depth_dirty: set[str] = set()     # 待广播的深度
+        self.risk_fn = None                    # 账户风险敞口（main 注入）：() -> dict
         self.structures: dict[tuple, dict] = {}   # (sym, iv) -> 最近一次结构分析
 
     # ---- 聚合器回调（与 PatternEngine 并联） ----
@@ -86,7 +89,10 @@ class BroadcastHub:
 
     @staticmethod
     def _bar(c) -> list:
-        return [c.open_time // 1000, c.open, c.high, c.low, c.close, round(c.volume, 4)]
+        # [time, open, high, low, close, volume, buyVol, sellVol]
+        # 后两个是主动买 / 主动卖成交量，供"买卖力量"面板使用
+        return [c.open_time // 1000, c.open, c.high, c.low, c.close, round(c.volume, 4),
+                round(getattr(c, "buy_vol", 0.0), 4), round(getattr(c, "sell_vol", 0.0), 4)]
 
     # ---- WS 服务 ----
 
@@ -154,6 +160,9 @@ class BroadcastHub:
             if self.last_accounts:
                 await ws.send(json.dumps({"type": "accounts", "accounts": self.last_accounts},
                                          separators=(",", ":")))
+            if self.depths:
+                await ws.send(json.dumps({"type": "depths", "depths": self.depths},
+                                         separators=(",", ":")))
             if self.settings_fn:
                 await ws.send(json.dumps({"type": "settings", "settings": self.settings_fn()},
                                          separators=(",", ":")))
@@ -189,6 +198,10 @@ class BroadcastHub:
                         new_settings = self.on_settings(msg.get("settings") or {})
                         await ws.send(json.dumps({"type": "settings", "settings": new_settings},
                                                  separators=(",", ":")))
+                    elif mtype == "query_depths":
+                        await ws.send(json.dumps({
+                            "type": "depths", "depths": self.depths,
+                        }, separators=(",", ":")))
                     elif mtype == "query_quant_events" and self.quant_events_fn:
                         acct = str(msg.get("account") or "")
                         limit = int(msg.get("limit") or 2000)
@@ -229,6 +242,10 @@ class BroadcastHub:
                 for msg in self.hit_queue:
                     await self._broadcast(msg)
                 self.hit_queue.clear()
+                if self.depth_dirty and self.depths:
+                    # 深度每 500ms 一推，合并成一条消息按 flush 周期下发（约 200ms 一次）
+                    self.depth_dirty.clear()
+                    await self._broadcast({"type": "depths", "depths": self.depths})
                 if self.dirty:
                     dirty, self.dirty = self.dirty, set()
                     for key in dirty:

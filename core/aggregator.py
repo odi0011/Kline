@@ -44,7 +44,7 @@ class KlineAggregator:
             self.current = None
             self.history.extend(candles)
 
-    def on_trade(self, price: float, qty: float, ts: int) -> None:
+    def on_trade(self, price: float, qty: float, ts: int, buyer_maker: bool = False) -> None:
         bucket = new_bucket(ts, self.iv_ms)
         cur = self.current
         if cur is None or bucket != cur.open_time:
@@ -52,7 +52,7 @@ class KlineAggregator:
                 self._finalize(cur)
             cur = Candle(bucket, price, price, price, price, interval=self.interval)
             self.current = cur
-        apply_trade(cur, price, qty)
+        apply_trade(cur, price, qty, buyer_maker)
         self.on_update(self.symbol, self.interval, cur, False, list(self.history))
 
     def sweep(self, now_ms: int, grace_ms: int = 2000) -> None:
