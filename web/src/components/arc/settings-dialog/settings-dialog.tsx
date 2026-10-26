@@ -97,6 +97,7 @@ function AccountPane({ accounts, onSaveAccount }) {
   const save = () => {
     if (!ready) return
     onSaveAccount({
+      id: cur?.id || undefined,     // 带回稳定 ID：改名时服务端据此保留权益曲线历史
       name: draft.name.trim(),
       api_key: draft.key.trim(),
       api_secret: draft.secret.trim(),

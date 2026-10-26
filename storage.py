@@ -75,6 +75,27 @@ class Storage:
             (acct, cutoff, limit))
         return [{"t": int(r[0]), "bal": float(r[1]), "upnl": float(r[2])} for r in reversed(rows)]
 
+    def migrate_equity(self, old_keys: list[str], new_key: str) -> int:
+        """把旧键（历史账户名）下的权益采样迁移到新键（稳定 ID）。
+
+        账户改名/首次升级时调用：不迁移的话曲线会因为查不到历史而"重置"。
+        时间戳冲突时保留新键已有数据（INSERT IGNORE 后再删旧行）。
+        """
+        moved = 0
+        for old in old_keys:
+            if not old or old == new_key:
+                continue
+            try:
+                rows = self._qall("SELECT ts,bal,upnl FROM equity WHERE acct=%s", (old,))
+                for ts, bal, upnl in rows:
+                    self._q("INSERT IGNORE INTO equity VALUES(%s,%s,%s,%s)",
+                            (new_key, int(ts), float(bal), float(upnl)))
+                self._q("DELETE FROM equity WHERE acct=%s", (old,))
+                moved += len(rows)
+            except Exception as e:
+                print(f"[equity] 迁移 {old} -> {new_key} 失败: {e}")
+        return moved
+
     # ---- K线 ----
 
     def save_candle(self, symbol: str, interval: str, c) -> None:

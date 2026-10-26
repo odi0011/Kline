@@ -57,10 +57,14 @@ def fetch_positions(api_key: str, api_secret: str) -> list:
         entry = float(p.get("entryPrice", 0) or 0)
         mark = float(p.get("markPrice", 0) or 0)
         upnl = float(p.get("unRealizedProfit", 0) or 0)
+        leverage = int(float(p.get("leverage", 0) or 0))
         margin = float(p.get("margin", 0) or 0)
         notional = abs(float(p.get("notional", 0) or 0))
         if notional <= 0 and mark > 0:
             notional = abs(amt) * mark
+        # 全仓仓位 positionRisk 的 margin 返回 0，占用保证金按 名义价值/杠杆 估算
+        if margin <= 0 and leverage > 0:
+            margin = notional / leverage
         # 收益率：优先用保证金口径；保证金为 0（全仓已用尽）时退回名义价值口径
         base = margin if margin > 0 else notional
         upnl_pct = (upnl / base * 100) if base > 0 else 0.0
@@ -71,7 +75,7 @@ def fetch_positions(api_key: str, api_secret: str) -> list:
             "mark": round(mark, 8),
             "unrealized": round(upnl, 2),
             "unrealized_pct": round(upnl_pct, 2),
-            "leverage": int(float(p.get("leverage", 0) or 0)),
+            "leverage": leverage,
             "liquidation": round(float(p.get("liquidationPrice", 0) or 0), 8),
             "margin": round(margin, 2),
             "notional": round(notional, 2),

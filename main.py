@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 import threading
+import uuid
 from collections import defaultdict
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -131,6 +132,20 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     # 账户列表可变盒子：设置弹窗改后热生效；refresh 标志触发立即拉取。
     # 单账户设计：config 里多余的账户在启动时裁掉（页面只展示一个账户卡）。
     accts_box = {"list": [dict(a) for a in cfg.get("accounts", [])][:1], "refresh": False}
+    # 旧配置没有 id：补一个稳定 ID（权益曲线按 id 存，改名不会丢历史），
+    # 并把原来按账户名存的历史采样迁移到该 ID 上。
+    if accts_box["list"] and not accts_box["list"][0].get("id"):
+        acc0 = accts_box["list"][0]
+        acc0["id"] = uuid.uuid4().hex[:12]
+        cfg["accounts"] = accts_box["list"]
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+        try:
+            moved = storage.migrate_equity([acc0.get("name", "")], acc0["id"])
+            if moved:
+                print(f"[equity] 升级为稳定 ID，迁移 {moved} 条历史采样")
+        except Exception as e:
+            print(f"[equity] 历史迁移失败: {e}")
     if len(cfg.get("accounts", [])) > 1:
         cfg["accounts"] = accts_box["list"]
         with open(config_path, "w", encoding="utf-8") as f:
@@ -153,7 +168,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         # 凭据绝不出网：settings 会广播给所有 WS 客户端（端口在公网），
         # 只下发掩码；前端回传掩码时由 apply_settings 换回服务端保存的原值。
         return {
-            "accounts": [{"name": a.get("name", ""), "icon": a.get("icon", ""),
+            "accounts": [{"id": a.get("id", ""), "name": a.get("name", ""), "icon": a.get("icon", ""),
                           "api_key": _mask_key(a.get("api_key", "")),
                           "api_secret": MASK_SEC if a.get("api_secret") else ""}
                          for a in accts_box["list"]],
@@ -189,11 +204,35 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                     secret = str(src.get("api_secret", "") or "").strip()
                 if not key or not secret:
                     continue
-                clean.append({"name": name, "api_key": key, "api_secret": secret,
+                # 沿用原账户 ID：权益曲线按 id 存，改名不会丢历史。
+                # 前端会带回 id；没带回时按同名/原唯一账户继承，最后才新生成。
+                old = prev.get(name) or prev_one or {}
+                acct_id = (str(a.get("id") or "").strip()
+                           or str(old.get("id") or "") or uuid.uuid4().hex[:12])
+                clean.append({"id": acct_id, "name": name, "api_key": key, "api_secret": secret,
                               "icon": str(a.get("icon", ""))[:300000]})
             accts_box["list"] = clean
             accts_box["refresh"] = True          # 触发账户数据立即重新拉取
             cfg["accounts"] = clean
+            # 旧数据可能按账户名存（升级前）或按旧 ID 存，统一搬到新 ID 上，
+            # 否则改名/升级后查不到历史，曲线看起来像被"重置"。
+            for a in clean:
+                migrate_from = []
+                for old in prev.values():
+                    old_id = str(old.get("id") or "")
+                    if old_id and old_id != a["id"]:
+                        migrate_from.append(old_id)
+                    if old.get("name") and old["name"] != a["name"]:
+                        migrate_from.append(old["name"])
+                # 兼容升级前只存在自己名字下的情况
+                if a["name"] not in migrate_from:
+                    migrate_from.append(a["name"])
+                try:
+                    moved = storage.migrate_equity(migrate_from, a["id"])
+                    if moved:
+                        print(f"[equity] 迁移 {moved} 条历史采样 -> {a['name']}")
+                except Exception as e:
+                    print(f"[equity] 历史迁移失败: {e}")
         patterns = s.get("patterns")
         if isinstance(patterns, dict):
             enabled = patterns.get("enabled")
@@ -354,24 +393,26 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             for a in accts_box["list"]:
                 try:
                     d = await asyncio.to_thread(fetch_account, a["api_key"], a["api_secret"])
-                    row = {"name": a["name"], "icon": a.get("icon", ""),
+                    # 权益曲线按稳定 ID 存（改名不丢历史），没有 id 时退回旧行为用名称
+                    eq_key = a.get("id") or a["name"]
+                    row = {"name": a["name"], "id": a.get("id", ""), "icon": a.get("icon", ""),
                            "balance": d["balance"], "unrealized": d["unrealized"],
                            "available": d["available"], "positions": d.get("positions", [])}
                     try:
-                        storage.save_equity(a["name"], d["ts"], d["balance"], d["unrealized"])
+                        storage.save_equity(eq_key, d["ts"], d["balance"], d["unrealized"])
                     except Exception as e:
                         print(f"[accounts] 权益采样落库失败: {e}")
                     try:
-                        row["series"] = storage.equity_series(a["name"])
+                        row["series"] = storage.equity_series(eq_key)
                     except Exception:
                         row["series"] = []
                     results.append(row)
                 except Exception as e:
-                    row = {"name": a["name"], "icon": a.get("icon", ""),
+                    row = {"name": a["name"], "id": a.get("id", ""), "icon": a.get("icon", ""),
                            "balance": None, "unrealized": None, "available": None,
                            "positions": [], "error": str(e)[:80]}
                     try:
-                        row["series"] = storage.equity_series(a["name"])
+                        row["series"] = storage.equity_series(a.get("id") or a["name"])
                     except Exception:
                         row["series"] = []
                     results.append(row)
