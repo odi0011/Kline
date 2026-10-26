@@ -28,15 +28,14 @@ body {
 }
 
 /* 隐藏滚动条（保留滚动能力） */
-.no-bar, .left, .cards-row, .wcard-scroll {
+.no-bar, .left, .cards-row {
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
-.no-bar::-webkit-scrollbar, .left::-webkit-scrollbar, .cards-row::-webkit-scrollbar, .wcard-scroll::-webkit-scrollbar {
+.no-bar::-webkit-scrollbar, .left::-webkit-scrollbar, .cards-row::-webkit-scrollbar {
   display: none;
 }
 /* 卡内滚动区：隐藏 ScrollArea 的覆盖滚动条 */
-.wcard-scroll [class*="track"] { display: none !important; }
 
 .app { display: flex; height: 100%; }
 
@@ -136,24 +135,18 @@ body {
 
 .wallet-zone {
   flex: 1;
-  min-width: 210px;
+  min-width: 250px;
   height: 192px;
   position: relative;
-  z-index: 40;          /* 展开的账户卡浮在下方内容之上 */
+  z-index: 40;
 }
 
-.row2 {
-  display: flex;
-  gap: var(--gap);
-  flex: 0 0 auto;
-}
-
-/* 第三行：自动量化交易（决策流水/持仓/平仓记录） */
+/* 量化交易区：删掉第二行账户面板后填满剩余高度 */
 .row3 {
   display: flex;
   gap: var(--gap);
-  flex: 0 0 auto;
-  height: 264px;
+  flex: 1 1 auto;
+  min-height: 300px;
 }
 
 .combo-card {
@@ -182,8 +175,6 @@ body {
   font-size: 11px; color: var(--muted); display: flex; align-items: baseline; justify-content: space-between;
 }
 .combo-tile b { color: var(--text); font-size: 12.5px; }
-
-.row2-rest { flex: 1; }
 
 .wallet-title {
   font-size: 12px;
@@ -391,51 +382,9 @@ body {
 .ht-hit.neutral { color: #b45309; }
 .ht-none { color: #a0a8b4; margin-top: 2px; }
 
-/* ---------- 钱包堆叠（账户卡） ---------- */
-.wstack { position: relative; height: 100%; }
-.wstack-cards { position: absolute; inset: 0; }
-
-.wstack-slot { cursor: pointer; }
-
-.wcard {
-  position: relative;
-  height: 180px;   /* 与 wallet-stack.jsx 的 CARD_H 保持一致 */
-  border-radius: 14px;
-  overflow: hidden;
-  color: #1c2333;
-  /* 账户色相（--acct-hue，wallet-stack.jsx 注入）派生的淡雅材质：
-     近白渐变打底 + 两个角部柔光，色彩只做身份点缀，不再整面高饱和水彩 */
-  --h: var(--acct-hue, 45);
-  background:
-    radial-gradient(130% 110% at 10% -8%, hsl(var(--h) 80% 93% / 0.85), transparent 52%),
-    radial-gradient(120% 100% at 102% 112%, hsl(var(--h) 65% 94% / 0.5), transparent 58%),
-    linear-gradient(168deg, hsl(var(--h) 50% 99.2%), hsl(var(--h) 38% 96%));
-  border: 1px solid hsl(var(--h) 40% 87% / 0.75);
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 20px rgba(16, 24, 40, 0.05);
-}
-.wcard-body { position: relative; z-index: 1; padding: 12px 14px 0; }
-
-.wcard-avatar { display: grid; place-items: center; }
-.wcard-avatar img {
-  width: 34px; height: 34px; border-radius: 50%;
-  object-fit: cover; border: 2px solid rgba(255, 255, 255, 0.95);
-  box-shadow: 0 1px 4px rgba(16, 24, 40, 0.12);
-}
-.wcard-top { display: flex; align-items: center; gap: 10px; }
-.wcard-issuer { font-size: 14px; font-weight: 700; color: #1c2333; }
-
-.wcard-mid { margin-top: 10px; }
-.wcard-price-label { display: block; font-size: 10px; color: rgba(16, 24, 40, 0.55); }
-.wcard-binline { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.wcard-bal [class*="counter"] { font-size: 20px !important; font-weight: 700; color: #1c2333; }
-.wcard-pnl { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.wcard-pnl [class*="counter"] { font-size: 12.5px !important; font-weight: 700; }
-.wcard-na { font-size: 15px; font-weight: 700; color: #8b949e; }
-
-/* 权益迷你曲线：贴卡片底部，左右留少量边距，hover 联动上方动画数字 */
+/* ---------- 账户卡（单账户，见 components/arc/account-card） ---------- */
+/* 权益迷你曲线：hover 联动权益数字，坐标由组件容器控制 */
 .ecurve {
-  position: absolute;
-  left: 5px; right: 5px; bottom: 0;
-  width: calc(100% - 10px);
+  width: 100%;
   cursor: crosshair;
 }

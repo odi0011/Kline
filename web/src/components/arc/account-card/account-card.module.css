@@ -1,0 +1,116 @@
+/* 单账户卡：188px × 第一行账户区宽度，信息密度高但不拥挤 */
+.card {
+  --h: var(--acct-hue, 45);
+  position: relative;
+  height: 188px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px 4px;
+  border-radius: 14px;
+  overflow: hidden;
+  background:
+    radial-gradient(130% 120% at 8% -10%, hsl(var(--h) 80% 93% / 0.9), transparent 54%),
+    radial-gradient(120% 110% at 102% 114%, hsl(var(--h) 65% 94% / 0.55), transparent 60%),
+    linear-gradient(168deg, hsl(var(--h) 50% 99.2%), hsl(var(--h) 38% 96.2%));
+  border: 1px solid hsl(var(--h) 40% 87% / 0.75);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 20px rgba(16, 24, 40, 0.05);
+}
+
+/* 头部：头像 + 名称 + 持仓数 + 设置 */
+.head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.avatar {
+  flex: none; display: grid; place-items: center;
+  width: 28px; height: 28px; border-radius: 50%; overflow: hidden;
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: inset 0 0 0 1px hsl(var(--h) 45% 82% / 0.9);
+}
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ident { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
+.name {
+  font-size: 13.5px; font-weight: 700; color: #1c2333;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sub { font-size: 9.5px; color: rgba(16, 24, 40, 0.5); letter-spacing: 0.3px; }
+.posCount {
+  flex: none; margin-left: auto;
+  font-size: 9.5px; font-weight: 600; color: hsl(var(--h) 40% 32% / 0.85);
+  padding: 2px 6px; border-radius: 6px;
+  background: hsl(var(--h) 70% 90% / 0.75);
+}
+.gear {
+  flex: none; display: grid; place-items: center;
+  width: 22px; height: 22px; border-radius: 7px; cursor: pointer;
+  border: 1px solid hsl(var(--h) 35% 84% / 0.9);
+  background: rgba(255, 255, 255, 0.55);
+  color: rgba(28, 35, 51, 0.62);
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.gear:hover { background: #fff; color: #1c2333; }
+
+/* 权益区：标签行（左标题 / 右可用）+ 数值行（大数字 + 盈亏） */
+.equity { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.eqTop { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+.eqLabel { font-size: 9.5px; color: rgba(16, 24, 40, 0.52); letter-spacing: 0.2px; white-space: nowrap; }
+.eqAvail {
+  font-size: 9.5px; color: rgba(28, 35, 51, 0.6);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.eqLine { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.eqNum {
+  font-size: 19px; font-weight: 700; color: #1c2333;
+  font-variant-numeric: tabular-nums; line-height: 1.15;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.eqPnl {
+  flex: none;
+  font-size: 11.5px; font-weight: 700; font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.eqPnl [class*="counter"] { font-size: 11.5px !important; font-weight: 700; }
+
+/* 持仓列表：滚动区占满剩余高度 */
+.posArea { flex: 1; min-height: 0; margin: 0 -4px; }
+.posScroll { height: 100%; }
+.posList { display: flex; flex-direction: column; padding: 0 4px; }
+.posRow {
+  display: flex; align-items: center; gap: 5px;
+  height: 18px; font-size: 11px; color: #1c2333;
+  border-radius: 5px;
+}
+.posRow:hover { background: rgba(255, 255, 255, 0.6); }
+.posSym { font-weight: 700; font-size: 10.5px; letter-spacing: 0.2px; }
+.posSide {
+  font-size: 9px; font-weight: 700; line-height: 1;
+  padding: 1.5px 4px; border-radius: 4px;
+}
+.posSide[data-side="long"] { background: rgba(22, 163, 74, 0.12); color: #15803d; }
+.posSide[data-side="short"] { background: rgba(220, 38, 38, 0.12); color: #b91c1c; }
+.posAmt { color: rgba(28, 35, 51, 0.55); font-variant-numeric: tabular-nums; font-size: 10px; }
+.posPnl { margin-left: auto; font-weight: 700; font-variant-numeric: tabular-nums; font-size: 10.5px; }
+.posEmpty { font-size: 10.5px; color: rgba(16, 24, 40, 0.42); padding: 10px 2px; }
+
+/* 权益迷你曲线：贴卡片底部 */
+.curve { flex: none; margin: 0 -4px -2px; }
+
+/* 空状态 */
+.empty {
+  --h: var(--acct-hue, 45);
+  height: 188px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  padding: 16px; text-align: center;
+  border-radius: 14px;
+  border: 1px dashed hsl(var(--h) 30% 82%);
+  background: linear-gradient(168deg, hsl(var(--h) 40% 99.4%), hsl(var(--h) 30% 97.4%));
+}
+.emptyIcon { color: rgba(28, 35, 51, 0.28); }
+.emptyTitle { font-size: 12.5px; font-weight: 700; color: #1c2333; }
+.emptyTxt { font-size: 10.5px; color: var(--text-muted, #8b949e); line-height: 1.5; max-width: 240px; }
+.emptyBtn {
+  margin-top: 2px; height: 26px; padding: 0 12px;
+  border-radius: 8px; border: 0; cursor: pointer; font-family: inherit;
+  background: var(--accent, #f0b90b); color: #1c2333;
+  font-size: 11.5px; font-weight: 600;
+}
+.emptyBtn:hover { filter: brightness(1.06); }

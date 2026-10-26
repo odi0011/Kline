@@ -3,11 +3,10 @@
    下发服务端热生效并持久化到 config.yaml（币种展示选择除外，存浏览器本地）。 */
 import { useEffect, useId, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
-import { X, Palette, Wallet, Activity, Image as ImageIcon, Plus, Trash2 } from "lucide-react"
+import { X, Palette, Wallet, Activity, Image as ImageIcon, Plus } from "lucide-react"
 import Input from "@/components/arc/input/input"
 import ColorPicker from "@/components/arc/color-picker/color-picker"
 import MorphSelect from "@/components/arc/morph-select/morph-select"
-import CoinAvatar from "@/components/ui/coin-avatar"
 import { PATTERN_META } from "@/patterns_meta.js"
 import styles from "./settings-dialog.module.css"
 
@@ -78,39 +77,48 @@ function AppearancePane({ ui, onUpdateUi }) {
   )
 }
 
-function AccountPane({ accounts, onAddAccount, onRemoveAccount }) {
+/* 账户：只维护一个账户。下方表单直接编辑该账户（名称/头像/API Key/Secret），
+   保存即整体替换服务端账户（凭据掩码表示沿用原值，前端从不持有明文）。
+   未接入时表单为空，填完即为新增。 */
+function AccountPane({ accounts, onSaveAccount }) {
+  const cur = (accounts || [])[0] || null
   const [draft, setDraft] = useState({ name: "", key: "", secret: "" })
   const [icon, setIcon] = useState("")
-  const list = accounts || []
+  const [dirty, setDirty] = useState(false)
+
+  // 服务端账户变化（首次下发/保存回包）时同步表单，但不覆盖正在编辑的内容
+  useEffect(() => {
+    if (dirty) return
+    setDraft({ name: cur?.name || "", key: cur?.api_key || "", secret: cur?.api_secret || "" })
+    setIcon(cur?.icon || "")
+  }, [cur?.name, cur?.api_key, cur?.api_secret, cur?.icon])
+
   const ready = draft.name.trim() && draft.key.trim() && draft.secret.trim()
-  const add = () => {
+  const save = () => {
     if (!ready) return
-    onAddAccount({ name: draft.name.trim(), api_key: draft.key.trim(), api_secret: draft.secret.trim(), icon })
+    onSaveAccount({
+      name: draft.name.trim(),
+      api_key: draft.key.trim(),
+      api_secret: draft.secret.trim(),
+      icon,
+    })
+    setDirty(false)
+  }
+  const clear = () => {
+    onSaveAccount(null)
     setDraft({ name: "", key: "", secret: "" })
     setIcon("")
+    setDirty(false)
   }
+  const edit = (patch) => { setDraft((d) => ({ ...d, ...patch })); setDirty(true) }
+
   return (
     <>
-      <SectionTitle>已接入账户（增删立即生效并写入服务端配置）</SectionTitle>
-      <div className={styles.acctList}>
-        {list.map((a) => (
-          <div key={a.name} className={styles.acctRow}>
-            {a.icon ? <img className={styles.acctIcon} src={a.icon} alt="" /> : <CoinAvatar symbol={a.name} size={30} />}
-            <span className={styles.acctName}>{a.name}</span>
-            <span className={styles.acctKey}>{(a.api_key || "").slice(0, 6)}····{(a.api_key || "").slice(-4)}</span>
-            <button type="button" className={styles.delBtn} aria-label={`删除 ${a.name}`}
-              onClick={() => onRemoveAccount(a.name)}>
-              <Trash2 size={14} />
-            </button>
-          </div>
-        ))}
-        {list.length === 0 && <div className={styles.note}>暂无账户，用下方表单添加</div>}
-      </div>
-      <SectionTitle>添加账户</SectionTitle>
+      <SectionTitle>{cur ? "账户信息（修改后保存即生效并写入服务端配置）" : "接入账户（保存即生效并写入服务端配置）"}</SectionTitle>
       <div className={styles.form}>
         <div className={styles.formRow}>
           <Input label="账户名称" placeholder="例如：主账户" value={draft.name}
-            onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
+            onChange={(e) => edit({ name: e.target.value })} />
           <div className={styles.avatarField}>
             <span className={styles.label2}>
               <ImageIcon size={13} /> 头像
@@ -122,20 +130,28 @@ function AccountPane({ accounts, onAddAccount, onRemoveAccount }) {
                   const f = e.target.files && e.target.files[0]
                   if (!f) return
                   const reader = new FileReader()
-                  reader.onload = () => setIcon(String(reader.result))   // dataURL，随配置持久化
+                  reader.onload = () => { setIcon(String(reader.result)); setDirty(true) }   // dataURL，随配置持久化
                   reader.readAsDataURL(f)
                 }} />
             </label>
           </div>
         </div>
-        <Input label="API Key" placeholder="币安 API Key" value={draft.key}
-          onChange={(e) => setDraft((d) => ({ ...d, key: e.target.value }))} autoComplete="off" />
-        <Input label="API Secret" type="password" placeholder="币安 API Secret" value={draft.secret}
-          onChange={(e) => setDraft((d) => ({ ...d, secret: e.target.value }))} autoComplete="new-password" />
-        <button type="button" className={styles.saveBtn} onClick={add} disabled={!ready}
-          data-ready={ready || undefined}>
-          {ready ? "添加账户" : "填写完整后可添加"}
-        </button>
+        <Input label="API Key" placeholder="币安合约 API Key" value={draft.key}
+          onChange={(e) => edit({ key: e.target.value })} autoComplete="off" />
+        <Input label="API Secret" type="password" placeholder="币安合约 API Secret" value={draft.secret}
+          onChange={(e) => edit({ secret: e.target.value })} autoComplete="new-password" />
+        <div className={styles.btnRow}>
+          <button type="button" className={styles.saveBtn} onClick={save} disabled={!ready}
+            data-ready={ready || undefined}>
+            {ready ? (cur ? "保存修改" : "接入账户") : "填写完整后可保存"}
+          </button>
+          {cur && (
+            <button type="button" className={styles.clearBtn} onClick={clear}>移除账户</button>
+          )}
+        </div>
+      </div>
+      <div className={styles.note}>
+        只读查询权限即可（账户权益/持仓）；请勿开启提币权限。Key 不回传明文到浏览器，留空掩码即沿用原值。
       </div>
     </>
   )
@@ -173,10 +189,9 @@ function PatternsPane({ patternsEnabled, livePreview, onTogglePattern, onToggleL
   )
 }
 
-export function SettingsDialog({ open, onClose, ui, onUpdateUi,
-  patternsEnabled, livePreview, onTogglePattern, onToggleLivePreview,
-  accounts, onAddAccount, onRemoveAccount }) {
-  const [section, setSection] = useState("appearance")
+export function SettingsDialog({ open, onClose, section, onSectionChange,
+  ui, onUpdateUi, patternsEnabled, livePreview, onTogglePattern, onToggleLivePreview,
+  accounts, onSaveAccount }) {
   const [hover, setHover] = useState(null)
   const groupId = useId()
 
@@ -212,7 +227,7 @@ export function SettingsDialog({ open, onClose, ui, onUpdateUi,
                     <button key={id} type="button" className={styles.navItem} data-on={on || undefined}
                       onMouseEnter={() => setHover(id)}
                       onMouseLeave={() => setHover((h) => (h === id ? null : h))}
-                      onClick={() => setSection(id)}>
+                      onClick={() => onSectionChange(id)}>
                       {(hover === id || on) && (
                         <motion.div layoutId={`setnav-${groupId}`} className={styles.navPill}
                           data-hover={hover === id && !on ? "" : undefined} transition={spring} />
@@ -225,7 +240,7 @@ export function SettingsDialog({ open, onClose, ui, onUpdateUi,
               </nav>
               <div className={styles.pane}>
                 {section === "appearance" && <AppearancePane ui={ui} onUpdateUi={onUpdateUi} />}
-                {section === "account" && <AccountPane accounts={accounts} onAddAccount={onAddAccount} onRemoveAccount={onRemoveAccount} />}
+                {section === "account" && <AccountPane accounts={accounts} onSaveAccount={onSaveAccount} />}
                 {section === "patterns" && <PatternsPane patternsEnabled={patternsEnabled} livePreview={livePreview}
                   onTogglePattern={onTogglePattern} onToggleLivePreview={onToggleLivePreview} />}
               </div>

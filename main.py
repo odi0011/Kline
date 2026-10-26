@@ -126,8 +126,14 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     engine = PatternEngine(enabled, notify_with_lag,
                            live_preview=bool(pcfg.get("live_preview", True)))
 
-    # 账户列表可变盒子：设置弹窗增删后热生效；refresh 标志触发立即拉取
-    accts_box = {"list": [dict(a) for a in cfg.get("accounts", [])], "refresh": False}
+    # 账户列表可变盒子：设置弹窗改后热生效；refresh 标志触发立即拉取。
+    # 单账户设计：config 里多余的账户在启动时裁掉（页面只展示一个账户卡）。
+    accts_box = {"list": [dict(a) for a in cfg.get("accounts", [])][:1], "refresh": False}
+    if len(cfg.get("accounts", [])) > 1:
+        cfg["accounts"] = accts_box["list"]
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+        print(f"[settings] 单账户模式：已裁剪为 1 个账户并写回配置")
 
     def save_config() -> None:
         try:
@@ -161,8 +167,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         accounts = s.get("accounts")
         if isinstance(accounts, list):
             prev = {a.get("name"): a for a in accts_box["list"]}
+            # 单账户：改名后名称对不上，掩码需回退到原唯一账户，否则密钥被当成空值丢弃
+            prev_one = accts_box["list"][0] if len(accts_box["list"]) == 1 else None
             clean = []
-            for a in accounts:
+            for a in accounts[:1]:                       # 只保留一个账户
                 if not isinstance(a, dict):
                     continue
                 name = str(a.get("name", "")).strip()[:40]
@@ -172,9 +180,11 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 secret = str(a.get("api_secret", "")).strip()
                 # 掩码表示"沿用服务端原值"（前端从不持有明文凭据）
                 if MASK_KEY in key or key == MASK_SEC:
-                    key = str((prev.get(name) or {}).get("api_key", "") or "").strip()
+                    src = prev.get(name) or prev_one or {}
+                    key = str(src.get("api_key", "") or "").strip()
                 if MASK_SEC in secret:
-                    secret = str((prev.get(name) or {}).get("api_secret", "") or "").strip()
+                    src = prev.get(name) or prev_one or {}
+                    secret = str(src.get("api_secret", "") or "").strip()
                 if not key or not secret:
                     continue
                 clean.append({"name": name, "api_key": key, "api_secret": secret,

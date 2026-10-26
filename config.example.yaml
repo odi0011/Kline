@@ -71,19 +71,13 @@ storage:
   eval_threshold: 0.0015
 
 # 币安合约测试盘账户（只读拉取权益，测试盘 key 无真实资金）
+# 只支持一个账户（页面第一行的账户卡展示它的权益与持仓）。
+# 也可在页面「设置 → 账户」里填写并保存，会自动写回本文件。
 accounts:
-  - name: ODDD测试盘1
+  - name: "主账户"
     api_key: "你的测试盘API Key"
     api_secret: "你的测试盘API Secret"
-    icon: "icons/oddd.jpg"
-  - name: ODDD测试盘2
-    api_key: "你的测试盘API Key"
-    api_secret: "你的测试盘API Secret"
-    icon: "icons/oddd.jpg"
-  - name: ODDD测试盘3
-    api_key: "你的测试盘API Key"
-    api_secret: "你的测试盘API Secret"
-    icon: "icons/oddd.jpg"
+    icon: ""
 
 # 信号同时落盘到 signals.csv
 csv_log: signals.csv

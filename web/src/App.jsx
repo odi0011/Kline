@@ -7,12 +7,11 @@ import { Notification, NotificationViewport } from '@/components/base/notificati
 import { Card } from '@/components/arc/card/card'
 import { ScrollArea } from '@/components/arc/scroll-area/scroll-area'
 import { GlassMenu } from '@/components/arc/glass-menu/glass-menu'
-import { WalletStack } from '@/components/arc/wallet-stack/wallet-stack'
+import AccountCard from '@/components/arc/account-card/account-card'
 import { Badge } from '@/components/base/badges/badge'
 import { AnimatedCounter } from '@/components/arc/animated-counter/animated-counter'
 import CoinAvatar from '@/components/ui/coin-avatar'
 import SettingsDialog from '@/components/arc/settings-dialog/settings-dialog'
-import AccountPanel from '@/components/arc/account-panel/account-panel'
 import QuantPanel from '@/components/arc/quant-panel/quant-panel'
 import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins, Settings } from 'lucide-react'
 
@@ -59,7 +58,7 @@ export default function App() {
   const [hoverPattern, setHoverPattern] = useState(null)   // {pattern, symbol} 悬停K线触发的形态
   const [settings, setSettings] = useState(loadSettings)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [frontName, setFrontName] = useState(null)   // 置前的账户（卡片点击）
+  const [settingsSection, setSettingsSection] = useState('appearance')  // 打开设置时定位的分区
   const [ui, setUi] = useState(DEFAULT_UI)           // 外观：服务端下发（config 持久化）
   const [patternsEnabled, setPatternsEnabled] = useState(null)  // null = 未从服务端加载
   const [livePreview, setLivePreview] = useState(true)
@@ -101,9 +100,9 @@ export default function App() {
   const displayed = pool.filter((s) => settings.symbols.includes(s))
   const shownSymbols = displayed.length ? displayed : pool.slice(0, MIN_SYMBOLS)
 
-  // 置前账户的持仓 → 左列排序：持仓币种排前，池内持仓但未展示的自动添加到其后
-  const frontAcct = accounts.find((a) => a.name === frontName)
-  const posSyms = frontAcct && Array.isArray(frontAcct.positions) ? frontAcct.positions.map((p) => p.symbol) : []
+  // 唯一账户：持仓币种排前，池内持仓但未展示的自动添加到其后
+  const account = accounts[0] || null
+  const posSyms = account && Array.isArray(account.positions) ? account.positions.map((p) => p.symbol) : []
   const orderedSymbols = useMemo(() => {
     if (!posSyms.length) return shownSymbols
     const posSet = new Set(posSyms)
@@ -114,10 +113,6 @@ export default function App() {
     return [...inList, ...autoAdd, ...rest]
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownSymbols.join(","), posSyms.join(","), pool.join(",")])
-
-  // 第二行数据面板：置前账户（默认最后一张卡）
-  const frontAccount = accounts.find((a) => a.name === (frontName || accounts[accounts.length - 1]?.name))
-  const frontSeries = frontAccount ? equityRef.current[frontAccount.name] : undefined
 
   // 账户权益采样（每 30s 广播时记一个点，供卡片迷你曲线；本地保留最近 120 点）
   useEffect(() => {
@@ -209,15 +204,15 @@ export default function App() {
     if (next.length) updatePatterns(next)          // 至少保留一个形态
   }
   const toggleLivePreview = () => updatePatterns(patternsEnabled || [], !livePreview)
-  const addAccount = (acct) => {
-    const next = [...(srvAccounts || []), acct]
+  // 账户：后端只保留一个，设置页保存即整体替换
+  const saveAccount = (acct) => {
+    const next = acct ? [acct] : []
     setSrvAccounts(next)
     liveRef.current && liveRef.current.sendSettings({ accounts: next })
   }
-  const removeAccount = (name) => {
-    const next = (srvAccounts || []).filter((a) => a.name !== name)
-    setSrvAccounts(next)
-    liveRef.current && liveRef.current.sendSettings({ accounts: next })
+  const openAccountSettings = () => {
+    setSettingsSection('account')
+    setSettingsOpen(true)
   }
 
   // 币种勾选：最少 MIN_SYMBOLS 个、最多 MAX_SYMBOLS 个，超限直接忽略
@@ -378,13 +373,10 @@ export default function App() {
             </ScrollArea>
           </div>
           <div className="wallet-zone">
-            <WalletStack accounts={accounts} seriesMap={equityRef.current}
-              chartColors={chartColors} onFrontChange={setFrontName} />
+            <AccountCard account={account} series={account ? equityRef.current[account.name] : undefined}
+              chartColors={chartColors} onOpenSettings={openAccountSettings} />
           </div>
         </div>
-      <div className="row2">
-        <AccountPanel account={frontAccount} series={frontSeries} chartColors={chartColors} />
-      </div>
       <div className="row3">
         <QuantPanel snapshot={quantSnap} chartColors={chartColors}
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
@@ -393,10 +385,11 @@ export default function App() {
 
       {/* 设置弹窗 */}
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)}
+        section={settingsSection} onSectionChange={setSettingsSection}
         ui={ui} onUpdateUi={updateUi}
         patternsEnabled={patternsEnabled} livePreview={livePreview}
         onTogglePattern={togglePattern} onToggleLivePreview={toggleLivePreview}
-        accounts={srvAccounts} onAddAccount={addAccount} onRemoveAccount={removeAccount} />
+        accounts={srvAccounts} onSaveAccount={saveAccount} />
 
       {/* 形态信号通知：左上角 */}
       <NotificationViewport position="top-left">
