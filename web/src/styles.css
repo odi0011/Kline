@@ -333,6 +333,10 @@ body {
   border-radius: 12px;
   overflow: hidden;
   z-index: 0;
+  /* 落点扩散：clip-path 由 JS 内联设置（起点 0% → 终点 150%），
+     用 transition 做铺开动画。CSS 变量直接写在 clip-path 里在部分浏览器不参与过渡。 */
+  clip-path: circle(0% at 50% 50%);
+  transition: clip-path 640ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .pn-hit-bg::before {
   content: "";
@@ -357,6 +361,14 @@ body {
 .pattern-card.hit p[class*="description"] { color: #414c5c; }
 .pattern-card.hit .cnt-mini,
 .pattern-card.hit .cnt-mini [class*="counter"] { color: #5b6472; }
+
+/* 命中飞线层：全屏覆盖，不拦截鼠标 */
+.hit-flight {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  pointer-events: none;
+}
 
 /* ---------- 悬停K线：显示存储记录 ---------- */
 .chart-box { position: relative; }

@@ -297,7 +297,7 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
   const decimals = tick ? (tick.price >= 1000 ? 1 : tick.price >= 1 ? 3 : 4) : 2
 
   return (
-    <section className="card">
+    <section className="card" data-symbol={symbol}>
       <div className="card-head">
         <CoinAvatar symbol={symbol} size={22} className={`coin-icon ${hitActive ? 'hit' : ''}`} />
         <span className="sym">{symbol.toUpperCase()}</span>

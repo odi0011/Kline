@@ -13,6 +13,7 @@ import { AnimatedCounter } from '@/components/arc/animated-counter/animated-coun
 import CoinAvatar from '@/components/ui/coin-avatar'
 import SettingsDialog from '@/components/arc/settings-dialog/settings-dialog'
 import QuantPanel from '@/components/arc/quant-panel/quant-panel'
+import HitFlight from './HitFlight.jsx'
 import { hexHue } from './lib/account-theme'
 import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins, Settings } from 'lucide-react'
 
@@ -172,12 +173,58 @@ export default function App() {
     return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offQEvent(); live.close() }
   }, [])
 
-  // 命中时：滚动到最新命中的形态卡片
+  // 命中时：卡片滚动居中 → 等滚动稳定 → 从K线卡片放飞线 → 落点扩散填充卡片背景
+  const [flight, setFlight] = useState(null)
+  const [filled, setFilled] = useState(null)   // {pattern, ox, oy} 落点在卡内的百分比
+  const flightKeyRef = useRef(0)
   useEffect(() => {
     if (!hits.length) return
-    scrollToPattern(hits[0].pattern)
+    const hit = hits[0]
+    setFilled(null)                     // 新命中：先清掉上一轮的填充
+    scrollToPattern(hit.pattern)
+    // 等滚动动画走完（scrollToPattern: 120ms 延迟 + 680ms 动画）再测终点，
+    // 否则拿到的是滚动前的位置，飞线会落偏。
+    const timer = setTimeout(() => {
+      const srcEl = document.querySelector(`.card[data-symbol="${hit.symbol}"]`)
+      const dstEl = document.querySelector(`.pattern-card[data-key="${hit.pattern}"]`)
+      if (!srcEl || !dstEl) return
+      const s = srcEl.getBoundingClientRect()
+      const d = dstEl.getBoundingClientRect()
+      if (!s.width || !d.width) return
+      flightKeyRef.current += 1
+      // 起点取源卡片的图表中心（不在视口内时夹到可见区域内，避免飞线从屏幕外起步）
+      const srcX = Math.min(window.innerWidth - 20, Math.max(20, s.left + s.width * 0.55))
+      const srcY = Math.min(window.innerHeight - 20, Math.max(20, s.top + s.height * 0.45))
+      const dstX = Math.min(window.innerWidth - 10, Math.max(10, d.left + d.width / 2))
+      const dstY = Math.min(window.innerHeight - 10, Math.max(10, d.top + d.height / 2))
+      setFlight({
+        key: flightKeyRef.current,
+        direction: hit.direction || "neutral",
+        pattern: hit.pattern,
+        from: { x: srcX, y: srcY },
+        to: { x: dstX, y: dstY },
+      })
+    }, 850)
+    return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hits])
+
+  // 飞线抵达：把落点换算成目标卡片内的百分比，背景从这里向外铺开
+  const onFlightLand = (to, _dir, patternArg) => {
+    const pattern = patternArg || (flight && flight.pattern)
+    const dstEl = pattern ? document.querySelector(`.pattern-card[data-key="${pattern}"]`) : null
+    if (!dstEl) return
+    const d = dstEl.getBoundingClientRect()
+    if (!d.width || !d.height) return
+    const payload = {
+      pattern,
+      ox: Math.max(0, Math.min(100, ((to.x - d.left) / d.width) * 100)),
+      oy: Math.max(0, Math.min(100, ((to.y - d.top) / d.height) * 100)),
+    }
+    // 先挂载元素（clip 0%），下一帧再给终点半径，transition 才会真正跑起来
+    setFilled({ ...payload, grow: false })
+    requestAnimationFrame(() => requestAnimationFrame(() => setFilled({ ...payload, grow: true })))
+  }
 
   // 设置持久化
   useEffect(() => {
@@ -371,7 +418,12 @@ export default function App() {
                   const tier = decided > 0 ? (winPct >= 50 ? 'hi' : winPct >= 10 ? 'mid' : 'low') : null
                   return (
                     <div className={`pattern-card ${active ? 'hit' : ''}`} data-key={key} key={key}>
-                      {active && <div className={`pn-hit-bg ${active.direction || p.dir}`} aria-hidden />}
+                      {active && (
+                        <div className={`pn-hit-bg ${active.direction || p.dir}`} aria-hidden
+                          style={filled && filled.pattern === key
+                            ? { clipPath: `circle(${filled.grow ? 150 : 0}% at ${filled.ox}% ${filled.oy}%)` }
+                            : undefined} />
+                      )}
                       <Card title={<span className="pc-title">{p.name}
                         <span className="cnt-mini" title={`累计触发 ${st.count} 次`}>
                           <AnimatedCounter value={st.count} decimals={0} />
@@ -406,6 +458,10 @@ export default function App() {
         patternsEnabled={patternsEnabled} livePreview={livePreview}
         onTogglePattern={togglePattern} onToggleLivePreview={toggleLivePreview}
         accounts={srvAccounts} onSaveAccount={saveAccount} />
+
+      {/* 命中飞线：K线卡片 → 形态卡片，落地后触发卡片背景扩散 */}
+      <HitFlight flight={flight} onLand={onFlightLand}
+        onDone={() => setFlight(null)} />
 
       {/* 形态信号通知：左上角 */}
       <NotificationViewport position="top-left">
