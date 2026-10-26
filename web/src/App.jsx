@@ -103,6 +103,14 @@ export default function App() {
   const displayed = pool.filter((s) => settings.symbols.includes(s))
   const shownSymbols = displayed.length ? displayed : pool.slice(0, MIN_SYMBOLS)
 
+  // 决策流水只显示当前展示币种的记录（无币种的系统/审计事件始终保留）：
+  // 引擎可能在其它币上产生决策，但用户看不到那些K线，显示出来只会造成困惑。
+  const visibleEvents = useMemo(() => {
+    if (!quantEvents) return null
+    const set = new Set(shownSymbols)
+    return quantEvents.filter((ev) => !ev.symbol || set.has(ev.symbol))
+  }, [quantEvents, shownSymbols.join(",")])
+
   // 唯一账户：持仓币种排前，池内持仓但未展示的自动添加到其后
   const account = accounts[0] || null
   const posSyms = account && Array.isArray(account.positions) ? account.positions.map((p) => p.symbol) : []
@@ -180,6 +188,14 @@ export default function App() {
   useEffect(() => {
     if (connected) liveRef.current?.setDetectInterval(settings.interval)
   }, [settings.interval, connected])
+
+  // 量化交易范围 = 当前实际展示的币种：
+  // 否则引擎会在用户没打开K线的币上开仓，持仓里凭空多出看不懂的仓位。
+  useEffect(() => {
+    if (!connected) return
+    liveRef.current?.setQuantSymbols(shownSymbols)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shownSymbols.join(","), connected])
 
   // meta 的周期列表里没有已存设置时回退
   useEffect(() => {
@@ -378,7 +394,7 @@ export default function App() {
           </div>
         </div>
       <div className="row3">
-        <QuantPanel snapshot={quantSnap} events={quantEvents} chartColors={chartColors}
+        <QuantPanel snapshot={quantSnap} events={visibleEvents} chartColors={chartColors}
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
       </div>
       </aside>

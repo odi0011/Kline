@@ -81,6 +81,9 @@ class QuantEngine:
         self.last_audit_ms = 0
         self.broadcast_fn = None           # main 注入：asyncio.create_task(hub.broadcast(obj))
         self.storage_fn = None             # main 注入：storage.save_quant_event（事件落库）
+        # 交易范围：只处理前端实际展示的币种（None/空 = 不限制）。
+        # 否则引擎会在用户没看K线的币上开仓，持仓出现"凭空冒出来"的仓位。
+        self.symbol_filter: set[str] | None = None
         self._err_dedupe: dict[str, int] = {}
         self._mark_cache: dict[str, tuple] = {}
         self._unsupported: set[str] = set()   # 未开通合约权限的币种（如 TradFi 需签协议）
@@ -319,11 +322,14 @@ class QuantEngine:
         if not self.enabled:
             return
         try:
-            self.stats["signals"] += 1
             symbol = hit.get("symbol")
-            direction = hit.get("direction")
             if not symbol:
                 return
+            # 不在当前观察范围内的币种直接忽略：不计入信号统计、不产生决策流水
+            if self.symbol_filter is not None and symbol not in self.symbol_filter:
+                return
+            self.stats["signals"] += 1
+            direction = hit.get("direction")
             if direction not in ("bullish", "bearish"):
                 # 中性形态（十字星等）不指示方向，无法决定多空 → 明确记录，便于核对决策流水完整性
                 self._event("skip", f"中性形态不参与交易（{hit.get('name_zh') or 'neutral'} 无方向）",

@@ -291,6 +291,14 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     quant.broadcast_fn = lambda obj: _loop.call_soon_threadsafe(
         lambda: asyncio.create_task(hub.broadcast(obj)))
     hub.quant_fn = quant.snapshot
+    # 量化交易范围跟随前端实际展示的币种：避免在用户没看K线的币上开仓。
+    # 空列表不做限制（前端还没连上时保持原有行为）。
+    def _set_quant_symbols(syms):
+        valid = [s for s in syms if s in symbols]
+        if valid:
+            quant.symbol_filter = set(valid)
+            print(f"[quant] 交易范围更新: {', '.join(valid)}")
+    hub.on_quant_symbols = _set_quant_symbols
     # 决策流水查询：前端按账户拉历史（持久化，重启/刷新不清空）
     hub.quant_events_fn = storage.quant_events
 

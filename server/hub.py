@@ -48,6 +48,7 @@ class BroadcastHub:
         self.lag_p50 = None
         self._flush_count = 0
         self.on_detect = None             # 客户端下发检测周期时的回调（main 注入）
+        self.on_quant_symbols = None      # 客户端下发量化交易范围时的回调（main 注入）
         self.stats_fn = None              # 形态统计（storage.pattern_stats）
         self.symbol_stats_fn = None       # 按币种统计（storage.symbol_stats）
         self.query_fn = None              # bar 记录查询（storage）
@@ -175,6 +176,11 @@ class BroadcastHub:
                     if mtype == "set_detect_interval" and self.on_detect:
                         if self._same_origin(ws):
                             self.on_detect(msg.get("interval"))
+                    elif mtype == "set_quant_symbols" and self.on_quant_symbols:
+                        if self._same_origin(ws):
+                            syms = msg.get("symbols")
+                            if isinstance(syms, list):
+                                self.on_quant_symbols([str(x).lower() for x in syms if x])
                     elif mtype == "set_settings" and self.on_settings:
                         if not self._same_origin(ws):
                             print("[settings] 拒绝跨源 set_settings")

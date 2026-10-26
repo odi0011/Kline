@@ -30,6 +30,7 @@ export class LiveClient {
       this._retry = 0
       this._emitStatus('connected')
       if (this.detectInterval) this.setDetectInterval(this.detectInterval)   // 重连后重新下发检测周期
+      if (this.quantSymbols) this.setQuantSymbols(this.quantSymbols)         // 重连后重新下发量化范围
     }
     this.ws.onmessage = (ev) => {
       try { this._dispatch(JSON.parse(ev.data)) } catch { /* 忽略坏帧 */ }
@@ -134,6 +135,14 @@ export class LiveClient {
     this.detectInterval = iv
     if (this.ws && this.ws.readyState === 1) {
       this.ws.send(JSON.stringify({ type: "set_detect_interval", interval: iv }))
+    }
+  }
+
+  /** 告知服务端量化引擎的交易范围（当前展示的币种），重连后自动重发 */
+  setQuantSymbols(symbols) {
+    this.quantSymbols = Array.isArray(symbols) ? symbols : []
+    if (this.ws && this.ws.readyState === 1) {
+      this.ws.send(JSON.stringify({ type: "set_quant_symbols", symbols: this.quantSymbols }))
     }
   }
 
