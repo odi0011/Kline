@@ -177,6 +177,11 @@ export default function App() {
   const [flight, setFlight] = useState(null)
   const [filled, setFilled] = useState(null)   // {pattern, ox, oy} 落点在卡内的百分比
   const flightKeyRef = useRef(0)
+  // 第二段：形态卡徽标 → 决策流水最新行
+  const [rowFlight, setRowFlight] = useState(null)
+  const [rowFill, setRowFill] = useState(null)   // {id, tone, fx, fy, grow}
+  const streamRef = useRef(null)
+  const rowFlightKeyRef = useRef(0)
   useEffect(() => {
     if (!hits.length) return
     const hit = hits[0]
@@ -224,6 +229,118 @@ export default function App() {
     // 先挂载元素（clip 0%），下一帧再给终点半径，transition 才会真正跑起来
     setFilled({ ...payload, grow: false })
     requestAnimationFrame(() => requestAnimationFrame(() => setFilled({ ...payload, grow: true })))
+    // 卡片背景铺开后，接着从卡片左上角徽标飞向决策流水最新一行
+    const dir = (flight && flight.direction) || "neutral"
+    setTimeout(() => startRowFlight(pattern, dir), 700)
+  }
+
+  /** 第二段飞线：形态卡左上角徽标 → 决策流水最新一行。
+      落点扩散的颜色就是徽标方向色（bullish 青绿 / bearish 玫红 / neutral 灰蓝）。 */
+  const startRowFlight = (pattern, direction) => {
+    const cardEl = pattern ? document.querySelector(`.pattern-card[data-key="${pattern}"]`) : null
+    const streamEl = streamRef.current
+    if (!cardEl || !streamEl) return
+    const badge = cardEl.querySelector('[class*="dir-badge"]')
+    const b = (badge || cardEl).getBoundingClientRect()
+    // 终点：流水里最新一行的实际位置（没有行就退回视口底部）
+    const rows = [...streamEl.querySelectorAll('[class*="_row_"]')]
+    const lastRow = rows.length ? rows[rows.length - 1] : null
+    const lr = lastRow ? lastRow.getBoundingClientRect() : null
+    const sr = streamEl.getBoundingClientRect()
+    const from = { x: b.left + b.width / 2, y: b.top + b.height / 2 }
+    const to = lr && lr.width
+      ? { x: lr.left + lr.width * 0.62, y: lr.top + lr.height / 2 }
+      : { x: sr.left + sr.width * 0.5, y: sr.bottom - 14 }
+    const colors = direction === "bullish"
+      ? { core: "#0d9488", glow: "rgba(13,148,136,0.55)", tail: "#5eead4" }
+      : direction === "bearish"
+        ? { core: "#e11d48", glow: "rgba(225,29,72,0.55)", tail: "#fda4af" }
+        : { core: "#64748b", glow: "rgba(100,116,139,0.5)", tail: "#cbd5e1" }
+    rowFlightKeyRef.current += 1
+    setRowFlight({
+      key: rowFlightKeyRef.current,
+      mode: "wobble",
+      from, to, colors,
+      direction,
+      pattern,
+      dot: 2.6,
+      fly: 620,
+    })
+  }
+
+  /** 演示：模拟一次形态命中（只在前端注入，不落库、不触发真实交易）。
+      kind = "single" 单个形态 / "multi" 多个币同时触发 / "variety" 不同形态依次触发 */
+  const runDemo = (kind = "single") => {
+    const patterns = Object.keys(PATTERN_META)
+    const pool = shownSymbols.length ? shownSymbols : ["btcusdt"]
+    const pick = (arr) => arr[Math.floor(Math.random() * arr.length)]
+    const make = (sym, key) => {
+      const meta = PATTERN_META[key]
+      return {
+        id: `demo-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        symbol: sym, interval: defaultIv, pattern: key,
+        name_zh: meta.name, direction: meta.dir,
+        mode: "confirmed", price: 100 + Math.random() * 100,
+        ts: Date.now(),
+      }
+    }
+    // 演示时同步注入一条决策流水：让第二段飞线有落点（真实运行时由引擎产生）
+    const addFlowRow = (h) => {
+      const ev = {
+        id: `demo-ev-${h.id}`,
+        ts: Date.now(),
+        kind: "signal",
+        account: account ? account.name : "",
+        symbol: h.symbol,
+        reason: `收到 ${h.name_zh} ${h.direction === "bullish" ? "看涨" : h.direction === "bearish" ? "看跌" : "中性"}信号 @ ${h.price.toFixed(2)}`,
+        pattern: h.pattern,
+        name_zh: h.name_zh,
+        direction: h.direction,
+        winrate: 50 + Math.floor(Math.random() * 30),
+      }
+      setQuantEvents((cur) => [...(cur || []), ev])
+    }
+    const fire = (h) => {
+      setHits((x) => [h, ...x].slice(0, 6))
+      addFlowRow(h)
+    }
+    if (kind === "multi") {
+      // 多个币同时触发（不同形态），逐个错开 260ms 注入以看清连续飞线
+      const n = Math.min(pool.length, 4)
+      const syms = [...pool].sort(() => Math.random() - 0.5).slice(0, n)
+      syms.forEach((sym, i) => setTimeout(() => fire(make(sym, pick(patterns))), i * 260))
+      return
+    }
+    if (kind === "variety") {
+      // 同一币上不同形态依次触发
+      const sym = pick(pool)
+      const keys = [...patterns].sort(() => Math.random() - 0.5).slice(0, 3)
+      keys.forEach((key, i) => setTimeout(() => fire(make(sym, key)), i * 900))
+      return
+    }
+    fire(make(pick(pool), pick(patterns)))
+  }
+
+  /** 第二段落点：换算成最新一行内的百分比，让该行背景从落点铺开 */
+  const onRowFlightLand = (to, direction, _pattern, _mode) => {
+    const streamEl = streamRef.current
+    if (!streamEl) return
+    // 找到当前可视区内最靠下的一行（即最新记录）
+    const rows = [...streamEl.querySelectorAll('[class*="_row_"]')]
+    if (!rows.length) return
+    const last = rows[rows.length - 1]
+    const r = last.getBoundingClientRect()
+    if (!r.width || !r.height) return
+    const payload = {
+      id: last.dataset.rowId || null,
+      tone: direction || "neutral",
+      fx: Math.max(0, Math.min(100, ((to.x - r.left) / r.width) * 100)),
+      fy: Math.max(0, Math.min(100, ((to.y - r.top) / r.height) * 100)),
+    }
+    setRowFill({ ...payload, grow: false })
+    // 等浏览器把 clip 0% 真正应用（一帧不够，用短延时兜底），再给终点半径
+    setTimeout(() => setRowFill({ ...payload, grow: true }), 60)
+    setTimeout(() => setRowFill(null), 1800)
   }
 
   // 设置持久化
@@ -443,10 +560,22 @@ export default function App() {
           <div className="wallet-zone">
             <AccountCard account={account} series={accountSeries} accent={ui.themeColor}
               chartColors={chartColors} />
+            <div className="demo-actions">
+              <button type="button" className="demo-btn" onClick={() => runDemo("single")}>
+                模拟触发
+              </button>
+              <button type="button" className="demo-btn" onClick={() => runDemo("multi")}>
+                多币同时
+              </button>
+              <button type="button" className="demo-btn" onClick={() => runDemo("variety")}>
+                不同形态
+              </button>
+            </div>
           </div>
         </div>
       <div className="row3">
         <QuantPanel snapshot={quantSnap} events={visibleEvents} chartColors={chartColors}
+          rowFill={rowFill} streamRef={streamRef}
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
       </div>
       </aside>
@@ -462,6 +591,8 @@ export default function App() {
       {/* 命中飞线：K线卡片 → 形态卡片，落地后触发卡片背景扩散 */}
       <HitFlight flight={flight} onLand={onFlightLand}
         onDone={() => setFlight(null)} />
+      <HitFlight flight={rowFlight} onLand={onRowFlightLand}
+        onDone={() => setRowFlight(null)} />
 
       {/* 形态信号通知：左上角 */}
       <NotificationViewport position="top-left">

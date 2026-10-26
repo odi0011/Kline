@@ -92,15 +92,44 @@
 
 .empty { font-size: 11px; color: var(--text-muted, #8b949e); padding: 14px 6px; }
 
-/* 新到记录入场动画：淡入 + 上滑 + 轻微缩放 */
+/* 新到记录入场：淡入 + 上滑；背景色由飞线落点决定（--row-tone），
+   并用 ::before 的圆形 clip-path 从落点向外铺开（--fx/--fy 为落点百分比）。 */
 @keyframes rowIn {
   from { opacity: 0; transform: translateY(7px) scale(0.982); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
-.row[data-new] {
-  animation: rowIn 320ms cubic-bezier(0.22, 1, 0.36, 1);
+.row {
+  position: relative;
+  isolation: isolate;
+}
+.row > * { position: relative; z-index: 1; }
+
+/* 落点扩散层：真实子元素（不用伪元素——CSS 变量写在伪元素的 clip-path 里
+   浏览器不参与过渡，实测会卡在 0%）。clip-path 由内联 style 驱动。 */
+.fillLayer {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  z-index: 0;
+  pointer-events: none;
+  background: rgba(13, 148, 136, 0.16);
+  clip-path: circle(0% at 50% 50%);
+  transition: clip-path 620ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.fillLayer[data-tone="bullish"] { background: rgba(13, 148, 136, 0.18); }
+.fillLayer[data-tone="bearish"] { background: rgba(225, 29, 72, 0.16); }
+.fillLayer[data-tone="neutral"] { background: rgba(100, 116, 139, 0.15); }
+
+.row[data-new] { animation: rowIn 320ms cubic-bezier(0.22, 1, 0.36, 1); }
+/* 无飞线时（历史回填）：整行淡底，不用扩散 */
+.row[data-new][data-plain] {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
+
+/* 形态方向对应的行背景色（与卡片徽标同源） */
+.row[data-tone-bg="bullish"] { --row-tone: rgba(13, 148, 136, 0.16); }
+.row[data-tone-bg="bearish"] { --row-tone: rgba(225, 29, 72, 0.14); }
+.row[data-tone-bg="neutral"] { --row-tone: rgba(100, 116, 139, 0.13); }
 
 /* 上翻后的"最新"：水平居中，玻璃材质（复用全局 LiquidGlass） */
 .jumpWrap {

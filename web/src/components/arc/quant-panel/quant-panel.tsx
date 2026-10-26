@@ -79,7 +79,7 @@ function splitReason(reason, compact = false) {
   return [s, ""]
 }
 
-function EventRow({ ev, chartColors, prevTs, isNew, compact }) {
+function EventRow({ ev, chartColors, prevTs, isNew, compact, fill }) {
   const meta = KIND_META[ev.kind] || KIND_META.system
   const { Icon } = meta
   const [head, tail] = splitReason(ev.reason, compact)
@@ -92,9 +92,16 @@ function EventRow({ ev, chartColors, prevTs, isNew, compact }) {
   if (typeof ev.winrate === "number") tags.push(`胜率${ev.winrate}%`)
   if (ev.qty != null && ev.kind === "open") tags.push(`量${ev.qty}`)
 
+  // fill: {tone, fx, fy, grow} —— 飞线落点扩散（fx/fy 是行内百分比）
   return (
     <div className={styles.row} data-tone={meta.tone} data-new={isNew || undefined}
+      data-plain={isNew && !fill ? "" : undefined}
+      data-row-id={ev.id ?? undefined}
       title={ev.reason}>
+      {fill && (
+        <span className={styles.fillLayer} data-tone={fill.tone || "neutral"} aria-hidden
+          style={{ clipPath: `circle(${fill.grow ? 150 : 0}% at ${fill.fx}% ${fill.fy}%)` }} />
+      )}
       <span className={styles.lead}>
         {ev.symbol
           ? <CoinAvatar symbol={ev.symbol} size={13} />
@@ -120,7 +127,7 @@ function EventRow({ ev, chartColors, prevTs, isNew, compact }) {
   )
 }
 
-export default function QuantPanel({ snapshot, events: pushedEvents, chartColors }) {
+export default function QuantPanel({ snapshot, events: pushedEvents, chartColors, rowFill, streamRef }) {
   const snap = snapshot || { enabled: false, stats: {} }
   const [events, setEvents] = useState(() => pushedEvents || [])
   const [scrollTop, setScrollTop] = useState(0)
@@ -226,7 +233,10 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
 
   return (
     <section ref={wrapRef} className={styles.wrap} aria-label="决策流水">
-      <ScrollArea viewportRef={viewportRef} orientation="vertical" fade={18} scrollbars="auto"
+      <ScrollArea viewportRef={(el) => {
+        viewportRef.current = el
+        if (streamRef) streamRef.current = el
+      }} orientation="vertical" fade={18} scrollbars="auto"
         className={styles.stream} viewportClassName={styles.streamViewport}
         label="量化决策流水" onScroll={onScroll}>
         {total === 0 ? (
@@ -239,7 +249,8 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
                 <div key={ev.id ?? idx} className={styles.rowSlot}
                   style={{ transform: `translateY(${idx * ROW_H}px)` }}>
                   <EventRow ev={ev} chartColors={chartColors} compact={compact}
-                    prevTs={events[idx - 1]?.ts} isNew={isNew(ev.id)} />
+                    prevTs={events[idx - 1]?.ts} isNew={isNew(ev.id)}
+                    fill={(rowFill && idx === total - 1) ? rowFill : null} />
                 </div>
               )
             })}

@@ -100,7 +100,7 @@ class QuantEngine:
         self._load_trades()
         self._load_positions()
         self._load_unsupported()
-        self._event("system", "量化引擎启动", enabled=True)
+        self._event("system", "量化引擎已启动，开始盯盘", enabled=True)
 
     # ---------- 记录 ----------
 
@@ -171,7 +171,7 @@ class QuantEngine:
                     st["positions"] = poss
             n = sum(len(v.get("positions", {})) for v in self.state.values())
             if n:
-                self._event("system", f"恢复未平仓持仓 {n} 个（含 entry 价与开仓时间）")
+                self._event("system", f"已恢复上次未平的 {n} 个仓位，继续监控")
         except Exception as e:
             self._event("error", f"持仓状态恢复失败: {e}")
 
@@ -191,7 +191,7 @@ class QuantEngine:
         try:
             with open(self._manual_path, encoding="utf-8") as f:
                 self._manual = {tuple(x.split("|", 1)) for x in (json.load(f) or [])}
-            self._event("system", f"手动仓位注册表更新: {len(self._manual)} 个",
+            self._event("system", f"手动仓位登记已更新：共 {len(self._manual)} 个（引擎不管这些仓的止盈止损）",
                         manual=sorted(f"{a}/{s}" for a, s in self._manual))
         except Exception as e:
             self._event("error", f"手动仓位注册表读取失败: {e}")
@@ -216,8 +216,7 @@ class QuantEngine:
         if dup_names and not self._warned_dupes:
             self._warned_dupes = True
             self._event("system",
-                        f"账户别名去重：{', '.join(dup_names)} 与已启用账户共用同一 API Key，"
-                        f"已跳过（同一账户只交易一份）")
+                        f"{'、'.join(dup_names)} 和主账户是同一个 API Key，已跳过（一个账户只交易一份）")
         return out
 
     def _acc(self, name):
@@ -302,7 +301,7 @@ class QuantEngine:
                 with open(self._unsupported_path, encoding="utf-8") as f:
                     self._unsupported = set(json.load(f) or [])
                 if self._unsupported:
-                    self._event("system", f"恢复跳过列表: {', '.join(sorted(self._unsupported))}")
+                    self._event("system", f"这些币种之前下单失败过，已自动跳过：{'、'.join(sorted(s.upper() for s in self._unsupported))}")
         except Exception:
             pass
 
@@ -332,13 +331,13 @@ class QuantEngine:
             direction = hit.get("direction")
             if direction not in ("bullish", "bearish"):
                 # 中性形态（十字星等）不指示方向，无法决定多空 → 明确记录，便于核对决策流水完整性
-                self._event("skip", f"中性形态不参与交易（{hit.get('name_zh') or 'neutral'} 无方向）",
+                self._event("skip", f"{hit.get('name_zh') or '中性形态'}没有方向，不下单",
                             account=self._primary_account(), symbol=symbol,
                             pattern=hit.get("pattern"), name_zh=hit.get("name_zh"))
                 return
             price = (self.price_fn or (lambda s: None))(symbol)
             if not price or price <= 0:
-                self._event("skip", "无最新价，无法计算下单数量", account=self._primary_account(), symbol=symbol)
+                self._event("skip", "取不到最新价，这次信号跳过", account=self._primary_account(), symbol=symbol)
                 return
             # 记录一次"收到信号"的思考过程：形态 / 方向 / 价格
             self._event("signal",
@@ -367,23 +366,23 @@ class QuantEngine:
             return
         # 风控 1：该账户已有该币种持仓
         if symbol in st["positions"]:
-            self._event("skip", f"该币种已有持仓（{st['positions'][symbol].get('qty')}），不重复开仓",
+            self._event("skip", f"已经有这个币的仓位了（{st['positions'][symbol].get('qty')}），不重复开",
                         account=name, symbol=symbol)
             return
         # 风控 2：最大持仓数
         if len(st["positions"]) >= MAX_POSITIONS:
-            self._event("skip", f"已达最大持仓数（{len(st['positions'])}/{MAX_POSITIONS}）",
+            self._event("skip", f"仓位已满（{len(st['positions'])}/{MAX_POSITIONS}），等先平掉一个",
                         account=name, symbol=symbol)
             return
         # 风控 3：同币种冷却
         if now - st["cooldown"].get(symbol, 0) < COOLDOWN_SEC * 1000:
             left = int((COOLDOWN_SEC * 1000 - (now - st["cooldown"].get(symbol, 0))) / 1000)
-            self._event("skip", f"冷却中（还需 {left}s）", account=name, symbol=symbol)
+            self._event("skip", f"刚动过这个币，冷却中（还要 {left} 秒）", account=name, symbol=symbol)
             return
         # 风控 3.5：同方向持仓上限（防止同向信号聚集造成方向过度集中）
         same_dir = sum(1 for p in st["positions"].values() if p.get("side") == side)
         if same_dir >= MAX_SAME_DIR:
-            self._event("skip", f"同方向持仓已达上限（{same_dir}/{MAX_SAME_DIR}）",
+            self._event("skip", f"同方向的仓位已经 {same_dir}/{MAX_SAME_DIR} 个了，不再往一个方向加",
                         account=name, symbol=symbol)
             return
         # 风控 3.7：形态历史胜率质量门——胜率过低的形态不入场（与形态统计系统联动）
@@ -395,21 +394,21 @@ class QuantEngine:
                     wr = pst["wins"] / n_dec
                     if wr < self.min_pattern_winrate:
                         self._event("skip",
-                                    f"形态历史胜率过低({round(wr * 100)}%, n={n_dec})，质量门拦截",
+                                    f"这个形态历史胜率只有 {round(wr * 100)}%（{n_dec} 次样本），跳过",
                                     account=name, symbol=symbol)
                         return
         # 风控 4：可用余额与保证金
         avail = self._available(a)
         margin = max(MARGIN_MIN, round(avail * MARGIN_PCT, 2))
         if avail < MARGIN_MIN:
-            self._event("skip", f"可用余额不足（{round(avail, 2)} < 最低 {MARGIN_MIN}）",
+            self._event("skip", f"可用余额不够（{round(avail, 2)} U，最少要 {MARGIN_MIN} U）",
                         account=name, symbol=symbol)
             return
         qty_raw = margin / price
         step = self._step_size(a["api_key"], a["api_secret"], symbol)
         qty = self._quantize(qty_raw, step)
         if qty <= 0:
-            self._event("skip", f"数量过小（保证金 {margin}，按步长 {step} 取整后为 0）",
+            self._event("skip", f"按最小下单单位算是 0 张（保证金 {margin} U 太小），跳过",
                         account=name, symbol=symbol)
             return
         # 下单
@@ -551,7 +550,7 @@ class QuantEngine:
                 # 交易所已无仓位 → 直接核销，不再下单
                 st["positions"].pop(symbol)
                 self._save_positions()
-                self._event("close", f"{reason}（交易所已无仓位，核销记录）", account=name, symbol=symbol)
+                self._event("close", f"{reason}：交易所已没有这个仓位，清理本地记录", account=name, symbol=symbol)
                 self._broadcast_positions()
                 return
             close_qty = abs(live_amt)
@@ -634,7 +633,7 @@ class QuantEngine:
                                "recovered": True}
                         st["positions"][sym] = pos
                         changed = True
-                        self._event("audit", f"审计补记漏记持仓 {sym}", account=name, symbol=sym)
+                        self._event("audit", f"发现 {sym.upper()} 有仓位但本地没记录，已补记", account=name, symbol=sym)
                 # 本地有、交易所已无 → 核销（含平仓熔断后卡住的记录；手动仓位被止损/强平也在此清理）
                 for sym in list(st["positions"].keys()):
                     if sym not in live:
@@ -645,7 +644,7 @@ class QuantEngine:
                         changed = True
                         was_stuck = pos.get("closeFails", 0) >= 3
                         self._event("audit",
-                                    f"审计核销已平持仓 {sym}（交易所已无仓位{'，此前平仓熔断' if was_stuck else ''}）",
+                                    f"{sym.upper()} 已经平掉了，清理本地记录{'（之前平仓连续失败过）' if was_stuck else ''}",
                                     account=name, symbol=sym)
                 # 本地与交易所数量不一致 → 以交易所为准修正数量
                 for sym, li in live.items():
@@ -653,23 +652,23 @@ class QuantEngine:
                     if pos and abs(abs(pos["qty"]) - abs(li["amt"])) > 1e-9:
                         pos["qty"] = abs(li["amt"])
                         changed = True
-                        self._event("audit", f"审计修正持仓数量 {sym} → {abs(li['amt'])}", account=name, symbol=sym)
+                        self._event("audit", f"{sym.upper()} 的持仓数量和交易所对不上，已按交易所更新为 {abs(li['amt'])}", account=name, symbol=sym)
                 # 豁免登记的仓位在交易所已不存在（未被跟踪故未走上面核销）→ 清理登记，
                 # 否则残留豁免会让量化引擎后续在同账户同币种开的仓绕过止盈止损
                 for (n, sym) in list(self._manual):
                     if n == name and sym not in live:
                         self._manual.discard((n, sym))
                         self._save_manual()
-                        self._event("audit", f"清理已平手动仓位的豁免登记 {sym}", account=name, symbol=sym)
+                        self._event("audit", f"{sym.upper()} 的手动仓位已平，解除引擎豁免", account=name, symbol=sym)
                 if changed:
                     self._save_positions()
                 # 审计周期重置平仓失败计数：熔断只是暂停，不是永久放弃（下次重试）
                 for pos in st["positions"].values():
                     if pos.get("closeFails", 0) >= 3:
                         pos["closeFails"] = 0
-                        self._event("audit", f"重置平仓重试计数 {pos.get('symbol')}（进入新一轮尝试）",
+                        self._event("audit", f"重新尝试平掉 {pos.get('symbol').upper()}",
                                     account=name, symbol=pos.get("symbol"))
-            self._event("audit", "5 分钟自审计完成", positions={n: list(self._st(n)["positions"].keys()) for n in self.state})
+            self._event("audit", "已核对仓位：本地记录和交易所一致", positions={n: list(self._st(n)["positions"].keys()) for n in self.state})
         except Exception as e:
             self.stats["errors"] += 1
             self._event("error", f"审计异常: {e}")
