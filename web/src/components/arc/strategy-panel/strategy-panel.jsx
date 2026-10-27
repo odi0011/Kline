@@ -38,17 +38,16 @@ const VOL = {
   low: { text: "低波", tone: "low" },
 }
 
-/** 带安全带的区间滑块：官方 Progress 做填充条 + 安全带标记 + 位置圆点。
- *  轨道/圆头/spring 全部来自 uiarc Progress，不自绘。 */
+/** 带安全带的区间滑块：官方 Progress 填充条 + 安全带浅色窗口。
+ *  不画圆点——10px 高的轨道本身就能读出位置，圆点在小尺寸下反而杂乱。 */
 function RangeSlider({ v, min, max, safe, tone }) {
   const pos = clamp(((v - min) / (max - min)) * 100, 0, 100)
   const s0 = clamp(((safe[0] - min) / (max - min)) * 100, 0, 100)
   const s1 = clamp(((safe[1] - min) / (max - min)) * 100, 0, 100)
   return (
     <span className={styles.slider} data-tone={tone}>
-      <span className={styles.sliderSafe} style={{ left: `${s0}%`, width: `${s1 - s0}%` }} />
       <Progress value={pos} max={100} className={styles.arcBar} />
-      <span className={styles.sliderDot} style={{ left: `${pos}%` }} />
+      <span className={styles.sliderSafe} style={{ left: `${s0}%`, width: `${s1 - s0}%` }} />
     </span>
   )
 }
@@ -72,7 +71,7 @@ function BiBar({ v, scale, up, down }) {
   const positive = v >= 0
   return (
     <span className={styles.bibar} data-dir={positive ? "up" : "down"}
-      style={{ "--bibar-color": positive ? up : down }}>
+      style={{ "--bibar-color": positive ? up : down, "--arc-fill": positive ? up : down }}>
       <span className={styles.bibarHalf} data-side="l">
         {!positive && <Progress value={(half / 50) * 100} max={100} className={styles.arcBar} />}
       </span>

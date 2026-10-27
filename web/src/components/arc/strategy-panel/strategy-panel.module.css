@@ -22,20 +22,15 @@
 
 .gridScroll { flex: 1 1 0; min-height: 0; }
 
-/* 宫格列数由容器宽度决定：
-   本面板占第二行 30%（约 240~420px）。
-   · ≥330px：一行 2 卡（每卡 ~155px，指标行可容 60+图+45 三列）
-   · <330px：一行 1 卡（每卡全宽，避免 115px 下文字与微图表互压）
-   之前固定 2 列，115px 卡片里 ATR/RV 双列和风控行必然被裁。 */
+/* 强制一行两卡：指标数值最长也就 "-0.28" / "0.09"，155px 卡片完全放得下。
+   指标行改为两行式（标签+数值+状态在上，微图表独占下面整宽），
+   这样即使 115px 也不会挤。 */
 .grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   align-content: start;
   padding-bottom: 2px;
-}
-@container (max-width: 330px) {
-  .grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ---------- 卡片 ---------- */
@@ -141,48 +136,32 @@
 }
 
 /* ---------- 指标行 ----------
-   宽容器（单卡 > 200px）：三列横排 [标签+数值 60] [微图表 flex] [状态 45]
-   窄容器（本面板两列布局，单卡约 115px）：折成两行
-     [标签 ……… 数值][状态]
-     [微图表 ————————— 独占整宽]
-   这样微图表仍有完整宽度可读，文字也不会互压。 */
+   统一两行式（不随宽度切换）：
+     [标签 ……… 数值]                [状态]
+     [微图表 ——————————— 独占整宽]
+   这样卡片只有 115px 宽时，微图表仍能拿到完整的横向空间。 */
 .mRow {
   display: grid;
-  grid-template-columns: 60px minmax(0, 1fr) 45px;
-  grid-template-areas: "label chart status";
-  align-items: center;
-  gap: 6px;
-  height: 24px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "label status"
+    "chart chart";
+  grid-template-rows: 15px 14px;
+  gap: 1px 5px;
+  height: 33px;
   min-width: 0;
+  padding: 1px 0;
 }
 .mLabel {
   grid-area: label;
   min-width: 0;
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 3px;
+  gap: 4px;
   overflow: hidden;
 }
 .mChart { grid-area: chart; }
 .mStatus { grid-area: status; }
-
-/* 窄卡片：两行式（面板一行两个卡时必然命中） */
-@container (max-width: 900px) {
-  .mRow {
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      "label status"
-      "chart chart";
-    grid-template-rows: 15px 11px;
-    height: 30px;
-    gap: 0 5px;
-    padding: 1px 0;
-  }
-  .mLabel { justify-content: flex-start; gap: 4px; }
-  .mChart { height: 11px; }
-  .mStatus { text-align: right; }
-}
 
 .mLabel u {
   font-size: 8.5px;
@@ -244,8 +223,13 @@
   width: 100%;
   font-size: 0;          /* 组件自带 meta 区，这里不显示文字 */
 }
-.arcBar > div:last-child { height: 6px; }   /* track */
-.arcBar > div:last-child > span { background: var(--arc-fill, #64748b); }
+.arcBar > div:last-child {
+  height: 10px;                                    /* 加高轨道，去掉圆点后靠厚度提升可读性 */
+  border: 0;
+  background: rgba(28, 35, 51, 0.09);
+}
+/* 填充色由各图表通过 --arc-fill 指定（覆盖 Progress 默认的 --accent） */
+.arcBar > div:last-child > span { background: var(--arc-fill, var(--accent)); }
 
 .slider {
   position: relative;
@@ -254,41 +238,28 @@
   display: flex;
   align-items: center;
 }
-/* 常态安全带：叠在轨道上方的一层浅色窗口 */
+/* 常态安全带：轨道内的一段浅色窗口（比轨道略亮，两端警示区保留底色） */
 .sliderSafe {
   position: absolute;
   top: 50%;
-  height: 6px;
+  height: 10px;
   transform: translateY(-50%);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: inset 0 0 0 1px rgba(28, 35, 51, 0.06);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: inset 0 0 0 1px rgba(28, 35, 51, 0.05);
   pointer-events: none;
 }
 .slider[data-tone="warn"] { --arc-fill: #f59e0b; }
 .slider[data-tone="extreme"] { --arc-fill: #ef4444; }
 .slider[data-tone="oversold"] { --arc-fill: #10b981; }
 .slider[data-tone="normal"] { --arc-fill: #64748b; }
-.sliderDot {
-  position: absolute;
-  top: 50%;
-  width: 8px;
-  height: 8px;
-  margin-left: -4px;
-  border-radius: 50%;
-  transform: translateY(-50%);
-  background: var(--arc-fill, #64748b);
-  box-shadow: 0 0 0 1.5px #fff, 0 1px 2px rgba(16, 24, 40, 0.28);
-  transition: left 320ms cubic-bezier(0.2, 0, 0, 1), background-color 220ms ease;
-  pointer-events: none;
-}
 
 /* ---------- 微图表 2：单向阈值能量条 ---------- */
 
 .gauge {
   position: relative;
   width: 100%;
-  height: 14px;
+  height: 16px;
   display: flex;
   align-items: center;
 }
@@ -298,8 +269,9 @@
 .gaugeTick {
   position: absolute;
   top: 2px; bottom: 2px;
-  width: 1px;
-  background: rgba(28, 35, 51, 0.32);
+  width: 1.5px;
+  background: rgba(28, 35, 51, 0.35);
+  border-radius: 1px;
   pointer-events: none;
 }
 
@@ -308,27 +280,26 @@
 .bibar {
   position: relative;
   width: 100%;
-  height: 14px;
+  height: 16px;
   display: flex;
   align-items: center;
-  gap: 0;
 }
 .bibarHalf {
   flex: 1 1 50%;
   min-width: 0;
-  height: 14px;
+  height: 16px;
   display: flex;
   align-items: center;
 }
 .bibarHalf[data-side="l"] { justify-content: flex-end; }
-.bibarHalf .arcBar > div:last-child { height: 6px; }
-.bibarHalf .arcBar > div:last-child > span { background: var(--bibar-color, #64748b); }
+.bibarHalf .arcBar > div:last-child { height: 10px; }
 .bibarAxis {
   flex: none;
-  width: 1px;
-  height: 10px;
-  background: rgba(28, 35, 51, 0.28);
+  width: 1.5px;
+  height: 14px;
+  background: rgba(28, 35, 51, 0.32);
   border-radius: 1px;
+  z-index: 1;
 }
 /* 负值时左半边反向填充：把 Progress 内部填充镜像 */
 .bibarHalf[data-side="l"] .arcBar { direction: rtl; }
@@ -338,19 +309,22 @@
 .squeeze {
   position: relative;
   width: 100%;
-  height: 14px;
+  height: 16px;
   display: flex;
   align-items: center;
   transition: width 320ms ease;
 }
-.squeeze .arcBar > div:last-child { height: 6px; }
+.squeeze .arcBar > div:last-child {
+  height: 10px;
+  background: rgba(28, 35, 51, 0.09);
+}
 .squeeze .arcBar > div:last-child > span { background: #cbd5e1; }
-.squeeze[data-squeeze] { width: 40%; }
+.squeeze[data-squeeze] { width: 42%; }
 .squeeze[data-squeeze] .arcBar > div:last-child > span {
   background: linear-gradient(90deg, #fbbf24, #f59e0b);
 }
 .squeeze[data-squeeze] .arcBar > div:last-child {
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.55);
+  box-shadow: 0 0 0 1.5px rgba(245, 158, 11, 0.55);
 }
 
 /* ---------- ATR / RV 紧凑双列 ---------- */
