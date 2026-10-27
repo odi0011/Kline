@@ -1,115 +1,119 @@
-/* 决策依据面板：主视图热力矩阵 + 辅助 ATR 风险区间 + 底部趋势条。
-   无标题、无页签——整块区域只承载数据可视化。 */
+/* 决策依据面板：只占第二行 40% 宽（约 290px）。
+   窄容器下用「横向热力条带」而不是二维表格——8 列 × 28px 放不下列名，
+   必然文字互压。所有区域固定高度、overflow:hidden，任何内容都不许溢出
+   到相邻面板（此前 ATR 区被压到 17px 就压到了下面的流水上）。 */
 
 .wrap {
   flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
   padding: 0 2px;
-  min-height: 0;
+  overflow: hidden;
   container-type: inline-size;
 }
 
-.main {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  gap: 12px;
-}
-
-/* ---------- 左：指标矩阵热力图 ---------- */
-
-.matrixWrap {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.legendRow {
+/* ---------- 顶栏 ---------- */
+.head {
   flex: none;
+  height: 15px;
   display: flex;
   align-items: center;
-  gap: 7px;
-  height: 15px;
+  gap: 6px;
+  min-width: 0;
 }
-.legendLabel {
+.headTitle {
   font-size: 10px;
   font-weight: 700;
   color: #1c2333;
   letter-spacing: 0.2px;
   flex: none;
 }
-.legend {
+.scale {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  font-size: 9px;
-  color: var(--text-muted, #8b949e);
+  gap: 2px;
+  font-size: 8px;
+  color: var(--text-muted, #98a1ae);
   flex: none;
 }
-.legendBar {
-  width: 52px;
-  height: 5px;
-  border-radius: 3px;
+.scale i {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: hsl(162 52% 94%);
+  border: 1px solid rgba(28, 35, 51, 0.1);
+}
+.scaleBar {
+  width: 30px; height: 4px; border-radius: 2px;
   background: linear-gradient(90deg,
-    hsl(162 56% 93%), hsl(120 66% 80%), hsl(70 74% 70%),
-    hsl(35 82% 62%), hsl(6 78% 48%));
+    hsl(162 52% 94%), hsl(120 62% 82%), hsl(70 72% 74%), hsl(35 82% 64%), hsl(6 78% 50%));
 }
-.legendHint {
-  font-size: 9px;
-  color: var(--text-muted, #8b949e);
+/* 右上角：当前全市场最热的指标（此前这块是空白） */
+.hottest {
   margin-left: auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.colHead {
-  flex: none;
-  display: grid;
-  gap: 2px;
-  height: 15px;
+  display: inline-flex;
   align-items: center;
-}
-.colLabel {
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--text-secondary, #5b6472);
-  text-align: center;
+  gap: 2px;
+  font-size: 8.5px;
+  color: var(--text-muted, #8b949e);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
+  max-width: 52%;
+}
+.hottest em {
+  font-style: normal;
+  font-weight: 700;
+  color: #1c2333;
+}
+.hottest b {
+  font-weight: 700;
+  color: #b91c1c;
+  margin-left: 1px;
 }
 
-.matrixScroll { flex: 1 1 0; min-height: 0; }
-
-.matrixBody {
-  display: grid;
-  gap: 2px;
-  grid-auto-rows: minmax(15px, 1fr);
+/* ---------- 指标热力条带 ---------- */
+.strips {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.stripScroll { flex: 1 1 0; min-height: 0; }
+.stripList {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   min-height: 100%;
-  align-content: stretch;
 }
+.stripRow {
+  flex: 1 1 0;
+  min-height: 17px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 1px;
+  border-radius: 3px;
+}
+.stripRow:hover { background: rgba(28, 35, 51, 0.035); }
 
-.symCell {
+.stripSym {
+  flex: none;
+  width: 56px;
   display: flex;
   align-items: center;
   gap: 2px;
   overflow: hidden;
   white-space: nowrap;
 }
-.symCell b {
+.stripSym b {
   font-size: 9.5px;
   font-weight: 700;
   color: #1c2333;
-  letter-spacing: 0.2px;
+  letter-spacing: 0.1px;
 }
-.symCell i {
+.stripSym i {
   font-style: normal;
   font-size: 8px;
   font-weight: 700;
@@ -117,9 +121,9 @@
   padding: 1px 2px;
   border-radius: 2px;
 }
-.symCell i[data-side="long"] { color: #0f766e; background: rgba(13, 148, 136, 0.14); }
-.symCell i[data-side="short"] { color: #be123c; background: rgba(225, 29, 72, 0.13); }
-.symCell u {
+.stripSym i[data-side="long"] { color: #0f766e; background: rgba(13, 148, 136, 0.15); }
+.stripSym i[data-side="short"] { color: #be123c; background: rgba(225, 29, 72, 0.14); }
+.stripSym u {
   font-size: 8px;
   font-weight: 700;
   line-height: 1;
@@ -129,80 +133,114 @@
   color: var(--text-muted, #8b949e);
   background: rgba(28, 35, 51, 0.07);
 }
-.symCell u[data-tone="squeeze"] { color: #b45309; background: rgba(245, 158, 11, 0.18); }
 
-/* 热力单元格 */
-.cell {
+/* 8 段色块：只表意，数值看右侧标签或 hover */
+.stripBar {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 11px;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  font-size: 9.5px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.1px;
+  gap: 1px;
+  border-radius: 2px;
   overflow: hidden;
-  transition: background-color 380ms ease, color 380ms ease;
 }
-.cell[data-na] {
+.seg {
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 1.5px;
+  transition: background-color 400ms ease;
+}
+.seg[data-na] {
   background: repeating-linear-gradient(-45deg,
-    rgba(28, 35, 51, 0.03) 0 3px, transparent 3px 6px);
-  color: var(--text-muted, #b0b7c3);
+    rgba(28, 35, 51, 0.05) 0 2px, transparent 2px 4px);
 }
 
-/* ---------- 右：ATR 风险区间 ---------- */
+/* 最热两项标签 */
+.stripTags {
+  flex: none;
+  width: 74px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 3px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.stripTags em {
+  font-style: normal;
+  font-size: 8.5px;
+  font-weight: 600;
+  color: var(--text-secondary, #64707f);
+  font-variant-numeric: tabular-nums;
+}
+.stripTags em[data-hot] { color: #b91c1c; font-weight: 700; }
 
-.riskWrap {
-  flex: 0 0 33%;
-  min-width: 208px;
+/* ---------- ATR 风险区间 ---------- */
+.riskBlock {
+  flex: none;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
+  padding-top: 3px;
+  border-top: 1px solid rgba(28, 35, 51, 0.07);
+}
+.riskHead {
+  flex: none;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.riskTitle {
+  font-size: 10px;
+  font-weight: 700;
+  color: #1c2333;
+  letter-spacing: 0.2px;
 }
 .riskLegend {
+  margin-left: auto;
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 9px;
-  color: var(--text-muted, #8b949e);
-  margin-left: auto;
+  font-size: 8px;
+  color: var(--text-muted, #98a1ae);
 }
 .riskLegend i {
-  width: 7px; height: 7px; border-radius: 2px; display: inline-block; margin-left: 4px;
+  width: 6px; height: 6px; border-radius: 1.5px; display: inline-block; margin-left: 4px;
 }
 .riskLegend i[data-tone="sl"] { background: hsl(6 74% 58%); }
 .riskLegend i[data-tone="tp"] { background: hsl(158 62% 42%); }
 
 .riskList {
-  flex: 1 1 0;
-  min-height: 0;
+  flex: none;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
+  max-height: 62px;
+  overflow: hidden;
 }
-
 .riskRow {
-  flex: 1 1 0;
-  min-height: 15px;
+  flex: none;
+  height: 17px;
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
 }
 .riskSym {
   flex: none;
-  width: 34px;
+  width: 40px;
   font-size: 9px;
   font-weight: 700;
   color: #1c2333;
-  letter-spacing: 0.1px;
   overflow: hidden;
+  white-space: nowrap;
 }
 .riskBar {
   position: relative;
   flex: 1 1 auto;
-  height: 9px;
+  min-width: 0;
+  height: 8px;
   display: flex;
-  border-radius: 3px;
+  border-radius: 2px;
   overflow: hidden;
   background: rgba(28, 35, 51, 0.05);
 }
@@ -216,140 +254,117 @@
   background: linear-gradient(180deg, hsl(158 58% 50%), hsl(158 62% 40%));
   transition: width 420ms ease;
 }
-/* 持仓入场位参考线 */
-.riskEntry {
-  position: absolute;
-  top: -1px; bottom: -1px;
-  left: 50%;
-  width: 1.5px;
-  background: rgba(255, 255, 255, 0.85);
-  box-shadow: 0 0 0 1px rgba(28, 35, 51, 0.18);
-}
-.riskPct {
+.riskNum {
   flex: none;
   display: flex;
   gap: 3px;
-  font-size: 8.5px;
+  font-size: 8px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-.riskPct i { font-style: normal; }
-.riskPct i[data-tone="sl"] { color: #c2410c; }
-.riskPct i[data-tone="tp"] { color: #047857; }
+.riskNum i { font-style: normal; }
+.riskNum i[data-tone="sl"] { color: #c2410c; }
+.riskNum i[data-tone="tp"] { color: #047857; }
 .riskRr {
   flex: none;
-  width: 24px;
+  width: 20px;
   text-align: right;
-  font-size: 9px;
+  font-size: 8.5px;
   font-weight: 700;
   color: var(--text-secondary, #5b6472);
   font-variant-numeric: tabular-nums;
 }
 
-/* ---------- 底部：趋势 + 回撤 + 拦截 ---------- */
-
+/* ---------- 底栏 ---------- */
 .bottom {
   flex: none;
-  height: 30px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-top: 2px;
-  border-top: 1px solid rgba(28, 35, 51, 0.07);
-}
-
-.trendBox {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 100%;
+  height: 22px;
   display: flex;
   align-items: center;
   gap: 6px;
+  padding-top: 2px;
+  border-top: 1px solid rgba(28, 35, 51, 0.07);
+  overflow: hidden;
 }
 .trendLegend {
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  font-size: 8.5px;
-  color: var(--text-muted, #8b949e);
+  gap: 2px;
+  font-size: 8px;
+  color: var(--text-muted, #98a1ae);
   white-space: nowrap;
 }
 .trendLegend i {
-  width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-left: 3px;
+  width: 5px; height: 5px; border-radius: 50%; display: inline-block; margin-left: 2px;
 }
 .trendLegend i[data-tone="adx"] { background: #2563eb; }
 .trendLegend i[data-tone="atr"] { background: #ea580c; }
-.trendSvg { flex: 1 1 auto; min-width: 0; height: 25px; display: block; }
+.trendBox {
+  flex: 1 1 auto;
+  min-width: 20px;
+  height: 18px;
+  display: flex;
+}
+.trendSvg { flex: 1 1 auto; min-width: 0; height: 18px; display: block; }
 .trendEmpty {
   flex: 1 1 auto;
-  font-size: 9px;
+  font-size: 8px;
   color: var(--text-muted, #b0b7c3);
+  align-self: center;
 }
 
-.ddBox {
+.ddGroup {
   flex: none;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 9px;
+  gap: 3px;
+  font-size: 8.5px;
+  white-space: nowrap;
 }
-.ddLabel { color: var(--text-muted, #8b949e); }
-.ddVal { font-weight: 700; font-variant-numeric: tabular-nums; }
+.ddGroup em { font-style: normal; color: var(--text-muted, #98a1ae); }
+.ddGroup b { font-weight: 700; font-variant-numeric: tabular-nums; }
 .ddBar {
-  width: 46px; height: 5px;
-  border-radius: 3px;
+  width: 30px; height: 4px;
+  border-radius: 2px;
   background: rgba(28, 35, 51, 0.08);
   overflow: hidden;
 }
 .ddFill {
   display: block; height: 100%;
-  border-radius: 3px;
+  border-radius: 2px;
   transition: width 420ms ease;
 }
 .ddFill[data-tone="ok"] { background: hsl(158 55% 45%); }
 .ddFill[data-tone="warn"] { background: hsl(38 88% 52%); }
 .ddFill[data-tone="danger"] { background: hsl(6 76% 55%); }
-.ddLimit { color: var(--text-muted, #8b949e); font-variant-numeric: tabular-nums; }
-.badgeDanger {
-  font-size: 8.5px; font-weight: 700;
-  color: #fff; background: hsl(6 76% 55%);
-  border-radius: 3px; padding: 1px 3px;
+.pausedTag {
+  font-size: 8px !important;
+  color: #fff !important;
+  background: hsl(6 76% 55%);
+  border-radius: 2px;
+  padding: 0 2px;
 }
 
-.gateBox {
+.gateGroup {
   flex: none;
-  display: flex;
+  display: inline-flex;
   align-items: baseline;
   gap: 2px;
-  padding-left: 8px;
+  padding-left: 5px;
   border-left: 1px solid rgba(28, 35, 51, 0.07);
+  white-space: nowrap;
 }
-.gateNum {
-  font-size: 11px;
+.gateGroup b {
+  font-size: 9.5px;
   font-weight: 700;
   color: #1c2333;
   font-variant-numeric: tabular-nums;
 }
-.gateLabel { font-size: 8.5px; color: var(--text-muted, #8b949e); }
+.gateGroup em { font-style: normal; font-size: 8px; color: var(--text-muted, #98a1ae); }
 
 .empty {
-  grid-column: 1 / -1;
-  font-size: 9.5px;
+  font-size: 9px;
   color: var(--text-muted, #b0b7c3);
-  padding: 4px 2px;
-}
-
-/* 窄容器（本面板只占第二行 40%，基本总在这个区间）：
-   主视图热力矩阵在上、ATR 风险区间在下，纵向堆叠而不是挤压并排。 */
-@container (max-width: 720px) {
-  .main {
-    flex-direction: column;
-    gap: 5px;
-  }
-  .matrixWrap { flex: 1 1 0; }
-  .riskWrap { flex: 0 0 auto; min-width: 0; max-height: 42%; }
-  .legendHint { display: none; }
-  .riskRr { display: none; }
-  .riskSym { width: 42px; }
+  padding: 3px 2px;
 }
