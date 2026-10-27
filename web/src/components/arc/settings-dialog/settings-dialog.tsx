@@ -22,14 +22,14 @@ const SECTIONS = [
 
 const THEME_PRESETS = ["#f0b90b", "#3b82f6", "#16a34a", "#8b5cf6", "#f97316", "#06b6d4"]
 const FONT_OPTIONS = [
-  { id: "douyin", label: "抖音黑体" },
-  { id: "system", label: "系统默认" },
-  { id: "serif", label: "衬线" },
+  { value: "douyin", label: "抖音黑体" },
+  { value: "system", label: "系统默认" },
+  { value: "serif", label: "衬线" },
 ]
 const UPDOWN_OPTIONS = [
-  { id: "green-red", label: "绿涨红跌" },
-  { id: "red-green", label: "红涨绿跌" },
-  { id: "custom", label: "自定义" },
+  { value: "green-red", label: "绿涨红跌" },
+  { value: "red-green", label: "红涨绿跌" },
+  { value: "custom", label: "自定义" },
 ]
 const DIR_LABEL = { bullish: "涨", bearish: "跌", neutral: "变盘" }
 
@@ -57,11 +57,13 @@ function AppearancePane({ ui, onUpdateUi }) {
           presets={THEME_PRESETS} />
       </Row>
       <Row label="字体">
-        <MorphSelect options={FONT_OPTIONS} value={ui.font} onChange={(id) => onUpdateUi({ font: id })} />
+        <MorphSelect label="字体" hideLabel items={FONT_OPTIONS} value={ui.font}
+          onValueChange={(id) => onUpdateUi({ font: id })} />
       </Row>
       <SectionTitle>K线颜色</SectionTitle>
       <Row label="涨跌配色">
-        <MorphSelect options={UPDOWN_OPTIONS} value={ui.upDown} onChange={(id) => onUpdateUi({ upDown: id })} />
+        <MorphSelect label="涨跌配色" hideLabel items={UPDOWN_OPTIONS} value={ui.upDown}
+          onValueChange={(id) => onUpdateUi({ upDown: id })} />
       </Row>
       {ui.upDown === "custom" && (
         <Row label="自定义涨/跌色">
@@ -204,7 +206,7 @@ export function SettingsDialog({ open, onClose, section, onSectionChange,
       {open && (
         <motion.div className={styles.overlay} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
           transition={{ duration: 0.16 }} onClick={onClose}>
-          <motion.div className={styles.panel} role="dialog" aria-label="设置"
+          <motion.div className={styles.panel} role="dialog" aria-label="设置" data-section={section}
             initial={{ opacity: 0, y: 16, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 10, scale: 0.98 }}
@@ -235,7 +237,7 @@ export function SettingsDialog({ open, onClose, section, onSectionChange,
                   )
                 })}
               </nav>
-              <div className={styles.pane}>
+              <div className={[styles.pane, section === "ai" ? styles.aiPane : ""].filter(Boolean).join(" ")}>
                 {section === "appearance" && <AppearancePane ui={ui} onUpdateUi={onUpdateUi} />}
                 {section === "account" && <AccountPane accounts={accounts} onSaveAccount={onSaveAccount} />}
                 {section === "patterns" && <PatternsPane patternsEnabled={patternsEnabled} livePreview={livePreview}

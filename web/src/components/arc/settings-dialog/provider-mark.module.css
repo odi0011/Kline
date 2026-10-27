@@ -1,0 +1,29 @@
+.mark {
+  display: grid;
+  width: var(--mark-size);
+  height: var(--mark-size);
+  flex: none;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 28%;
+  background: var(--mark-bg);
+  color: var(--mark-fg);
+  box-shadow: inset 0 0 0 1px rgba(16, 24, 40, 0.06);
+}
+
+.mark svg,
+.mark img {
+  display: block;
+  width: 62%;
+  height: 62%;
+}
+
+.mark svg path {
+  fill: currentColor;
+}
+
+.mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
