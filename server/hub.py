@@ -219,8 +219,10 @@ class BroadcastHub:
                         await ws.send(json.dumps({"type": "ai_models", "result": res},
                                                  separators=(",", ":")))
                     elif mtype == "ai_test_model" and self.ai_fn:
+                        # 带上当前草稿的 base/key：用户没保存也能直接测
                         res = await asyncio.to_thread(
-                            self.ai_fn, "test", msg.get("model") or "")
+                            self.ai_fn, "test", msg.get("model") or "",
+                            msg.get("base") or "", msg.get("key") or "")
                         await ws.send(json.dumps({"type": "ai_test", "result": res},
                                                  separators=(",", ":")))
                     elif mtype == "ai_guess_meta" and self.ai_fn:

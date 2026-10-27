@@ -217,7 +217,7 @@ export default function AiPane({ ai, onSave, onAiAction, aiModelsResult, aiTestR
   const testOne = (id) => {
     setTestingId(id)
     setTestRes({ id, ok: null })     // 占位：表示"这一条正在测"
-    onAiAction && onAiAction({ type: "ai_test_model", model: id })
+    onAiAction && onAiAction({ type: "ai_test_model", model: id, base: draft.base, key: draft.key })
   }
   useEffect(() => {
     if (!aiTestResult) return

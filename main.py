@@ -336,21 +336,29 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     hub.settings_fn = current_settings
     hub.on_settings = apply_settings
 
-    def _ai_helper(kind: str, a: str = "", b: str = "") -> dict:
+    def _ai_helper(kind: str, a: str = "", b: str = "", c: str = "") -> dict:
         """AI 设置页的三个辅助动作：列模型 / 测连通 / 猜能力。
 
-        密钥优先级：本次请求里带的 key > 服务端已存的 key。
-        这样用户刚粘贴密钥就能直接"获取模型"，不必先保存一次。
+        参数约定（hub 侧按此传参）：
+          list  → a=base, b=key
+          test  → a=model_id, b=base, c=key
+          guess → a=model_id
+        密钥优先级：本次请求里带的 key > 服务端已存的 key，
+        这样用户刚粘贴密钥就能直接「获取模型 / 测试」，不必先保存一次。
         """
         saved = cfg.get("ai", {}) or {}
-        base = (a or saved.get("base") or "").strip()
-        key = (b or "").strip()
-        if not key or MASK_SEC in key:
-            key = str(saved.get("key") or "")
+        saved_base = str(saved.get("base") or "").strip()
+        saved_key = str(saved.get("key") or "")
+
+        def pick_key(raw: str) -> str:
+            k = (raw or "").strip()
+            return saved_key if (not k or MASK_SEC in k) else k
+
         if kind == "list":
-            return ai_list_models(base, key, proxy_cfg or None)
+            return ai_list_models((a or saved_base).strip(), pick_key(b), proxy_cfg or None)
         if kind == "test":
-            return ai_test_model({"base": base, "key": key}, a, proxy_cfg or None)
+            return ai_test_model({"base": (b or saved_base).strip(), "key": pick_key(c)},
+                                 a, proxy_cfg or None)
         if kind == "guess":
             return guess_model_meta(a or b)
         return {"ok": False, "error": f"未知动作 {kind}"}
