@@ -340,9 +340,16 @@
   padding: 4px 2px;
 }
 
-/* 窄容器：风险区间让位给热力矩阵 */
-@container (max-width: 620px) {
-  .riskWrap { flex-basis: 42%; min-width: 168px; }
+/* 窄容器（本面板只占第二行 40%，基本总在这个区间）：
+   主视图热力矩阵在上、ATR 风险区间在下，纵向堆叠而不是挤压并排。 */
+@container (max-width: 720px) {
+  .main {
+    flex-direction: column;
+    gap: 5px;
+  }
+  .matrixWrap { flex: 1 1 0; }
+  .riskWrap { flex: 0 0 auto; min-width: 0; max-height: 42%; }
   .legendHint { display: none; }
   .riskRr { display: none; }
+  .riskSym { width: 42px; }
 }

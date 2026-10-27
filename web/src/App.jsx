@@ -726,9 +726,12 @@ export default function App() {
               chartColors={chartColors} />
           </div>
         </div>
-      {/* 第二行：决策依据可视化（热力矩阵 + ATR 风险区间 + 趋势条） */}
+      {/* 第二行：决策依据可视化只占左侧 40%，右侧 60% 留给后续模块 */}
       <div className="row2">
-        <StrategyPanel analysis={quantSnap && quantSnap.analysis} chartColors={chartColors} />
+        <div className="strategy-slot">
+          <StrategyPanel analysis={quantSnap && quantSnap.analysis} chartColors={chartColors} />
+        </div>
+        <div className="row2-rest" />
       </div>
       {/* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3） */}
       <div className="row3">
