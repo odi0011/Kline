@@ -22,12 +22,20 @@
 
 .gridScroll { flex: 1 1 0; min-height: 0; }
 
+/* 宫格列数由容器宽度决定：
+   本面板占第二行 30%（约 240~420px）。
+   · ≥330px：一行 2 卡（每卡 ~155px，指标行可容 60+图+45 三列）
+   · <330px：一行 1 卡（每卡全宽，避免 115px 下文字与微图表互压）
+   之前固定 2 列，115px 卡片里 ATR/RV 双列和风控行必然被裁。 */
 .grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   align-content: start;
   padding-bottom: 2px;
+}
+@container (max-width: 330px) {
+  .grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ---------- 卡片 ---------- */
@@ -349,9 +357,10 @@
 
 .dual {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  height: 22px;
+  gap: 2px 10px;
+  min-height: 22px;
   padding-left: 1px;
   overflow: hidden;
 }
@@ -361,6 +370,7 @@
   gap: 3px;
   min-width: 0;
   white-space: nowrap;
+  flex: 0 1 auto;
 }
 .dualItem i {
   width: 3px;
@@ -393,18 +403,19 @@
 
 .band {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
-  gap: 4px;
+  gap: 2px 6px;
   margin-top: 5px;
   padding-top: 6px;
   border-top: 1px dashed rgba(28, 35, 51, 0.1);
   font-size: 11px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
   overflow: hidden;
 }
+.band span { white-space: nowrap; }
 .band span[data-tone="sl"] { color: #c2410c; }
 .band span[data-tone="tp"] { color: #047857; }
 .band span[data-tone="rr"] {
