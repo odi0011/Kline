@@ -429,13 +429,22 @@ class QuantEngine:
                 return
             self.stats["signals"] += 1
             direction = hit.get("direction")
+            price = (self.price_fn or (lambda s: None))(symbol)
+            # 每条确认信号都先落一条「收到信号」：流水必须能看到"系统收到了什么信号"，
+            # 否则被过滤/中性的信号只剩一条拦截原因，回看时无法判断到底收到过什么。
+            dir_text = {"bullish": "看涨", "bearish": "看跌"}.get(direction, "中性")
+            self._event("signal",
+                        f"收到 {hit.get('name_zh') or hit.get('pattern')} {dir_text}信号"
+                        + (f" @ {price}" if price else ""),
+                        account=self._primary_account(), symbol=symbol,
+                        pattern=hit.get("pattern"), name_zh=hit.get("name_zh"),
+                        direction=direction, price=float(price) if price else None)
             if direction not in ("bullish", "bearish"):
                 # 中性形态（十字星等）不指示方向，无法决定多空 → 明确记录，便于核对决策流水完整性
                 self._event("skip", f"{hit.get('name_zh') or '中性形态'}没有方向，不下单",
                             account=self._primary_account(), symbol=symbol,
                             pattern=hit.get("pattern"), name_zh=hit.get("name_zh"))
                 return
-            price = (self.price_fn or (lambda s: None))(symbol)
             if not price or price <= 0:
                 self._event("skip", "取不到最新价，这次信号跳过", account=self._primary_account(), symbol=symbol)
                 return
@@ -456,13 +465,7 @@ class QuantEngine:
                         self._event("skip", f"市场状态过滤：{why}", account=self._primary_account(),
                                     symbol=symbol, pattern=hit.get("pattern"))
                         return
-            # 记录一次"收到信号"的思考过程：形态 / 方向 / 价格
-            self._event("signal",
-                        f"收到 {hit.get('name_zh') or hit.get('pattern')} "
-                        f"{'看涨' if direction == 'bullish' else '看跌'}信号 @ {price}",
-                        account=self._primary_account(), symbol=symbol,
-                        pattern=hit.get("pattern"), name_zh=hit.get("name_zh"),
-                        direction=direction, price=float(price))
+            # 「收到信号」记录已在入口处统一落库，这里不再重复发。
             side = "BUY" if direction == "bullish" else "SELL"
             for a in self._tradable_accounts():
                 name = a.get("name", "")

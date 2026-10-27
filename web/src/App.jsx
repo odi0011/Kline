@@ -85,14 +85,6 @@ export default function App() {
   const [quantEvents, setQuantEvents] = useState(null)          // 持久化决策流水（MySQL）
   const [quantTrades, setQuantTrades] = useState([])            // 仓位历史（MySQL，7 天）
   const [newsItems, setNewsItems] = useState([])                // 交易所公告
-  // 命中动画为 (币种,形态) 插入过流水行的时间戳：抑制引擎随后推送的重复信号
-  const hitRowKeysRef = useRef(new Map())
-  // ref 变化本身不会触发重算；放弃动画时要 bump 这个版本号，
-  // 让 visibleEvents 立刻把那一行放回流水（否则该行会被一直压制）。
-  const [hitKeyVersion, setHitKeyVersion] = useState(0)
-  const dropHitKey = (key) => {
-    if (hitRowKeysRef.current.delete(key)) setHitKeyVersion((v) => v + 1)
-  }
   const liveRef = useRef(null)
   const cardsViewportRef = useRef(null)
   const settingsRef = useRef(settings)
@@ -139,22 +131,13 @@ export default function App() {
 
   // 决策流水只显示当前展示币种的记录（无币种的系统/审计事件始终保留）：
   // 引擎可能在其它币上产生决策，但用户看不到那些K线，显示出来只会造成困惑。
+  // 注意：这里不再压制任何 signal 行——流水必须完整展示引擎的真实决策链
+  // （收到信号 → 各种过滤/跳过 → 下单），动画只负责高亮，不影响数据。
   const visibleEvents = useMemo(() => {
     if (!quantEvents) return null
     const set = new Set(shownSymbols)
-    const now = Date.now()
-    const hitKeys = hitRowKeysRef.current
-    return quantEvents.filter((ev) => {
-      if (ev.symbol && !set.has(ev.symbol)) return false
-      // 命中动画已为该 (币种, 形态) 插入了一行动画记录，
-      // 引擎随后推送的同一条信号不再重复显示（20 秒窗口）。
-      if (ev.kind === "signal" && ev.symbol && ev.pattern) {
-        const t = hitKeys.get(`${ev.symbol}|${ev.pattern}`)
-        if (t && now - t < 20000) return false
-      }
-      return true
-    })
-  }, [quantEvents, shownSymbols.join(","), hitKeyVersion])
+    return quantEvents.filter((ev) => !(ev.symbol && !set.has(ev.symbol)))
+  }, [quantEvents, shownSymbols.join(",")])
 
   // 唯一账户：持仓币种排前，池内持仓但未展示的自动添加到其后
   const account = accounts[0] || null
@@ -186,12 +169,6 @@ export default function App() {
     live.onStatus((s) => setStats((prev) => ({ ...prev, status: s })))
     const offHit = live.on('hit', (h) => {
       if (!settingsRef.current.symbols.includes(h.symbol)) return   // 只提示当前展示的币种
-      // 收线确认命中会同时触发两路数据：hit（动画）与量化引擎的 signal 流水。
-      // 在这里同步登记去重键，保证流水侧从第一条渲染起就把它过滤掉，
-      // 动画随后才负责把这一行「揭示」出来。
-      if (h.mode === 'confirmed') {
-        hitRowKeysRef.current.set(`${h.symbol}|${h.pattern}`, Date.now())
-      }
       const item = { ...h, id: `${h.ts}-${h.symbol}-${h.pattern}-${h.mode}-${Math.random().toString(36).slice(2, 7)}` }
       setHits((x) => [item, ...x].slice(0, 6))
     })
@@ -234,7 +211,9 @@ export default function App() {
   // 后一条等前一条播完再开始。并发播会互相覆盖状态、导致飞线错乱。
   const [flight, setFlight] = useState(null)          // 当前飞线（arc / wobble）
   const [cardFill, setCardFill] = useState(null)      // 形态卡背景扩散 {pattern, ox, oy, grow}
-  const [reservedRows, setReservedRows] = useState([]) // 流水占位行（先空白，飞线到达后揭示）
+  // 飞线落点指向的「真实流水行」高亮：{ key: "symbol|pattern", tone }
+  // 不再伪造占位行——那会在揭示后被删除，导致"闪一下就没了"。
+  const [flashRow, setFlashRow] = useState(null)
   // 形态卡高亮是动画自己的状态，不能用 hits.find——hits 只留最近 6 条，
   // 动画多时旧 hit 被挤出数组会导致卡片背景直接卸载。
   const [cardActive, setCardActive] = useState(null)   // {pattern, direction, symbol}
@@ -246,7 +225,6 @@ export default function App() {
   const queuedRef = useRef(new Set())
   const anchorsRef = useRef({})      // symbol -> () => 最后一根蜡烛的屏幕坐标
   const streamRef = useRef(null)
-  const rowSeqRef = useRef(0)
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -336,48 +314,44 @@ export default function App() {
     setCardFill({ ...p1, grow: true })
     await sleep(400)
 
-    // 5) 先留一行空白（此刻才插入，避免文字提前出现）
-    rowSeqRef.current += 1
-    const rowId = `hitrow-${rowSeqRef.current}`
-    const dirText = hit.direction === "bullish" ? "看涨" : hit.direction === "bearish" ? "看跌" : "中性"
-    const px = Number(hit.price) || 0
-    const ev = {
-      id: rowId,
-      ts: Date.now(),
-      kind: "signal",
-      account: account ? account.name : "",
-      symbol: hit.symbol,
-      reason: `收到 ${hit.name_zh || hit.pattern} ${dirText}信号 @ ${px >= 1000 ? px.toFixed(1) : px.toFixed(4)}`,
-      pattern: hit.pattern,
-      name_zh: hit.name_zh,
-      direction: hit.direction,
+    // 5) 等引擎那条真实的「收到信号」流水行出现（后端在 on_signal 入口统一落库）。
+    //    不再伪造占位行——伪造的行揭示完就被删，用户会看到"闪一下就没了"，
+    //    而真正该看的那一行反而被压掉。现在飞线指向的就是真实行，动画只是
+    //    "把它指出来并高亮一下"，不承担承载数据的职责。
+    const sel = `[data-event-row][data-ev-symbol="${hit.symbol}"][data-ev-pattern="${hit.pattern}"]`
+    const findRow = () => (streamRef.current ? streamRef.current.querySelector(sel) : null)
+    let rowEl = findRow()
+    for (let i = 0; i < 12 && !rowEl; i++) {
+      await sleep(120)
+      rowEl = findRow()
     }
-    hitRowKeysRef.current.set(`${hit.symbol}|${hit.pattern}`, Date.now())
-    setReservedRows((prev) => [...prev, { id: rowId, ev, revealed: false }])
-    await sleep(340)      // 等占位行挂载并自动滚到底
-
-    // 6) 第二段：形态卡徽标 → 刚留出的那一行
-    const badge = cardEl.querySelector('[class*="dir-badge"]') || cardEl
-    const b = badge.getBoundingClientRect()
-    const rowEl = streamRef.current ? streamRef.current.querySelector(`[data-row-id="${rowId}"]`) : null
-    // 目标行可能位于视窗之外（右侧可滚动、流水区在底部）：
-    // 先把行滚进视口再测量，否则飞线终点会落到屏幕外。
-    let rr = rowEl ? rowEl.getBoundingClientRect() : null
-    if (rr && (rr.bottom > window.innerHeight - 12 || rr.top < 12)) {
+    if (!rowEl) {
+      // 引擎还没发出这条记录（或已被过滤规则丢弃）→ 不做无意义的飞线
+      setCardFill(null)
+      if (!jobQueueRef.current.length) setCardActive(null)
+      return true
+    }
+    // 目标行可能在视窗外：先滚进来再测量，否则飞线终点落到屏幕外
+    let rr = rowEl.getBoundingClientRect()
+    if (rr.bottom > window.innerHeight - 12 || rr.top < 12) {
       rowEl.scrollIntoView({ block: "nearest", inline: "nearest" })
       await sleep(160)
       const rr2 = rowEl.getBoundingClientRect()
       if (rr2.width) rr = rr2
     }
+
+    // 6) 第二段：形态卡徽标 → 这条真实流水行
+    const badge = cardEl.querySelector('[class*="dir-badge"]') || cardEl
+    const b = badge.getBoundingClientRect()
     const sRect = streamRef.current ? streamRef.current.getBoundingClientRect() : null
     const clampToViewport = (pt) => ({
       x: Math.min(Math.max(pt.x, 6), window.innerWidth - 6),
       y: Math.min(Math.max(pt.y, 6), window.innerHeight - 6),
     })
-    const to2 = clampToViewport(rr && rr.width
+    const to2 = clampToViewport(rr.width
       ? { x: rr.left + rr.width * 0.5, y: rr.top + rr.height / 2 }
       : { x: (sRect ? sRect.left : 0) + 120, y: (sRect ? sRect.bottom : 0) - 14 })
-    const land2 = await fly({
+    await fly({
       mode: "wobble",
       from: { x: b.left + b.width / 2, y: b.top + b.height / 2 },
       to: to2,
@@ -387,26 +361,12 @@ export default function App() {
       fly: 620,
     })
 
-    // 7) 揭示：文本出现，背景从落点展开
-    const fx = rr ? Math.max(0, Math.min(100, ((land2.to.x - rr.left) / rr.width) * 100)) : 50
-    const fy = rr ? Math.max(0, Math.min(100, ((land2.to.y - rr.top) / rr.height) * 100)) : 50
-    setReservedRows((prev) => prev.map((r) => (
-      r.id === rowId ? { ...r, revealed: true, tone: hit.direction || "neutral", fx, fy, grow: false } : r
-    )))
-    await sleep(40)
-    setReservedRows((prev) => prev.map((r) => (
-      r.id === rowId ? { ...r, grow: true } : r
-    )))
-    await sleep(760)
+    // 7) 高亮这条已存在的行（波纹 + 底色脉冲），不新增/不删除任何内容
+    setFlashRow({ key: `${hit.symbol}|${hit.pattern}`, tone: hit.direction || "neutral" })
+    await sleep(1200)
+    setFlashRow(null)
 
-    // 8) 行背景收回并淡出（之前漏了这步，clip 一直停在 150% 不消散）
-    setReservedRows((prev) => prev.map((r) => (
-      r.id === rowId ? { ...r, fade: true } : r
-    )))
-    await sleep(420)
-    setReservedRows((prev) => prev.filter((r) => r.id !== rowId))
-
-    // 9) 卡片背景淡出，交棒下一条（仅当没有新任务接管时才清高亮）
+    // 8) 卡片背景淡出，交棒下一条（仅当没有新任务接管时才清高亮）
     setCardFill(null)
     if (!jobQueueRef.current.length) setCardActive(null)
     await sleep(120)
@@ -427,20 +387,13 @@ export default function App() {
     ;(async () => {
       while (jobQueueRef.current.length) {
         const job = jobQueueRef.current.shift()
-        const hit = job.hit
-        const key = `${hit.symbol}|${hit.pattern}`
         const waited = Date.now() - job.enqueuedAt
-        if (waited > MAX_WAIT_MS) {
-          dropHitKey(key)                     // 放弃动画 → 流水恢复显示这一行
-          continue
-        }
-        let revealed = false
+        if (waited > MAX_WAIT_MS) continue           // 排队太久 → 跳过动画（流水本就有真实记录）
         try {
-          revealed = await runOne(hit)
+          await runOne(job.hit)
         } catch (e) {
           console.error("[flight] job failed", e)
         }
-        if (!revealed) dropHitKey(key)
       }
       runningRef.current = false
     })()
@@ -467,18 +420,13 @@ export default function App() {
     if (!fresh.length) return
     // 去重集合只保留最近 500 条，防长时间运行无限增长
     if (queuedRef.current.size > 500) queuedRef.current.clear()
-    // hits 最新在前 → 反转成时间正序；上限 8 条防止突发刷屏
+    // hits 最新在前 → 反转成时间正序
     const ordered = fresh.reverse()
     // 队列容量：正在播的 1 条 + 排队 MAX_QUEUE 条。多币同时收线时超出容量的
-    // 命中不再排队（串行播完要好几秒，那时数据早已过时），直接让流水显示。
+    // 命中不再排队（串行播完要好几秒，那时数据早已过时）——流水有真实记录，不影响可读性。
     let room = MAX_QUEUE - jobQueueRef.current.length
     for (const h of ordered) {
-      const rowKey = `${h.symbol}|${h.pattern}`
-      if (room <= 0) continue                      // 不播动画，也不登记去重键 → 流水照常显示
-      // 立刻登记去重键：量化引擎推送的同一条 signal 流水（几乎与 hit 同时到达）
-      // 必须从这一刻起就被 visibleEvents 过滤掉，否则流水里会先出现一行、
-      // 而动画还在队列里等——那正是"流水先有、动画后跑"的滞后感来源。
-      hitRowKeysRef.current.set(rowKey, Date.now())
+      if (room <= 0) continue
       jobQueueRef.current.push({ hit: h, enqueuedAt: Date.now() })
       room--
     }
@@ -736,7 +684,7 @@ export default function App() {
       {/* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3） */}
       <div className="row3">
         <QuantPanel snapshot={quantSnap} events={visibleEvents} chartColors={chartColors}
-          reservedRows={reservedRows} streamRef={streamRef}
+          flashRow={flashRow} streamRef={streamRef}
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
         <PositionHistory trades={quantTrades} chartColors={chartColors} />
         <NewsFeed items={newsItems} />

@@ -22,6 +22,20 @@
   height: 22px;              /* 与 ROW_H 一致 */
   will-change: transform;
 }
+/* 飞线落点高亮：真实行原地闪一下（不新增/不删除内容） */
+.rowSlot[data-flash="y"] {
+  border-radius: 5px;
+  animation: flashRowPulse 1200ms ease-out;
+}
+.rowSlot[data-flash="y"][data-flash-tone="bullish"] { --flash: 13 148 136; }
+.rowSlot[data-flash="y"][data-flash-tone="bearish"] { --flash: 225 29 72; }
+.rowSlot[data-flash="y"][data-flash-tone="neutral"] { --flash: 100 116 139; }
+@keyframes flashRowPulse {
+  0%   { background: rgb(var(--flash, 100 116 139) / 0);   box-shadow: 0 0 0 0 rgb(var(--flash, 100 116 139) / 0.34); }
+  22%  { background: rgb(var(--flash, 100 116 139) / 0.16); box-shadow: 0 0 0 2px rgb(var(--flash, 100 116 139) / 0.34); }
+  60%  { background: rgb(var(--flash, 100 116 139) / 0.09); box-shadow: 0 0 0 3px rgb(var(--flash, 100 116 139) / 0.12); }
+  100% { background: rgb(var(--flash, 100 116 139) / 0);   box-shadow: 0 0 0 4px rgb(var(--flash, 100 116 139) / 0); }
+}
 
 /* 一条记录：图标 · 时间 · 内容（中间省略）· tag · 盈亏 */
 .row {
