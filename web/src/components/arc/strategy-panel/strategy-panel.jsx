@@ -170,12 +170,12 @@ export default function StrategyPanel({ analysis, symbols, chartColors, onMetric
     const panelRect = document.querySelector(".strategy-slot")?.getBoundingClientRect()
     for (const [sym, st] of cards) {
       const metrics = [
-        { id: "rsi", label: "RSI", value: st?.rsi, threshold: 2, ratio: (v) => clamp(v, 0, 100) / 100 },
-        { id: "pctB", label: "%B", value: st?.boll?.pctB, threshold: 0.04, ratio: (v) => clamp((v + 0.2) / 1.4, 0, 1) },
-        { id: "z", label: "Z", value: st?.z, threshold: 0.12, ratio: (v) => clamp((v + 3) / 6, 0, 1) },
-        { id: "adx", label: "ADX", value: st?.adx, threshold: 1.2, ratio: (v) => clamp(v / 50, 0, 1) },
-        { id: "roc", label: "ROC", value: st?.roc, threshold: 0.0008, ratio: (v) => 0.5 + clamp(v / 0.015, -1, 1) * 0.5 },
-        { id: "bw", label: "BW", value: st?.bwPct, threshold: 3, ratio: (v) => clamp(v / 100, 0, 1) },
+        { id: "rsi", label: "RSI", value: st?.rsi, threshold: 1, ratio: (v) => clamp(v, 0, 100) / 100 },
+        { id: "pctB", label: "%B", value: st?.boll?.pctB, threshold: 0.025, ratio: (v) => clamp((v + 0.2) / 1.4, 0, 1) },
+        { id: "z", label: "Z", value: st?.z, threshold: 0.08, ratio: (v) => clamp((v + 3) / 6, 0, 1) },
+        { id: "adx", label: "ADX", value: st?.adx, threshold: 0.5, ratio: (v) => clamp(v / 50, 0, 1) },
+        { id: "roc", label: "ROC", value: st?.roc, threshold: 0.00025, ratio: (v) => 0.5 + clamp(v / 0.015, -1, 1) * 0.5 },
+        { id: "bw", label: "BW", value: st?.bwPct, threshold: 1.5, ratio: (v) => clamp(v / 100, 0, 1) },
       ]
       for (const metric of metrics) {
         const key = `${sym}:${metric.id}`
@@ -233,7 +233,7 @@ export default function StrategyPanel({ analysis, symbols, chartColors, onMetric
             x: rect.left + rect.width * metric.ratio(current),
             y: rect.top + rect.height / 2,
           },
-          delay: reduced ? 0 : 115,
+          delay: reduced ? 0 : 115 + Math.random() * 430,
           duration: reduced ? 300 : 1180 + Math.random() * 620,
           ts: now,
         })
