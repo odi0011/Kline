@@ -177,17 +177,18 @@
   opacity: 0.9;
 }
 
-/* ATR / 带宽 / DI 明细 */
+/* ATR / 带宽 / DI 明细：允许换行，宁可两行也不裁字 */
 .detail {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 2px;
+  gap: 0 4px;
   font-size: 7.5px;
+  line-height: 1.35;
   color: var(--text-muted, #98a1ae);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
 }
+.detail span { white-space: nowrap; }
 
 .empty {
   font-size: 9.5px;

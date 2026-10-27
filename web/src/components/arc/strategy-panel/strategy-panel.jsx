@@ -183,12 +183,14 @@ export default function StrategyPanel({ analysis }) {
                     </span>
                   </div>
                   <div className={styles.detail}>
-                    <span title="平均真实波幅">ATR {num(st?.atr, st?.atr >= 100 ? 2 : 6)}</span>
+                    <span title="平均真实波幅">
+                      ATR {st?.atr == null ? "--" : st.atr >= 100 ? st.atr.toFixed(1) : st.atr >= 1 ? st.atr.toFixed(2) : st.atr.toPrecision(3)}
+                    </span>
                     <span title="布林带宽">
                       BW {st?.boll?.bandwidth != null ? (st.boll.bandwidth * 100).toFixed(2) + "%" : "--"}
                     </span>
                     <span title="方向性指标 +DI / -DI">
-                      {num(st?.plusDI, 0)}/{num(st?.minusDI, 0)}
+                      DI {num(st?.plusDI, 0)}/{num(st?.minusDI, 0)}
                     </span>
                   </div>
                 </div>
