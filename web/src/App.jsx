@@ -176,6 +176,12 @@ export default function App() {
     live.onStatus((s) => setStats((prev) => ({ ...prev, status: s })))
     const offHit = live.on('hit', (h) => {
       if (!settingsRef.current.symbols.includes(h.symbol)) return   // 只提示当前展示的币种
+      // 收线确认命中会同时触发两路数据：hit（动画）与量化引擎的 signal 流水。
+      // 在这里同步登记去重键，保证流水侧从第一条渲染起就把它过滤掉，
+      // 动画随后才负责把这一行「揭示」出来。
+      if (h.mode === 'confirmed') {
+        hitRowKeysRef.current.set(`${h.symbol}|${h.pattern}`, Date.now())
+      }
       const item = { ...h, id: `${h.ts}-${h.symbol}-${h.pattern}-${h.mode}-${Math.random().toString(36).slice(2, 7)}` }
       setHits((x) => [item, ...x].slice(0, 6))
     })
@@ -264,9 +270,9 @@ export default function App() {
   const runOne = async (hit) => {
     // 标记该形态卡为高亮态（滚动与背景扩散都用它）
     setCardActive({ pattern: hit.pattern, direction: hit.direction || "neutral", symbol: hit.symbol })
-    // 1) 形态卡滚动居中，等滚动动画结束（120ms 延迟 + 680ms 动画）
-    scrollToPattern(hit.pattern)
-    await sleep(860)
+    // 1) 形态卡滚动居中。滚动距离为 0 时不必等满 860ms，否则流水动画会明显滞后。
+    const needScroll = scrollToPattern(hit.pattern)
+    await sleep(needScroll ? 720 : 60)
 
     const cardEl = document.querySelector(`.pattern-card[data-key="${hit.pattern}"]`)
     if (!cardEl) return
@@ -289,7 +295,7 @@ export default function App() {
       direction: hit.direction || "neutral",
       pattern: hit.pattern,
       dot: 3,
-      fly: 700,
+      fly: 520,
     })
 
     // 4) 卡片背景从落点铺开
@@ -300,9 +306,9 @@ export default function App() {
       grow: false,
     }
     setCardFill(p1)
-    await sleep(40)
+    await sleep(30)
     setCardFill({ ...p1, grow: true })
-    await sleep(680)
+    await sleep(400)
 
     // 5) 先留一行空白（此刻才插入，避免文字提前出现）
     rowSeqRef.current += 1
@@ -413,6 +419,10 @@ export default function App() {
       const key = h.id || `${h.ts}-${h.symbol}-${h.pattern}`
       if (queuedRef.current.has(key)) continue
       queuedRef.current.add(key)
+      // 立刻登记去重键：量化引擎推送的同一条 signal 流水（几乎与 hit 同时到达）
+      // 必须从这一刻起就被 visibleEvents 过滤掉，否则流水里会先出现一行、
+      // 而动画还在队列里等——那正是"流水先有、动画后跑"的滞后感来源。
+      hitRowKeysRef.current.set(`${h.symbol}|${h.pattern}`, Date.now())
       fresh.push(h)
     }
     if (!fresh.length) return
@@ -495,16 +505,18 @@ export default function App() {
   })
 
   // 滚动到指定形态卡片（居中）：纯数据计算目标位置（不依赖布局测量，页面冻结时也能滚动）
+  // 返回是否真的需要滚动（调用方据此决定要不要等动画时长）。
   const lastScrollPatternRef = useRef('')
   const scrollToPattern = (patternKey) => {
-    if (!patternKey || lastScrollPatternRef.current === patternKey) return
+    if (!patternKey || lastScrollPatternRef.current === patternKey) return false
     const vp = cardsViewportRef.current || document.querySelector('.right [class*="viewport"]')
     const keys = Object.keys(PATTERN_META)
     const idx = keys.indexOf(patternKey)
-    if (!vp || idx < 0) return
+    if (!vp || idx < 0) return false
     lastScrollPatternRef.current = patternKey
     const colW = 176 + 12                              // grid-auto-columns + gap
     const target = Math.max(0, idx * colW + colW / 2 - vp.clientWidth / 2)
+    if (Math.abs(vp.scrollLeft - target) < 2) return false
     let rafAlive = false
     requestAnimationFrame(() => { rafAlive = true })
     setTimeout(() => {
@@ -513,7 +525,7 @@ export default function App() {
       const diff = target - start
       if (Math.abs(diff) < 2) return
       const t0 = performance.now()
-      const dur = 680
+      const dur = 520
       const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)  // easeInOutCubic
       const step = (now) => {
         const p = Math.min(1, (now - t0) / dur)
@@ -521,7 +533,8 @@ export default function App() {
         if (p < 1) requestAnimationFrame(step)
       }
       requestAnimationFrame(step)
-    }, 120)
+    }, 60)
+    return true
   }
 
   const sel = shownSymbols || []   // 勾选状态 = 实际展示，避免未回写时全不勾
