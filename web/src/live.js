@@ -128,6 +128,12 @@ export class LiveClient {
     } else if (m.type === 'news') {
       this.news = m.items || []
       this._emitKey('news', m)
+    } else if (m.type === 'ai_models') {
+      this._emitKey('ai_models', m)
+    } else if (m.type === 'ai_test') {
+      this._emitKey('ai_test', m)
+    } else if (m.type === 'ai_meta') {
+      this._emitKey('ai_meta', m)
     } else if (m.type === 'quant_event') {
       this._emitKey('quant_event', m.event)
     } else if (m.type === 'stats') {

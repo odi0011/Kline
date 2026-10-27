@@ -15,6 +15,28 @@ import MorphSelect from "@/components/arc/morph-select/morph-select"
 import styles from "./settings-dialog.module.css"
 
 const CAP_LABEL = { text: "文本", vision: "识图", pdf: "PDF", video: "视频" }
+
+/* 按模型名猜默认能力与上下文（与后端 ai/provider.guess_model_meta 同规则）。
+   添加模型时用它预填，用户可以再改。 */
+const META_RULES = [
+  [/gpt-4o|gpt-4\.1|gpt-5/, ["text", "vision", "pdf"], 128000],
+  [/^o1|^o3|^o4/, ["text", "vision"], 200000],
+  [/deepseek/, ["text"], 65536],
+  [/claude/, ["text", "vision", "pdf"], 200000],
+  [/gemini/, ["text", "vision", "pdf", "video"], 1000000],
+  [/qwen|qvq/, ["text", "vision"], 131072],
+  [/glm-4v/, ["text", "vision"], 8192],
+  [/glm/, ["text"], 131072],
+  [/moonshot|kimi/, ["text"], 131072],
+  [/llava|minicpm-v|internvl/, ["text", "vision"], 32768],
+]
+const guessMeta = (id) => {
+  const s = String(id || "").toLowerCase()
+  for (const [re, caps, ctx] of META_RULES) {
+    if (re.test(s)) return { caps: [...caps], ctx }
+  }
+  return { caps: ["text"], ctx: 8192 }
+}
 const CTX_OPTIONS = [8192, 16384, 32768, 65536, 131072, 200000, 1000000]
 
 /** 单个模型卡片 */
@@ -170,11 +192,11 @@ export default function AiPane({ ai, onSave, onAiAction, aiModelsResult, aiTestR
     const add = picked
       .filter((id) => !existing.has(id))
       .map((id) => {
-        const meta = aiModelsResult?.meta?.[id] || {}
+        const meta = aiModelsResult?.meta?.[id] || guessMeta(id)
         return {
           id, label: id, icon: "",
-          caps: meta.caps || ["text"],
-          ctx: meta.ctx || 8192,
+          caps: meta.caps,
+          ctx: meta.ctx,
           system: "",
           active: draft.models.length === 0 && id === picked[0],
         }
