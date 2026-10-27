@@ -16,6 +16,7 @@ import QuantPanel from '@/components/arc/quant-panel/quant-panel'
 import PositionHistory from '@/components/arc/position-history/position-history'
 import NewsFeed from '@/components/arc/news-feed/news-feed'
 import StrategyPanel from '@/components/arc/strategy-panel/strategy-panel' 
+import DecisionOrchestrator from '@/components/arc/decision-orchestrator/decision-orchestrator'
 import HitFlight from './HitFlight.jsx'
 import { hexHue } from './lib/account-theme'
 import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins, Settings } from 'lucide-react'
@@ -705,13 +706,17 @@ export default function App() {
               chartColors={chartColors} />
           </div>
         </div>
-      {/* 第二行：决策依据可视化只占左侧 40%，右侧 60% 留给后续模块 */}
+      {/* 第二行：左侧币种分析 / 右侧实时决策编排，各占 50% */}
       <div className="row2">
         <div className="strategy-slot">
           <StrategyPanel analysis={quantSnap && quantSnap.analysis} symbols={orderedSymbols}
             chartColors={chartColors} />
         </div>
-        <div className="row2-rest" />
+        <div className="orchestrator-slot">
+          <DecisionOrchestrator analysis={quantSnap && quantSnap.analysis}
+            symbols={orderedSymbols} patternStats={patternStats}
+            chartColors={chartColors} />
+        </div>
       </div>
       {/* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3） */}
       <div className="row3">

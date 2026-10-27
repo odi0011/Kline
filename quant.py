@@ -15,6 +15,7 @@ No UI state lives here. All new factors and switching logic are backend-only.
 from __future__ import annotations
 
 import functools
+import copy
 import json
 import math
 import os
@@ -125,6 +126,9 @@ class QuantEngine:
         self.bars_fn = None                # main 注入：symbol -> list[Candle]（指标计算用）
         self.equity_fn = None              # main 注入：() -> list[float]（回撤熔断用）
         self.indicators: dict[str, dict] = {}   # symbol -> 市场状态（每轮刷新）
+        self.live_features: dict[str, dict] = {}   # symbol -> 实时因子快照
+        self.live_evaluations: dict[str, dict] = {}
+        self.live_score_history: dict[str, deque] = {}
         self.gate_log: deque = deque(maxlen=GATE_MAX_LOG)  # 最近的过滤器拦截记录
         self.dd_state = {"paused_until": 0, "current": 0.0, "max": 0.0, "peak": 0.0}
         # 交易范围：只处理前端实际展示的币种（None/空 = 不限制）。
@@ -158,6 +162,9 @@ class QuantEngine:
         self._recent_entry_slippage: deque = deque(maxlen=3)
         self._rest_pause_until = 0
         self._permission_pause_until = 0
+        self.decision_traces: deque = deque(maxlen=24)
+        self.latest_traces: dict[str, dict] = {}
+        self._trace_seq = 0
         self._drift_detectors: dict[str, dict[str, ADWIN]] = {}
         self._drift_last_alert: dict[tuple[str, str], int] = {}
         self._drift_last_global_alert = 0
@@ -201,6 +208,59 @@ class QuantEngine:
             except Exception:
                 pass
         return ev
+
+    def _trace_start(self, hit: dict, price: float | None) -> dict:
+        self._trace_seq += 1
+        now = _now_ms()
+        trace = {
+            "id": f"tr-{now}-{self._trace_seq}",
+            "ts": now,
+            "updatedAt": now,
+            "symbol": str(hit.get("symbol") or "").lower(),
+            "pattern": hit.get("pattern"),
+            "nameZh": hit.get("name_zh"),
+            "direction": hit.get("direction"),
+            "price": float(price) if price else None,
+            "status": "running",
+            "statusLabel": "计算中",
+            "account": "",
+            "stages": [],
+            "factors": {},
+            "score": None,
+            "watch": None,
+            "risk": None,
+            "execution": None,
+        }
+        return trace
+
+    def _trace_stage(self, trace: dict | None, stage_id: str, label: str,
+                     status: str, summary: str = "", **data) -> None:
+        if trace is None:
+            return
+        stage = {
+            "id": stage_id, "label": label, "status": status,
+            "summary": summary, "ts": _now_ms(), **data,
+        }
+        stages = trace.setdefault("stages", [])
+        for index, existing in enumerate(stages):
+            if existing.get("id") == stage_id:
+                stages[index] = stage
+                break
+        else:
+            stages.append(stage)
+        trace["updatedAt"] = stage["ts"]
+        trace["status"] = "running" if status == "running" else trace.get("status", "running")
+
+    def _finish_trace(self, trace: dict | None, status: str, label: str,
+                      summary: str = "", **data) -> None:
+        if trace is None:
+            return
+        trace.update({
+            "status": status, "statusLabel": label,
+            "updatedAt": _now_ms(), "summary": summary, **data,
+        })
+        self.decision_traces.append(trace)
+        self.latest_traces[trace["symbol"]] = trace
 
     def _load_trades(self):
         self.trades: list[dict] = []
@@ -548,6 +608,43 @@ class QuantEngine:
                 if cs and len(cs) >= 30:
                     state = IND.market_state(cs)
                     self.indicators[sym] = state
+                    features = self._build_features(sym, cs, state, "bullish")
+                    self.live_features[sym] = {
+                        "macd": features.get("macd"),
+                        "squeeze": features.get("squeeze"),
+                        "cvd": features.get("cvd"),
+                        "vsaBull": features.get("vsaBull"),
+                        "vsaBear": features.get("vsaBear"),
+                        "obi": features.get("obi"),
+                        "oi": features.get("oi"),
+                        "funding": features.get("funding"),
+                        "sentiment": features.get("sentiment"),
+                        "htf": features.get("htf"),
+                        "hmm": features.get("hmm"),
+                        "liquidation": features.get("liquidation"),
+                    }
+                    if self.decision_cfg.scoring_enabled:
+                        bull = score_signal("bullish", state, features, self.decision_cfg)
+                        bear = score_signal("bearish", state, features, self.decision_cfg)
+                        direction = "bullish" if bull.score >= bear.score else "bearish"
+                        side_score = bull if direction == "bullish" else bear
+                        self.live_evaluations[sym] = {
+                            "ts": _now_ms(),
+                            "direction": direction,
+                            "score": side_score.score,
+                            "oppositeScore": side_score.opposite_score,
+                            "gap": side_score.gap,
+                            "grade": side_score.grade,
+                            "confidence": side_score.confidence,
+                            "breakdown": side_score.breakdown,
+                            "reasons": side_score.reasons,
+                            "vetoes": side_score.vetoes,
+                            "bull": bull.score,
+                            "bear": bear.score,
+                        }
+                        history = self.live_score_history.setdefault(
+                            sym, deque(maxlen=24))
+                        history.append({"ts": _now_ms(), "score": side_score.score})
                     if self.decision_cfg.drift_enabled and state.get("roc") is not None:
                         bucket = int(getattr(cs[-1], "open_time", 0) or 0)
                         if self._vol_last_bar.get(sym) != bucket:
@@ -883,6 +980,14 @@ class QuantEngine:
             self.stats["signals"] += 1
             direction = hit.get("direction")
             price = (self.price_fn or (lambda s: None))(symbol)
+            trace = self._trace_start(hit, price)
+            trace["account"] = self._primary_account()
+            self._trace_stage(
+                trace, "intake", "信号接收", "done",
+                f"{hit.get('name_zh') or hit.get('pattern') or '形态'} · "
+                f"{'看涨' if direction == 'bullish' else '看跌' if direction == 'bearish' else '中性'}",
+                price=price, pattern=hit.get("pattern"), direction=direction,
+            )
             # 每条确认信号都先落一条「收到信号」：流水必须能看到"系统收到了什么信号"，
             # 否则被过滤/中性的信号只剩一条拦截原因，回看时无法判断到底收到过什么。
             dir_text = {"bullish": "看涨", "bearish": "看跌"}.get(direction, "中性")
@@ -897,9 +1002,12 @@ class QuantEngine:
                 self._event("skip", f"{hit.get('name_zh') or '中性形态'}没有方向，不下单",
                             account=self._primary_account(), symbol=symbol,
                             pattern=hit.get("pattern"), name_zh=hit.get("name_zh"))
+                self._finish_trace(trace, "neutral", "无方向",
+                                   "中性形态，等待下一根确认")
                 return
             if not price or price <= 0:
                 self._event("skip", "取不到最新价，这次信号跳过", account=self._primary_account(), symbol=symbol)
+                self._finish_trace(trace, "error", "无报价", "取不到最新价")
                 return
             bars = self.bars_fn(symbol) if self.bars_fn else []
             st = self.indicators.get(symbol) or {}
@@ -907,6 +1015,30 @@ class QuantEngine:
                 st = IND.market_state(bars)
                 self.indicators[symbol] = st
             features = self._build_features(symbol, bars, st, direction)
+            trace["factors"] = {
+                "regime": st.get("regime"),
+                "volState": st.get("volState"),
+                "rsi": st.get("rsi"),
+                "z": st.get("z"),
+                "adx": st.get("adx"),
+                "roc": st.get("roc"),
+                "atrPct": st.get("atrPct"),
+                "squeeze": features.get("squeeze"),
+                "macd": features.get("macd"),
+                "cvd": features.get("cvd"),
+                "obi": features.get("obi"),
+                "oi": features.get("oi"),
+                "funding": features.get("funding"),
+                "sentiment": features.get("sentiment"),
+                "htf": features.get("htf"),
+                "hmm": features.get("hmm"),
+                "liquidation": features.get("liquidation"),
+            }
+            self._trace_stage(
+                trace, "features", "数据协作", "done",
+                f"技术 / 量价 / 衍生品 / 信息面已汇总",
+                factors=trace["factors"],
+            )
             pattern_stats = self.pattern_stats_fn() if self.pattern_stats_fn else {}
             signal_score = None
             if self.decision_cfg.scoring_enabled:
@@ -914,6 +1046,7 @@ class QuantEngine:
                     why = "市场状态数据不足，无法计算共鸣分"
                     self._event("skip", f"信号评分拦截：{why}", account=self._primary_account(),
                                 symbol=symbol, pattern=hit.get("pattern"))
+                    self._finish_trace(trace, "blocked", "数据不足", why)
                     return
                 signal_score = score_signal(
                     direction, st, features, self.decision_cfg,
@@ -921,6 +1054,20 @@ class QuantEngine:
                 )
                 if not signal_score.allowed:
                     why = "；".join(signal_score.vetoes) or "信号分不足"
+                    trace["score"] = {
+                        "allowed": signal_score.allowed,
+                        "score": signal_score.score,
+                        "oppositeScore": signal_score.opposite_score,
+                        "gap": signal_score.gap,
+                        "grade": signal_score.grade,
+                        "confidence": signal_score.confidence,
+                        "breakdown": signal_score.breakdown,
+                        "reasons": signal_score.reasons,
+                        "vetoes": signal_score.vetoes,
+                    }
+                    self._trace_stage(
+                        trace, "score", "共鸣评分", "blocked", why,
+                        score=trace["score"])
                     self.gate_log.append({
                         "ts": _now_ms(), "symbol": symbol, "direction": direction,
                         "reason": why, "score": signal_score.score,
@@ -931,52 +1078,90 @@ class QuantEngine:
                                 account=self._primary_account(), symbol=symbol,
                                 pattern=hit.get("pattern"), score=signal_score.score,
                                 gap=signal_score.gap)
+                    self._finish_trace(trace, "blocked", "评分未通过", why,
+                                       score=trace["score"])
                     return
+                trace["score"] = {
+                    "allowed": signal_score.allowed,
+                    "score": signal_score.score,
+                    "oppositeScore": signal_score.opposite_score,
+                    "gap": signal_score.gap,
+                    "grade": signal_score.grade,
+                    "confidence": signal_score.confidence,
+                    "breakdown": signal_score.breakdown,
+                    "reasons": signal_score.reasons,
+                    "vetoes": signal_score.vetoes,
+                }
+                self._trace_stage(
+                    trace, "score", "共鸣评分", "done",
+                    f"{signal_score.score:.0f} 分 · {signal_score.grade} · "
+                    f"分离度 {signal_score.gap:.0f}",
+                    score=trace["score"])
             elif USE_MARKET_GATE and st:
                 ok, why = IND.signal_gate(st, direction)
                 if not ok:
+                    self._trace_stage(trace, "score", "环境过滤", "blocked", why)
                     self.gate_log.append({
                         "ts": _now_ms(), "symbol": symbol, "direction": direction,
                         "reason": why,
                     })
                     self._event("skip", f"市场状态过滤：{why}", account=self._primary_account(),
                                 symbol=symbol, pattern=hit.get("pattern"))
+                    self._finish_trace(trace, "blocked", "环境未通过", why)
                     return
             # 「收到信号」记录已在入口处统一落库，这里不再重复发。
             side = "BUY" if direction == "bullish" else "SELL"
-            for a in self._tradable_accounts():
+            accounts = self._tradable_accounts()
+            if not accounts:
+                self._finish_trace(trace, "skipped", "无账户", "没有可交易账户")
+                return
+            for index, a in enumerate(accounts):
                 name = a.get("name", "")
                 try:
+                    account_trace = copy.deepcopy(trace)
+                    account_trace["id"] = f"{trace['id']}-{index}"
+                    account_trace["account"] = name
                     self._decide_open(name, a, symbol, side, direction, float(price), hit,
                                       features=features, signal_score=signal_score,
-                                      bars=bars)
+                                      bars=bars, trace=account_trace)
                 except Exception as e:
                     self.stats["errors"] += 1
                     self._event("error", f"决策异常({name}/{symbol}): {e}", symbol=symbol)
+                    self._finish_trace(
+                        account_trace, "error", "决策异常", str(e),
+                        execution={"error": str(e)},
+                    )
         except Exception as e:
             self.stats["errors"] += 1
             self._event("error", f"信号处理异常: {e}")
 
     def _decide_open(self, name, a, symbol, side, direction, price, hit,
-                     features=None, signal_score=None, bars=None):
+                     features=None, signal_score=None, bars=None, trace=None):
+        if trace is None:
+            trace = self._trace_start(hit, price)
+            trace["account"] = name
         st = self._st(name)
         now = _now_ms()
         if symbol in self._unsupported:
+            self._finish_trace(trace, "blocked", "合约不可用", "该合约未开通或已跳过")
             return
         if now < self._rest_pause_until:
             left = int((self._rest_pause_until - now) / 1000)
             self._event("skip", f"交易所限频冷却中，还需 {left} 秒",
                         account=name, symbol=symbol, reasonCode="rest_pause")
+            self._finish_trace(trace, "blocked", "执行冷却", "交易所 REST 限频")
             return
         if now < self._permission_pause_until:
             left = int((self._permission_pause_until - now) / 1000)
             self._event("skip", f"API 权限异常冷却中，还需 {left} 秒",
                         account=name, symbol=symbol, reasonCode="permission_pause")
+            self._finish_trace(trace, "blocked", "权限异常", "API Key/权限需要检查")
             return
         if now < self._drift_shadow_until:
             left = int((self._drift_shadow_until - now) / 1000)
             self._event("skip", f"机制漂移影子模式中，停止真实开仓（还剩 {left} 秒）",
                         account=name, symbol=symbol, reasonCode="drift_shadow")
+            self._finish_trace(trace, "blocked", "影子模式", "机制漂移，停止真实开仓")
             return
         drift_caution = now < self._drift_caution_until
         equity, avail = self._balance_snapshot(a)
@@ -988,6 +1173,8 @@ class QuantEngine:
             if not watched:
                 self._event("skip", "4h/1h 盯盘数据未就绪，暂不开仓",
                             account=name, symbol=symbol)
+                self._finish_trace(trace, "blocked", "多周期未就绪",
+                                   "4h/1h 盯盘数据未就绪")
                 return
             entry_bars, h1_bars, h4_bars = watched
             watch_plan = build_watch_plan(
@@ -996,6 +1183,14 @@ class QuantEngine:
                 entry_price=price,
             )
             if not watch_plan.allowed:
+                trace["watch"] = {
+                    "allowed": False, "reason": watch_plan.reason,
+                    "code": watch_plan.code, "h4Direction": watch_plan.h4_direction,
+                    "h1Rules": watch_plan.h1_rules, "metrics": watch_plan.metrics,
+                }
+                self._trace_stage(
+                    trace, "watch", "多周期确认", "blocked", watch_plan.reason,
+                    watch=trace["watch"])
                 self.gate_log.append({
                     "ts": now, "symbol": symbol, "direction": direction,
                     "reason": f"多周期盯盘：{watch_plan.reason}",
@@ -1003,7 +1198,25 @@ class QuantEngine:
                 })
                 self._event("skip", f"多周期盯盘：{watch_plan.reason}",
                             account=name, symbol=symbol, pattern=hit.get("pattern"))
+                self._finish_trace(trace, "blocked", "多周期未通过",
+                                   watch_plan.reason, watch=trace["watch"])
                 return
+            trace["watch"] = {
+                "allowed": True,
+                "h4Direction": watch_plan.h4_direction,
+                "h1Rules": watch_plan.h1_rules,
+                "metrics": watch_plan.metrics,
+                "entry": watch_plan.entry,
+                "sl": watch_plan.sl,
+                "tp": watch_plan.tp,
+                "qty": watch_plan.qty,
+                "score": watch_plan.score,
+            }
+            passed_h1 = sum(1 for row in watch_plan.h1_rules if row.get("passed"))
+            self._trace_stage(
+                trace, "watch", "多周期确认", "done",
+                f"4h {watch_plan.h4_direction} · 1h {passed_h1} 条通过",
+                watch=trace["watch"])
         if not self.decision_cfg.scoring_enabled and self.pattern_stats_fn:
             pst = (self.pattern_stats_fn() or {}).get(hit.get("pattern")) or {}
             wins = int(pst.get("wins") or 0)
@@ -1011,12 +1224,17 @@ class QuantEngine:
             if wins + losses >= self.min_pattern_samples:
                 winrate = wins / (wins + losses)
                 if winrate < self.min_pattern_winrate:
+                    self._trace_stage(
+                        trace, "pattern", "历史优势", "blocked",
+                        f"滚动胜率 {winrate * 100:.0f}%")
                     self._event(
                         "skip",
                         f"该形态历史胜率仅 {round(winrate * 100)}%，低于门槛 "
                         f"{round(self.min_pattern_winrate * 100)}%，跳过",
                         account=name, symbol=symbol,
                     )
+                    self._finish_trace(trace, "blocked", "形态优势不足",
+                                       f"滚动胜率 {winrate * 100:.0f}%")
                     return
         st_ind = self.indicators.get(symbol) or {}
         if not st_ind and bars and len(bars) >= 30:
@@ -1069,7 +1287,17 @@ class QuantEngine:
             cooldown_extra_sec=900 if drift_caution else 0,
         )
         decision = self.risk.evaluate(risk_input)
+        trace["risk"] = {
+            "allowed": decision.allowed, "code": decision.code,
+            "reason": decision.reason, "qty": decision.qty,
+            "notional": decision.notional, "sizeFactor": decision.size_factor,
+            "kellyPct": decision.kelly_pct, "riskPct": decision.risk_pct,
+            "heatPct": decision.heat_pct, "correlationMax": decision.correlation_max,
+            "warnings": decision.warnings, "metrics": decision.metrics,
+        }
         if not decision.allowed:
+            self._trace_stage(trace, "risk", "统一风控", "blocked",
+                              decision.reason, risk=trace["risk"])
             self.gate_log.append({
                 "ts": now, "symbol": symbol, "direction": direction,
                 "reason": decision.reason, "code": decision.code,
@@ -1078,7 +1306,14 @@ class QuantEngine:
             self._event("skip", f"统一风控：{decision.reason}",
                         account=name, symbol=symbol, pattern=hit.get("pattern"),
                         riskCode=decision.code)
+            self._finish_trace(trace, "blocked", "风控未通过",
+                               decision.reason, risk=trace["risk"])
             return
+        self._trace_stage(
+            trace, "risk", "统一风控", "done",
+            f"数量 {decision.qty} · 热度 {decision.heat_pct:.2f}% · "
+            f"Kelly {decision.kelly_pct * 100:.1f}%",
+            risk=trace["risk"])
         qty = decision.qty
         self.risk.record_order_attempt(name, now)
         try:
@@ -1087,16 +1322,23 @@ class QuantEngine:
             self.stats["errors"] += 1
             if self._mark_unsupported(symbol, e):
                 st["cooldown"][symbol] = now
+                self._finish_trace(trace, "error", "下单失败", str(e),
+                                   execution={"error": str(e)})
                 return
             st["cooldown"][symbol] = now
             self._event("error", f"下单失败({name}/{symbol}): {e}", symbol=symbol)
+            self._finish_trace(trace, "error", "下单失败", str(e),
+                               execution={"error": str(e)})
             return
         if not r:
             st["cooldown"][symbol] = now
+            self._finish_trace(trace, "skipped", "未成交",
+                               "限价单超时，信号放弃", execution={"order": "unfilled"})
             return
         qty = float(r.get("executedQty") or qty)
         qty = self._quantize(qty, self._step_size(a["api_key"], a["api_secret"], symbol))
         if qty <= 0:
+            self._finish_trace(trace, "skipped", "数量为零", "步长取整后数量为 0")
             return
         entry_price = float(r.get("avgPrice") or price)
         adverse_slippage = (entry_price - price) * (1 if side == "BUY" else -1)
@@ -1128,6 +1370,9 @@ class QuantEngine:
                             f"保护单挂载失败，已拒绝裸仓({name}/{symbol}): {e}",
                             account=name, symbol=symbol)
                 self._cancel_protection(a, symbol)
+                self._finish_trace(trace, "error", "保护单失败",
+                                   "保护单挂载失败，已拒绝裸仓",
+                                   execution={"error": str(e)})
                 return
         pos = {
             "symbol": symbol, "side": side, "qty": qty,
@@ -1173,6 +1418,27 @@ class QuantEngine:
             slOrderId=sl_order_id, tpOrderId=tp_order_id,
         )
         self._broadcast_positions()
+        trace["execution"] = {
+            "type": pos["executionType"],
+            "entry": entry_price,
+            "qty": qty,
+            "notional": pos["margin"],
+            "sl": pos["sl"],
+            "tp": pos["tp"],
+            "slOrderId": sl_order_id,
+            "tpOrderId": tp_order_id,
+            "slippageAtr": pos["slippageAtr"],
+        }
+        self._trace_stage(
+            trace, "execution", "执行与保护", "done",
+            f"{pos['executionType']} · {qty} @ {entry_price}",
+            execution=trace["execution"])
+        self._finish_trace(
+            trace, "opened", "已开仓",
+            f"{'做多' if side == 'BUY' else '做空'} {symbol.upper()} · "
+            f"{qty} @ {entry_price}",
+            execution=trace["execution"],
+        )
 
     @staticmethod
     def _invalidation_price(hit: dict, side: str, atr: float | None) -> float | None:
@@ -1631,6 +1897,11 @@ class QuantEngine:
             "analysis": {
                 # 每个币种的完整指标与状态
                 "symbols": {sym: self._public_state(st) for sym, st in self.indicators.items()},
+                "liveFeatures": dict(self.live_features),
+                "liveEvaluations": dict(self.live_evaluations),
+                "liveScoreHistory": {
+                    sym: list(history) for sym, history in self.live_score_history.items()
+                },
                 # 账户回撤与熔断
                 "drawdown": {
                     "current": self.dd_state.get("current", 0),
@@ -1648,6 +1919,8 @@ class QuantEngine:
                 },
                 # 过滤器拦截记录（最近 N 条）
                 "gateLog": list(self.gate_log)[-20:],
+                "decisionTraces": list(self.decision_traces)[-16:],
+                "latestTraces": dict(self.latest_traces),
                 # 当前策略参数（前端展示"系统在用哪些规则"）
                 "params": {
                     "atrSlMult": ATR_SL_MULT, "atrTpMult": ATR_TP_MULT,

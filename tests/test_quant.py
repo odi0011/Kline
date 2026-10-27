@@ -163,3 +163,8 @@ def test_scored_signal_path_uses_confluence_gate(engine):
     engine.on_signal(_hit("hammer"))
     engine._place_order.assert_called_once()
     assert "btcusdt" in engine._st(acct["name"])["positions"]
+    trace = engine.decision_traces[-1]
+    assert trace["status"] == "opened"
+    assert trace["score"]["breakdown"]["bull"]["total"] > 50
+    assert trace["risk"]["allowed"]
+    assert any(stage["id"] == "execution" for stage in trace["stages"])

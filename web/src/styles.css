@@ -157,16 +157,19 @@ body {
   min-height: 0;
 }
 
-/* 决策依据面板：只占第二行左侧 30%，右侧 70% 空出留给后续模块 */
+/* 第二行等分：左侧币种分析，右侧实时决策编排。 */
 .strategy-slot {
-  flex: 0 0 30%;
+  flex: 1 1 0;
   min-width: 0;
   display: flex;
   min-height: 0;
 }
-.row2-rest {
-  flex: 1 1 auto;
+
+.orchestrator-slot {
+  flex: 1 1 0;
   min-width: 0;
+  display: flex;
+  min-height: 0;
 }
 
 /* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3）。

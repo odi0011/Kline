@@ -441,10 +441,12 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     unhealthy_symbols: set[str] = set()
 
     def _market_data(symbol: str) -> dict:
-        now = int(KlineAggregator.now_ms())
         cached = market_feature_cache.get(symbol)
-        if cached and now - cached[0] < 60_000:
+        if cached:
             return cached[1]
+        return {}
+
+    def _fetch_market_data(symbol: str) -> dict:
         out = {}
         try:
             oi = open_interest_history(symbol, period="5m", limit=30,
@@ -459,7 +461,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 out["funding"] = funding
         except Exception:
             pass
-        market_feature_cache[symbol] = (now, out)
+        market_feature_cache[symbol] = (int(KlineAggregator.now_ms()), out)
         return out
 
     quant.market_data_fn = _market_data
@@ -796,8 +798,22 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 print(f"[pool] 审计失败: {e}")
             await asyncio.sleep(86400)
 
+    async def market_feature_poller():
+        """Prefetch OI/funding without blocking the quant decision lock."""
+        await asyncio.sleep(4)
+        while True:
+            active = list(quant.symbol_filter or symbols)
+            try:
+                await asyncio.gather(*[
+                    asyncio.to_thread(_fetch_market_data, sym) for sym in active
+                ])
+            except Exception as e:
+                print(f"[market] 衍生品快照刷新失败: {e}")
+            await asyncio.sleep(60)
+
     await asyncio.gather(supervisor(), sweep(), accounts_poller(),
-                         news_poller(), backfill_retry(), pool_auditor())
+                         news_poller(), backfill_retry(), pool_auditor(),
+                         market_feature_poller())
 
 
 def main() -> None:
