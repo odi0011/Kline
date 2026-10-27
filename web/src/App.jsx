@@ -328,11 +328,23 @@ export default function App() {
     const badge = cardEl.querySelector('[class*="dir-badge"]') || cardEl
     const b = badge.getBoundingClientRect()
     const rowEl = streamRef.current ? streamRef.current.querySelector(`[data-row-id="${rowId}"]`) : null
-    const rr = rowEl ? rowEl.getBoundingClientRect() : null
+    // 目标行可能位于视窗之外（右侧可滚动、流水区在底部）：
+    // 先把行滚进视口再测量，否则飞线终点会落到屏幕外。
+    let rr = rowEl ? rowEl.getBoundingClientRect() : null
+    if (rr && (rr.bottom > window.innerHeight - 12 || rr.top < 12)) {
+      rowEl.scrollIntoView({ block: "nearest", inline: "nearest" })
+      await sleep(160)
+      const rr2 = rowEl.getBoundingClientRect()
+      if (rr2.width) rr = rr2
+    }
     const sRect = streamRef.current ? streamRef.current.getBoundingClientRect() : null
-    const to2 = rr && rr.width
+    const clampToViewport = (pt) => ({
+      x: Math.min(Math.max(pt.x, 6), window.innerWidth - 6),
+      y: Math.min(Math.max(pt.y, 6), window.innerHeight - 6),
+    })
+    const to2 = clampToViewport(rr && rr.width
       ? { x: rr.left + rr.width * 0.5, y: rr.top + rr.height / 2 }
-      : { x: (sRect ? sRect.left : 0) + 120, y: (sRect ? sRect.bottom : 0) - 14 }
+      : { x: (sRect ? sRect.left : 0) + 120, y: (sRect ? sRect.bottom : 0) - 14 })
     const land2 = await fly({
       mode: "wobble",
       from: { x: b.left + b.width / 2, y: b.top + b.height / 2 },
@@ -639,17 +651,17 @@ export default function App() {
               chartColors={chartColors} />
           </div>
         </div>
-      {/* 第二行：决策流水 / 仓位历史 / 交易所公告（各 1/3） */}
+      {/* 第二行：策略分析（决策依据全流程，独占并铺满剩余视窗高度） */}
       <div className="row2">
+        <StrategyPanel analysis={quantSnap && quantSnap.analysis} chartColors={chartColors} />
+      </div>
+      {/* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3） */}
+      <div className="row3">
         <QuantPanel snapshot={quantSnap} events={visibleEvents} chartColors={chartColors}
           reservedRows={reservedRows} streamRef={streamRef}
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
         <PositionHistory trades={quantTrades} chartColors={chartColors} />
         <NewsFeed items={newsItems} />
-      </div>
-      {/* 第三行：策略分析（独占整行，铺满剩余视窗高度） */}
-      <div className="row3">
-        <StrategyPanel analysis={quantSnap && quantSnap.analysis} chartColors={chartColors} />
       </div>
       </aside>
 
