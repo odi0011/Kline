@@ -186,7 +186,7 @@ export default function StrategyPanel({ analysis, symbols, chartColors, onMetric
       const targetVisible = targetEntry?.isIntersecting && targetEntry.intersectionRatio >= 0.99
       const rowUsable = rowRect.height >= 240 && rowRect.width >= 260
         && rowRect.top >= 0 && rowRect.bottom <= window.innerHeight
-      const targetUsable = targetRect.height >= 80
+      const targetUsable = targetRect.height >= 14 && targetRect.width >= 20
         && targetRect.top >= rowRect.top && targetRect.bottom <= rowRect.bottom
       setFlowVisible(Boolean(rowVisible && targetVisible && rowUsable && targetUsable))
     }
