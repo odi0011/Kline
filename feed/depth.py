@@ -33,6 +33,7 @@ class DepthStream:
         self.levels = levels
         self.speed_ms = speed_ms
         self.latest: dict[str, dict] = {}
+        self.last_msg_ms: dict[str, int] = {}
         self._tasks: list[asyncio.Task] = []
 
     async def run(self) -> None:
@@ -55,8 +56,26 @@ class DepthStream:
                     proxy=self.proxy or True, max_size=2**22,
                 ) as ws:
                     backoff = 1.0
-                    async for raw in ws:
-                        self._handle(symbol, raw)
+                    started = time.monotonic()
+                    self.last_msg_ms[symbol] = int(time.time() * 1000)
+
+                    async def watchdog():
+                        while True:
+                            await asyncio.sleep(5)
+                            last = self.last_msg_ms.get(symbol, 0)
+                            if time.time() * 1000 - last > 15_000:
+                                await ws.close()
+                                return
+                            if time.monotonic() - started > 23 * 3600:
+                                await ws.close()
+                                return
+
+                    watch_task = asyncio.create_task(watchdog())
+                    try:
+                        async for raw in ws:
+                            self._handle(symbol, raw)
+                    finally:
+                        watch_task.cancel()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -79,6 +98,11 @@ class DepthStream:
                 "ts": int(time.time() * 1000),
             }
             self.latest[symbol] = snap
+            self.last_msg_ms[symbol] = int(time.time() * 1000)
             self.on_depth(symbol, snap)
         except Exception:
             return
+
+    def is_healthy(self, symbol: str, stale_sec: float = 15.0) -> bool:
+        last = self.last_msg_ms.get(symbol.lower(), 0)
+        return bool(last and time.time() * 1000 - last <= stale_sec * 1000)

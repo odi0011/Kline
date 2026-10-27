@@ -114,3 +114,49 @@ def fetch_account(api_key: str, api_secret: str) -> dict:
         "positions": positions,
         "ts": int(time.time() * 1000),
     }
+
+
+def open_orders(api_key: str, api_secret: str, symbol: str) -> list:
+    """Read-only protection-order audit."""
+    return signed_request(api_key, api_secret, "/fapi/v1/openOrders",
+                          {"symbol": symbol.upper()})
+
+
+def cancel_all_open_orders(api_key: str, api_secret: str, symbol: str) -> dict:
+    return signed_request(api_key, api_secret, "/fapi/v1/allOpenOrders",
+                          {"symbol": symbol.upper()}, method="DELETE")
+
+
+def cancel_order(api_key: str, api_secret: str, symbol: str, order_id: int) -> dict:
+    return signed_request(api_key, api_secret, "/fapi/v1/order", {
+        "symbol": symbol.upper(), "orderId": int(order_id),
+    }, method="DELETE")
+
+
+def query_order(api_key: str, api_secret: str, symbol: str, order_id: int) -> dict:
+    return signed_request(api_key, api_secret, "/fapi/v1/order", {
+        "symbol": symbol.upper(), "orderId": int(order_id),
+    })
+
+
+def place_protective_order(api_key: str, api_secret: str, symbol: str,
+                           side: str, order_type: str, qty: float,
+                           stop_price: float) -> dict:
+    """Place an exchange-held STOP_MARKET or TAKE_PROFIT_MARKET order.
+
+    ``quantity + reduceOnly`` is used instead of ``closePosition`` because the
+    latter is unreliable on the testnet.  The order lives on the exchange even
+    if this process dies.
+    """
+    if order_type not in ("STOP_MARKET", "TAKE_PROFIT_MARKET"):
+        raise ValueError(f"unsupported protective order type: {order_type}")
+    return signed_request(api_key, api_secret, "/fapi/v1/order", {
+        "symbol": symbol.upper(),
+        "side": side.upper(),
+        "type": order_type,
+        "quantity": f"{qty:.12f}".rstrip("0").rstrip("."),
+        "stopPrice": f"{stop_price:.12f}".rstrip("0").rstrip("."),
+        "workingType": "MARK_PRICE",
+        "reduceOnly": "true",
+        "newOrderRespType": "RESULT",
+    }, method="POST")

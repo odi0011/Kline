@@ -82,5 +82,90 @@ accounts:
 # 信号同时落盘到 signals.csv
 csv_log: signals.csv
 
+# 量化决策层（纯后端；不会改变前端布局）
+quant:
+  enabled: true
+  min_pattern_winrate: 0.35
+  min_pattern_samples: 5
+  # 只供后端计算 4h 方向闸 / 1h 确认规则，不会出现在前端周期选择里
+  watch_timeframes: [1h, 4h]
+  decision:
+    enabled: true
+    risk_enabled: true
+    scoring_enabled: true
+    watch_enabled: true
+    exchange_protection: true
+    maker_first: false
+
+    minimum_score: 55
+    minimum_score_gap: 15
+    pattern_min_samples: 5
+    pattern_min_winrate: 0.35
+    pattern_winrate_alpha: 0.94
+    pattern_window_days: 7
+
+    daily_loss_limit_pct: 3
+    daily_profit_lock_pct: 5
+    consecutive_loss_limit: 4
+    consecutive_loss_cooldown_min: 60
+    drawdown_limit_pct: 5
+    drawdown_pause_min: 30
+
+    max_positions: 4
+    max_same_direction: 3
+    cooldown_base_sec: 300
+    cooldown_max_sec: 7200
+    portfolio_heat_max_pct: 6
+    correlation_threshold: 0.80
+    correlation_lookback: 200
+
+    margin_pct_default: 5
+    margin_pct_min: 2
+    margin_pct_max: 8
+    margin_min_usdt: 10
+    risk_per_trade_pct: 1
+    kelly_fraction: 0.25
+    kelly_min_samples: 20
+    high_vol_atr_pct: 85
+    extreme_vol_atr_pct: 95
+    high_vol_size_factor: 0.5
+
+    max_notional_per_order: 60000
+    max_orders_per_min: 10
+    stale_trade_sec: 90
+    stale_depth_sec: 15
+    liquidation_window_sec: 300
+    liquidation_min_events: 5
+    liquidation_min_notional: 1000000
+    liquidation_cooldown_sec: 900
+
+    trail_atr_mult: 2.0
+    trail_atr_n: 22
+    trail_arm_atr: 1.0
+    watch_min_h1_rules: 2
+    # HMM 先影子记录，验证 lift 后再把 hmm_use_in_score 打开
+    hmm_shadow: true
+    hmm_use_in_score: false
+    hmm_min_confidence: 0.60
+    drift_enabled: true
+    drift_delta: 0.002
+    drift_caution_hours: 72
+    drift_shadow_hours: 48
+
+    # 标的池只产出建议，不自动替换；人工确认后改 symbols
+    pool_audit_enabled: true
+    pool_min_quote_volume: 50000000
+    pool_min_age_days: 30
+    pool_min_daily_range: 1.5
+    pool_max_daily_range: 8
+    pool_max_spread: 0.0005   # fraction = 0.05%
+    pool_blacklist: []
+
+    # UTC 时段；示例：["23:00-01:00"]。默认不启用，验证时段效应后再打开。
+    session_blackouts_utc: []
+    # 静态宏观事件黑窗；ISO 时间示例：
+    # - {start: "2026-11-05T21:15:00Z", end: "2026-11-05T22:00:00Z", label: "FOMC"}
+    macro_events: []
+
 # 每隔多少秒打印一次延迟统计
 latency_report_sec: 60

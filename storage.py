@@ -16,11 +16,14 @@ import pymysql
 class Storage:
     def __init__(self, mysql: dict, keep_minutes: int = 30,
                  hit_days: int = 7, eval_minutes: int = 10,
-                 eval_threshold: float = 0.0015):
+                 eval_threshold: float = 0.0015,
+                 stats_days: int = 7, stats_alpha: float = 0.94):
         self.keep_ms = keep_minutes * 60 * 1000
         self.hit_ms = hit_days * 86400 * 1000
         self.eval_ms = eval_minutes * 60_000    # 命中后10分钟的走势判定胜负
         self.eval_threshold = eval_threshold    # 窗口内有效波动门槛（先触及判定）
+        self.stats_days = max(1, int(stats_days))
+        self.stats_alpha = min(0.999, max(0.50, float(stats_alpha)))
         self._lock = threading.Lock()
         self._conn = None
         self.enabled = False
@@ -90,7 +93,18 @@ class Storage:
             qty DOUBLE, entry DOUBLE, exit_price DOUBLE, pnl DOUBLE, move_pct DOUBLE,
             reason VARCHAR(200), entry_ts BIGINT, hold_min DOUBLE, pattern VARCHAR(40),
             order_id BIGINT, close_id BIGINT,
+            slippage_atr DOUBLE DEFAULT 0, entry_slippage_atr DOUBLE DEFAULT 0,
             INDEX idx_qt_ts(ts), INDEX idx_qt_acct(acct, ts)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # 老库渐进迁移：保留已有交易历史，只补执行质量字段
+        for column, ddl in (
+            ("slippage_atr", "ALTER TABLE quant_trades ADD COLUMN slippage_atr DOUBLE DEFAULT 0"),
+            ("entry_slippage_atr", "ALTER TABLE quant_trades ADD COLUMN entry_slippage_atr DOUBLE DEFAULT 0"),
+        ):
+            try:
+                if not self._qall(f"SHOW COLUMNS FROM quant_trades LIKE '{column}'"):
+                    self._q(ddl)
+            except Exception:
+                pass
         # 量化决策流水：引擎的每个决策/思考都落库，按账户隔离，重启不清空
         self._q("""CREATE TABLE IF NOT EXISTS quant_events(
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -104,8 +118,9 @@ class Storage:
         """记录一笔已平仓交易。字段与 quant._record_trade 的 trade 结构对齐。"""
         self._q(
             "INSERT INTO quant_trades(ts,acct,symbol,side,qty,entry,exit_price,pnl,"
-            "move_pct,reason,entry_ts,hold_min,pattern,order_id,close_id) "
-            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "move_pct,reason,entry_ts,hold_min,pattern,order_id,close_id,"
+            "slippage_atr,entry_slippage_atr) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (int(t.get("ts") or 0), str(t.get("account") or ""),
              str(t.get("symbol") or ""), str(t.get("side") or ""),
              float(t.get("qty") or 0), float(t.get("entry") or 0),
@@ -114,7 +129,9 @@ class Storage:
              int(t.get("entryTs") or 0), float(t.get("holdMin") or 0),
              str(t.get("pattern") or ""),
              int(t["orderId"]) if t.get("orderId") else None,
-             int(t["closeId"]) if t.get("closeId") else None))
+             int(t["closeId"]) if t.get("closeId") else None,
+             float(t.get("slippageAtr") or 0),
+             float(t.get("entrySlippageAtr") or 0)))
         row = self._qall("SELECT LAST_INSERT_ID()")
         return int(row[0][0]) if row else 0
 
@@ -123,12 +140,14 @@ class Storage:
         if acct:
             rows = self._qall(
                 "SELECT id,ts,acct,symbol,side,qty,entry,exit_price,pnl,move_pct,"
-                "reason,entry_ts,hold_min,pattern FROM quant_trades "
+                "reason,entry_ts,hold_min,pattern,slippage_atr,entry_slippage_atr "
+                "FROM quant_trades "
                 "WHERE acct=%s ORDER BY ts DESC LIMIT %s", (acct, limit))
         else:
             rows = self._qall(
                 "SELECT id,ts,acct,symbol,side,qty,entry,exit_price,pnl,move_pct,"
-                "reason,entry_ts,hold_min,pattern FROM quant_trades "
+                "reason,entry_ts,hold_min,pattern,slippage_atr,entry_slippage_atr "
+                "FROM quant_trades "
                 "ORDER BY ts DESC LIMIT %s", (limit,))
         out = []
         for r in rows:
@@ -139,7 +158,8 @@ class Storage:
                 "exit": float(r[7] or 0), "pnl": float(r[8] or 0),
                 "movePct": float(r[9] or 0), "reason": r[10] or "",
                 "entryTs": int(r[11] or 0), "holdMin": float(r[12] or 0),
-                "pattern": r[13] or "",
+                "pattern": r[13] or "", "slippageAtr": float(r[14] or 0),
+                "entrySlippageAtr": float(r[15] or 0),
             })
         return out
 
@@ -149,16 +169,20 @@ class Storage:
         if acct:
             rows = self._qall(
                 "SELECT COUNT(*), SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END), "
-                "SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END), SUM(pnl) FROM quant_trades "
+                "SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END), SUM(pnl), "
+                "AVG(ABS(slippage_atr)), AVG(ABS(entry_slippage_atr)) FROM quant_trades "
                 "WHERE acct=%s AND ts>=%s", (acct, since))
         else:
             rows = self._qall(
                 "SELECT COUNT(*), SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END), "
-                "SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END), SUM(pnl) FROM quant_trades "
+                "SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END), SUM(pnl), "
+                "AVG(ABS(slippage_atr)), AVG(ABS(entry_slippage_atr)) FROM quant_trades "
                 "WHERE ts>=%s", (since,))
-        r = rows[0] if rows else (0, 0, 0, 0)
+        r = rows[0] if rows else (0, 0, 0, 0, 0, 0)
         return {"count": int(r[0] or 0), "wins": int(r[1] or 0),
-                "losses": int(r[2] or 0), "pnl": round(float(r[3] or 0), 2)}
+                "losses": int(r[2] or 0), "pnl": round(float(r[3] or 0), 2),
+                "avgSlippageAtr": round(float(r[4] or 0), 4),
+                "avgEntrySlippageAtr": round(float(r[5] or 0), 4)}
 
     # ---- 量化决策流水 ----
 
@@ -339,13 +363,46 @@ class Storage:
     # ---- 统计与清理 ----
 
     def pattern_stats(self) -> dict:
+        """Recent pattern outcomes with exponential recency weighting.
+
+        Newest evaluated hit has weight 1, the next ``alpha``, then
+        ``alpha**2``, and so on within the configured 7-day retention window.
+        Raw counts stay available for audit; the quality gate consumes the
+        effective weighted values.
+        """
+        cutoff = int(time.time() * 1000) - self.stats_days * 86400_000
         rows = self._qall(
-            "SELECT pattern, COUNT(*), "
-            "SUM(CASE WHEN outcome='win' THEN 1 ELSE 0 END), "
-            "SUM(CASE WHEN outcome='loss' THEN 1 ELSE 0 END) "
-            "FROM hits GROUP BY pattern")
-        return {r[0]: {"count": int(r[1]), "wins": int(r[2] or 0), "losses": int(r[3] or 0)}
-                for r in rows}
+            "SELECT pattern, ts, outcome FROM hits "
+            "WHERE ts>=%s AND outcome IN ('win','loss') "
+            "ORDER BY ts DESC", (cutoff,))
+        grouped: dict[str, list[str]] = {}
+        for pattern, _ts, outcome in rows:
+            grouped.setdefault(str(pattern), []).append(str(outcome))
+        out = {}
+        for pattern, outcomes in grouped.items():
+            wins = outcomes.count("win")
+            losses = outcomes.count("loss")
+            eff_wins = 0.0
+            eff_losses = 0.0
+            for rank, outcome in enumerate(outcomes):
+                weight = self.stats_alpha ** rank
+                if outcome == "win":
+                    eff_wins += weight
+                else:
+                    eff_losses += weight
+            effective_n = eff_wins + eff_losses
+            out[pattern] = {
+                "count": wins + losses,
+                "wins": wins,
+                "losses": losses,
+                "effectiveWins": round(eff_wins, 4),
+                "effectiveLosses": round(eff_losses, 4),
+                "effectiveSamples": round(effective_n, 4),
+                "weightedWinrate": round(eff_wins / effective_n, 6) if effective_n else 0.0,
+                "alpha": self.stats_alpha,
+                "windowDays": self.stats_days,
+            }
+        return out
 
     def symbol_stats(self) -> dict:
         rows = self._qall(

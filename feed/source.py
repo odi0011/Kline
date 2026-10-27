@@ -100,11 +100,15 @@ class BinanceFuturesStream:
             if not self._connected.is_set():
                 continue
             anchor = max(self.last_trade_ms, self.connect_ms)
-            if anchor and time.time() * 1000 - anchor > self.stall_sec * 1000:
+            now_ms = int(time.time() * 1000)
+            rotate = bool(self.connect_ms and now_ms - self.connect_ms > 23 * 3600_000)
+            stalled = bool(anchor and now_ms - anchor > self.stall_sec * 1000)
+            if rotate or stalled:
                 self.stall_count += 1
                 self.last_trade_ms = 0
                 self.connect_ms = 0
-                print(f"[feed] 数据停流 {self.stall_sec:.0f}s（第 {self.stall_count} 次），强制重连")
+                reason = "连接满 23h 主动轮换" if rotate else f"数据停流 {self.stall_sec:.0f}s"
+                print(f"[feed] {reason}（第 {self.stall_count} 次），强制重连")
                 ws, self._ws = self._ws, None
                 if ws:
                     try:

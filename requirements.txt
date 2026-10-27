@@ -1,5 +1,6 @@
 websockets>=14,<17
 PyYAML>=6.0
+PyMySQL>=1.1
 winotify>=1.1
 
 # 开发/测试

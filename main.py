@@ -20,8 +20,14 @@ from core.candle import INTERVAL_MS
 from feed.backfill import fetch_klines
 from feed.demo import DemoSource
 from feed.depth import DepthStream
+from feed.liquidation import LiquidationStream
+from feed.market_data import (
+    funding_snapshot, onboard_dates, open_interest_history, ticker_24h,
+)
 from feed.news import fetch_all as fetch_news
 from feed.source import BinanceFuturesStream
+from decision.config import DecisionConfig
+from decision.pool_audit import audit_universe
 from notify.notifier import Notifier
 from patterns.base import get_enabled
 from analysis.structure import analyze as analyze_structure
@@ -53,7 +59,7 @@ DEFAULT_CONFIG: dict = {
     "patterns": {"enabled": "all", "live_preview": True},
     "storage": {"minutes": 30, "eval_minutes": 10},
     "accounts": [],
-    "quant": {"enabled": True},
+    "quant": {"enabled": True, "decision": {}},
     "notify": {},
 }
 
@@ -133,12 +139,23 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         symbols = list(DEFAULT_SYMBOLS)
     if not intervals:
         intervals = ["1m", "3m"]
+    qcfg = cfg.get("quant", {})
+    decision_cfg = DecisionConfig.from_dict(qcfg.get("decision", {}))
+    watch_intervals = [
+        str(iv) for iv in (qcfg.get("watch_timeframes") or ["1h", "4h"])
+        if str(iv) not in intervals and str(iv) in INTERVAL_MS
+    ] if decision_cfg.watch_enabled else []
     print(f"[config] 监控 {len(symbols)} 个币种 / 周期 {intervals}")
+    if watch_intervals:
+        print(f"[config] 多周期盯盘周期（仅后端）: {watch_intervals}")
 
     aggs: dict[tuple, KlineAggregator] = {}
+    watch_aggs: dict[tuple, KlineAggregator] = {}
     for sym in symbols:
         for iv in intervals:
             aggs[(sym, iv)] = KlineAggregator(sym, iv, None, None)
+        for iv in watch_intervals:
+            watch_aggs[(sym, iv)] = KlineAggregator(sym, iv, None, None)
 
     hub = BroadcastHub(aggs, symbols, intervals, port=int(cfg.get("ws_port", 8765)))
 
@@ -154,7 +171,9 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     scfg = cfg.get("storage", {})
     storage = Storage(cfg.get("mysql", {}), keep_minutes=int(scfg.get("minutes", 30)),
                       eval_minutes=int(scfg.get("eval_minutes", 10)),
-                      eval_threshold=float(scfg.get("eval_threshold", 0.0015)))
+                      eval_threshold=float(scfg.get("eval_threshold", 0.0015)),
+                      stats_days=decision_cfg.pattern_window_days,
+                      stats_alpha=decision_cfg.pattern_winrate_alpha)
     hub.stats_fn = storage.pattern_stats
     hub.symbol_stats_fn = storage.symbol_stats
     hub.query_fn = storage
@@ -171,7 +190,8 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             loop = asyncio.get_running_loop()
             loop.run_in_executor(None, quant.on_signal,
                                  {"symbol": hit.symbol, "direction": hit.direction,
-                                  "pattern": hit.pattern, "name_zh": hit.name_zh})
+                                  "pattern": hit.pattern, "name_zh": hit.name_zh,
+                                  "geometry": hit.geometry})
 
     engine = PatternEngine(enabled, notify_with_lag,
                            live_preview=bool(pcfg.get("live_preview", True)))
@@ -376,10 +396,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         hist = list(agg.history)
         return hist[-1].close if hist else None
 
-    qcfg = cfg.get("quant", {})
     quant = QuantEngine(accts_box, config_path, price_fn=_price_fn,
                         min_pattern_winrate=float(qcfg.get("min_pattern_winrate", 0.35)),
-                        min_pattern_samples=int(qcfg.get("min_pattern_samples", 5)))
+                        min_pattern_samples=int(qcfg.get("min_pattern_samples", 5)),
+                        decision_config=decision_cfg)
     quant.enabled = bool(qcfg.get("enabled", True))
     # 假数据防护：demo 模式下引擎拒绝一切新开仓（形态来自随机游走，没有交易意义）
     quant.feed_is_live_fn = lambda: hub.mode != "demo"
@@ -400,6 +420,62 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         return hist[-200:]
 
     quant.bars_fn = _bars_for
+
+    def _watch_bars_for(symbol: str):
+        def read(iv: str, include_current: bool = False):
+            agg = watch_aggs.get((symbol, iv)) or aggs.get((symbol, iv))
+            if not agg:
+                return []
+            hist = list(agg.history)
+            if include_current and agg.current is not None:
+                hist.append(agg.current)
+            return hist[-320:]
+        entry_iv = engine.detect_interval or iv0
+        return read(entry_iv, include_current=True), read("1h"), read("4h")
+
+    quant.watch_bars_fn = _watch_bars_for
+    quant.depth_fn = lambda sym: hub.depths.get(sym)
+    quant.news_fn = lambda: hub.news
+
+    market_feature_cache: dict[str, tuple[int, dict]] = {}
+    unhealthy_symbols: set[str] = set()
+
+    def _market_data(symbol: str) -> dict:
+        now = int(KlineAggregator.now_ms())
+        cached = market_feature_cache.get(symbol)
+        if cached and now - cached[0] < 60_000:
+            return cached[1]
+        out = {}
+        try:
+            oi = open_interest_history(symbol, period="5m", limit=30,
+                                       proxy=proxy_cfg or None)
+            if oi:
+                out["oi"] = oi
+        except Exception:
+            pass
+        try:
+            funding = funding_snapshot(symbol, proxy=proxy_cfg or None)
+            if funding:
+                out["funding"] = funding
+        except Exception:
+            pass
+        market_feature_cache[symbol] = (now, out)
+        return out
+
+    quant.market_data_fn = _market_data
+
+    def _data_health(symbol: str | None = None) -> bool:
+        if symbol and symbol in unhealthy_symbols:
+            return False
+        feed = feed_box.get("feed")
+        if feed is None or not getattr(feed, "connected", False):
+            return False
+        last_ms = int(getattr(feed, "last_trade_ms", 0) or 0)
+        if not last_ms:
+            return False
+        return (KlineAggregator.now_ms() - last_ms) <= decision_cfg.stale_trade_sec * 1000
+
+    quant.data_health_fn = _data_health
 
     # 回撤熔断的数据源：当前账户的权益采样（最近 24 小时）
     def _equity_values():
@@ -450,12 +526,15 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     for agg in aggs.values():
         agg.on_update = on_evt
         agg.on_close = on_evt
+    for agg in watch_aggs.values():
+        agg.on_update = lambda *args, **kwargs: None
+        agg.on_close = lambda *args, **kwargs: None
 
 
     bcfg = cfg.get("feed", {})
     proxy_cfg = (bcfg.get("proxy") or "").strip()
     limit = int(bcfg.get("backfill_bars", 300))
-    for (sym, iv), agg in aggs.items():
+    for (sym, iv), agg in {**aggs, **watch_aggs}.items():
         try:
             candles = await asyncio.to_thread(fetch_klines, sym, iv, limit, proxy_cfg or None)
             agg.seed(candles)
@@ -464,16 +543,17 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 if c.open_time >= keep_from:
                     storage.save_candle(sym, iv, c)
             # 启动即算一次结构，否则要等到本周期收线（最长几分钟）画面上才有线
-            try:
-                hub.structures[(sym, iv)] = analyze_structure(list(agg.history)[-160:])
-            except Exception:
-                pass
+            if (sym, iv) in aggs:
+                try:
+                    hub.structures[(sym, iv)] = analyze_structure(list(agg.history)[-160:])
+                except Exception:
+                    pass
             print(f"[backfill] {sym} {iv}: 回补 {len(candles)} 根")
         except Exception as e:
             print(f"[backfill] {sym} {iv} 失败: {e}（空历史启动）")
 
     by_symbol: dict[str, list[KlineAggregator]] = defaultdict(list)
-    for (sym, _), agg in aggs.items():
+    for (sym, _), agg in {**aggs, **watch_aggs}.items():
         by_symbol[sym].append(agg)
 
     def on_trade(symbol: str, price: float, qty: float, ts: int, _recv_ms: int,
@@ -483,6 +563,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     # 订单簿深度（真实挂单）：独立 /public 路由，与 aggTrade 并行
     depth_box: dict = {"stream": None}
+    liq_box: dict = {"stream": None}
 
     def on_depth(symbol: str, snap: dict) -> None:
         hub.depths[symbol] = snap
@@ -498,6 +579,14 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         except Exception as e:
             print(f"[depth] 初始化失败: {e}")
 
+    if not bcfg.get("liquidation_disabled", False):
+        try:
+            liq_box["stream"] = LiquidationStream(
+                symbols, proxy=proxy_cfg or True,
+            )
+        except Exception as e:
+            print(f"[liquidation] 初始化失败: {e}")
+
     feed_box: dict = {}
     mode = (bcfg.get("mode") or "auto").lower()
 
@@ -512,6 +601,20 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     if mode != "demo" and depth_box["stream"]:
         asyncio.create_task(depth_box["stream"].run())
         print(f"[depth] 订单簿深度流已启动（{len(symbols)} 个币）")
+    if mode != "demo" and liq_box["stream"]:
+        asyncio.create_task(liq_box["stream"].run())
+        print(f"[liquidation] 强平事件流已启动（{len(symbols)} 个币）")
+
+    if liq_box["stream"]:
+        quant.liquidation_fn = lambda sym: liq_box["stream"].cascade(
+            sym,
+            window_sec=decision_cfg.liquidation_window_sec,
+            min_events=decision_cfg.liquidation_min_events,
+            min_notional=decision_cfg.liquidation_min_notional,
+            cooldown_sec=decision_cfg.liquidation_cooldown_sec,
+        )
+    else:
+        quant.liquidation_fn = lambda sym: {"active": False}
 
     await hub.start()
 
@@ -526,7 +629,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         while True:
             await asyncio.sleep(0.5)
             now = KlineAggregator.now_ms()
-            for agg in aggs.values():
+            for agg in [*aggs.values(), *watch_aggs.values()]:
                 agg.sweep(now)
             try:
                 await asyncio.to_thread(quant.manage)    # 止损/止盈监控（每 5 秒，线程池内不卡主循环）
@@ -595,9 +698,19 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     async def backfill_retry():
         await asyncio.sleep(20)
         while True:
-            need = [(sym, iv, agg) for (sym, iv), agg in aggs.items()
-                    if len(agg.history) < 60]
+            now = KlineAggregator.now_ms()
+            all_aggs = {**aggs, **watch_aggs}
+
+            def needs_backfill(sym: str, iv: str, agg: KlineAggregator) -> bool:
+                if len(agg.history) < 60:
+                    return True
+                expected_prev = now - now % INTERVAL_MS[iv] - INTERVAL_MS[iv]
+                return agg.history[-1].open_time < expected_prev - 2 * INTERVAL_MS[iv]
+
+            need = [(sym, iv, agg) for (sym, iv), agg in all_aggs.items()
+                    if needs_backfill(sym, iv, agg)]
             for sym, iv, agg in need:
+                unhealthy_symbols.add(sym)
                 try:
                     candles = await asyncio.to_thread(
                         fetch_klines, sym, iv, limit, proxy_cfg or None)
@@ -611,11 +724,15 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                     for c in candles:
                         if c.open_time >= keep_from:
                             storage.save_candle(sym, iv, c)
-                    try:
-                        hub.structures[(sym, iv)] = analyze_structure(
-                            list(agg.history)[-160:])
-                    except Exception:
-                        pass
+                    if (sym, iv) in aggs:
+                        try:
+                            hub.structures[(sym, iv)] = analyze_structure(
+                                list(agg.history)[-160:])
+                        except Exception:
+                            pass
+                    if not any(needs_backfill(s, i, a)
+                               for (s, i), a in all_aggs.items() if s == sym):
+                        unhealthy_symbols.discard(sym)
                     print(f"[backfill] 重试成功 {sym} {iv}: {len(candles)} 根")
                 except Exception as e:
                     print(f"[backfill] 重试失败 {sym} {iv}: {e}")
@@ -642,8 +759,45 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 print(f"[news] 拉取失败: {e}")
             await asyncio.sleep(600)
 
+    async def pool_auditor():
+        """Daily advisory audit; never changes the live symbol pool."""
+        if not decision_cfg.pool_audit_enabled:
+            return
+        await asyncio.sleep(120)
+        while True:
+            try:
+                tickers = {}
+                for sym in symbols:
+                    item = await asyncio.to_thread(
+                        ticker_24h, sym, proxy_cfg or None)
+                    if item:
+                        tickers[sym] = item
+                onboard = await asyncio.to_thread(
+                    onboard_dates, symbols, proxy_cfg or None)
+                bars_by_symbol = {}
+                for sym in symbols:
+                    agg = watch_aggs.get((sym, "4h")) or aggs.get((sym, iv0))
+                    if agg:
+                        bars_by_symbol[sym] = list(agg.history)[-300:]
+                report = audit_universe(
+                    symbols, decision_cfg,
+                    bars_by_symbol=bars_by_symbol,
+                    depth_by_symbol=hub.depths,
+                    tickers=tickers,
+                    onboard_by_symbol=onboard,
+                    now_ms=KlineAggregator.now_ms(),
+                )
+                quant.last_pool_audit = report
+                if report["downgrade"]:
+                    print("[pool] 降级建议: " + ", ".join(
+                        f"{row['symbol']}({'/'.join(row['reasons'])})"
+                        for row in report["downgrade"]))
+            except Exception as e:
+                print(f"[pool] 审计失败: {e}")
+            await asyncio.sleep(86400)
+
     await asyncio.gather(supervisor(), sweep(), accounts_poller(),
-                         news_poller(), backfill_retry())
+                         news_poller(), backfill_retry(), pool_auditor())
 
 
 def main() -> None:

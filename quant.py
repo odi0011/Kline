@@ -1,15 +1,16 @@
-"""量化交易引擎：以形态引擎的收线确认信号为入场依据，在监控池币种上自动开仓/平仓。
+"""量化交易引擎：形态信号 → 多周期确认 → 共鸣评分 → 统一风控 → 执行/保护。
 
-设计要点（全部为兜底服务稳定性）：
-  · 每个账户独立状态：持仓 / 冷却 / 当日决策计数
-  · 风控：每账户最多 3 个持仓、单仓保证金 = 可用余额 5%（下限 10 USDT）、
-    同币种冷却 15 分钟、止损 -1.5%、止盈 +2.5%
-  · 全程记录：quant.log（JSONL，决策/下单/开仓/平仓/错误/审计逐条落盘）+
-    quant-trades.json（已平仓历史，重启恢复用）
-  · 每 5 分钟自审计：用交易所 positionRisk 对账，发现漏记持仓自动补记、
-    记录了但交易所已无的持仓自动核销，审计结果作为事件记录
-  · 所有交易所调用均有 try/except，异常只会跳过本次决策并记录 error 事件，
-    绝不影响 K线/形态主链路
+Decision states are explicit and replayable:
+  · 4h EMA gate + at least two independent 1h confirmations
+  · MACD/Keltner/CVD/VSA/OBI/OI/funding/news sentiment contribute to a
+    regime-weighted confluence score; safety vetoes remain separate
+  · daily loss/profit lock, loss streak, portfolio heat, correlation buckets,
+    risk-budget sizing, Kelly cap, rate/notional limits and drift de-risking
+  · exchange-held STOP_MARKET/TAKE_PROFIT_MARKET orders are reconciled every
+    five minutes; software checks remain as a second layer
+  · every fill records entry/exit slippage, score breakdown and the plan used
+
+No UI state lives here. All new factors and switching logic are backend-only.
 """
 from __future__ import annotations
 
@@ -21,8 +22,23 @@ import threading
 import time
 from collections import deque
 
-from accounts import signed_request
+from accounts import (
+    signed_request, open_orders, cancel_order, query_order, cancel_all_open_orders,
+    place_protective_order,
+)
 from analysis import indicators as IND
+from decision.config import DecisionConfig
+from decision.drift import ADWIN
+from decision.features import (
+    cvd_metrics, funding_context, macd, open_interest_bias,
+    order_book_imbalance, returns as return_series, squeeze_state,
+    vsa_metrics,
+)
+from decision.risk import PositionRiskInput, RiskEngine, RiskInput, TradeRecord
+from decision.regime import hmm_regime
+from decision.scoring import score_signal
+from decision.watch import build_watch_plan, ema_direction
+from feed.sentiment import aggregate_news_sentiment
 
 BASE = "https://testnet.binancefuture.com"
 
@@ -86,11 +102,14 @@ def _now_ms() -> int:
 
 class QuantEngine:
     def __init__(self, accts_box: dict, config_path: str, price_fn=None,
-                 min_pattern_winrate: float = 0.35, min_pattern_samples: int = 5):
+                 min_pattern_winrate: float = 0.35, min_pattern_samples: int = 5,
+                 decision_config: DecisionConfig | None = None):
         self.accts_box = accts_box          # main 的账户盒子（list/refresh）
         self.config_path = config_path
         self.price_fn = price_fn            # symbol -> 最新价（来自聚合器）
         self.enabled = True
+        self.decision_cfg = decision_config or DecisionConfig()
+        self.risk = RiskEngine(self.decision_cfg)
         # 信号质量门：历史胜率过低的形态不再入场（与形态统计系统联动）
         self.pattern_stats_fn = None        # main 注入：storage.pattern_stats
         self.min_pattern_winrate = min_pattern_winrate
@@ -120,6 +139,7 @@ class QuantEngine:
         self._lock = threading.Lock()
         self._warned_dupes = False
         self._step_sizes: dict[str, float] = {}
+        self._tick_sizes: dict[str, float] = {}
         self._log_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant.log")
         self._trades_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant-trades.json")
         self._pos_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant-positions.json")
@@ -127,7 +147,26 @@ class QuantEngine:
         self._manual_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant-manual.json")
         self._manual: set[tuple[str, str]] = set()   # (account, symbol) 手动仓位：引擎不干预止盈止损
         self._manual_mtime = 0.0
+        self.depth_fn = None               # symbol -> depth snapshot
+        self.market_data_fn = None         # symbol -> {oi, funding}
+        self.news_fn = None                # () -> current news items
+        self.liquidation_fn = None         # symbol -> cascade snapshot
+        self.watch_bars_fn = None          # symbol -> (entry, h1, h4)
+        self.data_health_fn = None         # () -> bool
+        self._balance_cache: dict[str, tuple[float, float, int]] = {}
+        self._hmm_cache: dict[tuple[str, int], dict] = {}
+        self._recent_entry_slippage: deque = deque(maxlen=3)
+        self._rest_pause_until = 0
+        self._permission_pause_until = 0
+        self._drift_detectors: dict[str, dict[str, ADWIN]] = {}
+        self._drift_last_alert: dict[tuple[str, str], int] = {}
+        self._drift_last_global_alert = 0
+        self._drift_caution_until = 0
+        self._drift_shadow_until = 0
+        self._vol_drift = ADWIN(self.decision_cfg.drift_delta)
+        self._vol_last_bar: dict[str, int] = {}
         self._load_trades()
+        self._seed_risk_history()
         self._load_positions()
         self._load_unsupported()
         self._event("system", "量化引擎已启动，开始盯盘", enabled=True)
@@ -172,6 +211,66 @@ class QuantEngine:
         except Exception as e:
             self._event("error", f"交易历史读取失败: {e}")
 
+    def _seed_risk_history(self) -> None:
+        grouped: dict[str, list[TradeRecord]] = {}
+        for trade in self.trades[-500:]:
+            account = str(trade.get("account") or "")
+            if not account:
+                continue
+            grouped.setdefault(account, []).append(TradeRecord(
+                ts=int(trade.get("ts") or 0),
+                pnl=float(trade.get("pnl") or 0),
+                symbol=str(trade.get("symbol") or ""),
+                side=str(trade.get("side") or ""),
+                reason=str(trade.get("reason") or ""),
+                pattern=str(trade.get("pattern") or ""),
+            ))
+        now = _now_ms()
+        for account, records in grouped.items():
+            self.risk.seed_trades(account, records, now)
+
+    def _drift_for(self, account: str) -> dict[str, ADWIN]:
+        if account not in self._drift_detectors:
+            self._drift_detectors[account] = {
+                "winrate": ADWIN(self.decision_cfg.drift_delta),
+                "normalizedPnl": ADWIN(self.decision_cfg.drift_delta),
+            }
+        return self._drift_detectors[account]
+
+    def _handle_drift(self, account: str, metric: str, detector: ADWIN) -> None:
+        if not self.decision_cfg.drift_enabled:
+            return
+        now = _now_ms()
+        key = (account, metric)
+        if now - self._drift_last_alert.get(key, 0) < 3_600_000:
+            return
+        if now - self._drift_last_global_alert < 30 * 60_000:
+            return
+        self._drift_last_alert[key] = now
+        self._drift_last_global_alert = now
+        detail = detector.last_split or {}
+        if now >= self._drift_caution_until:
+            self._drift_caution_until = now + self.decision_cfg.drift_caution_hours * 3600_000
+            level = "caution"
+        else:
+            self._drift_shadow_until = now + self.decision_cfg.drift_shadow_hours * 3600_000
+            level = "shadow"
+        self._event(
+            "drift",
+            f"检测到 {metric} 机制漂移（{level}）："
+            f"{detail.get('mean0')} → {detail.get('mean1')}",
+            account=account, metric=metric, driftLevel=level, **detail,
+        )
+
+    def _observe_trade_drift(self, account: str, trade: TradeRecord,
+                             risk_multiple: float) -> None:
+        detector = self._drift_for(account)
+        win = 1.0 if trade.pnl > 0 else 0.0
+        if detector["winrate"].add(win):
+            self._handle_drift(account, "winrate", detector["winrate"])
+        if detector["normalizedPnl"].add(risk_multiple):
+            self._handle_drift(account, "normalizedPnl", detector["normalizedPnl"])
+
     def _record_trade(self, trade: dict):
         self.trades.append(trade)
         try:
@@ -189,6 +288,27 @@ class QuantEngine:
                         self.broadcast_fn({"type": "quant_trade", "trade": {**trade, "id": tid}})
             except Exception:
                 pass
+        self.risk.record_trade(str(trade.get("account") or ""), TradeRecord(
+            ts=int(trade.get("ts") or _now_ms()),
+            pnl=float(trade.get("pnl") or 0),
+            symbol=str(trade.get("symbol") or ""),
+            side=str(trade.get("side") or ""),
+            reason=str(trade.get("reason") or ""),
+            pattern=str(trade.get("pattern") or ""),
+        ))
+        atr_at_entry = float(trade.get("atrAtEntry") or 0)
+        risk_multiple = (
+            float(trade.get("pnl") or 0) /
+            max(1e-9, atr_at_entry * float(trade.get("qty") or 0))
+        )
+        self._observe_trade_drift(str(trade.get("account") or ""), TradeRecord(
+            ts=int(trade.get("ts") or _now_ms()),
+            pnl=float(trade.get("pnl") or 0),
+            symbol=str(trade.get("symbol") or ""),
+            side=str(trade.get("side") or ""),
+            reason=str(trade.get("reason") or ""),
+            pattern=str(trade.get("pattern") or ""),
+        ), risk_multiple)
 
     def _save_positions(self):
         """未平仓持仓落盘：重启/部署后恢复 entry 价与开仓时间，避免依赖审计补记。"""
@@ -298,15 +418,66 @@ class QuantEngine:
         decimals = max(0, -int(math.floor(math.log10(step)))) if step < 1 else 0
         return round(steps * step, decimals)
 
-    def _place_order(self, api_key, api_secret, symbol, side, qty, reduce_only=False) -> dict:
-        params = {"symbol": symbol.upper(), "side": side, "type": "MARKET",
+    def _tick_size(self, api_key: str, api_secret: str, symbol: str) -> float:
+        if symbol in self._tick_sizes:
+            return self._tick_sizes[symbol]
+        tick = 0.0
+        try:
+            info = signed_request(api_key, api_secret, "/fapi/v1/exchangeInfo")
+            for row in info.get("symbols", []):
+                if row.get("symbol") != symbol.upper():
+                    continue
+                for item in row.get("filters", []):
+                    if item.get("filterType") == "PRICE_FILTER":
+                        tick = float(item.get("tickSize", 0) or 0)
+                        break
+                break
+        except Exception as e:
+            self._event("error", f"exchangeInfo 价格步长获取失败({symbol}): {e}",
+                        symbol=symbol)
+        self._tick_sizes[symbol] = tick
+        return tick
+
+    def _place_order(self, api_key, api_secret, symbol, side, qty, reduce_only=False,
+                     order_type: str = "MARKET", price: float | None = None,
+                     time_in_force: str | None = None) -> dict:
+        params = {"symbol": symbol.upper(), "side": side, "type": order_type,
                   "quantity": qty, "newOrderRespType": "RESULT"}
+        if order_type != "MARKET":
+            if price is None:
+                raise ValueError("价格单必须提供 price")
+            params["price"] = price
+            params["timeInForce"] = time_in_force or "GTC"
         if reduce_only:
             params["reduceOnly"] = "true"
         # 下单必须 POST（GET 会被路由到查询订单接口，报 -1102）
-        r = signed_request(api_key, api_secret, "/fapi/v1/order", params, method="POST")
+        try:
+            r = signed_request(api_key, api_secret, "/fapi/v1/order",
+                               params, method="POST")
+        except Exception as e:
+            self._classify_api_error(e, symbol)
+            raise
         self.stats["orders"] += 1
         return r
+
+    def _classify_api_error(self, error: Exception, symbol: str) -> None:
+        message = str(error)
+        now = _now_ms()
+        if "-1003" in message:
+            self._rest_pause_until = max(self._rest_pause_until, now + 30 * 60_000)
+            self._event("error", "交易所 REST 限频，全局暂停开仓 30 分钟",
+                        symbol=symbol, apiCode="-1003")
+        elif "-2015" in message or "-2014" in message:
+            self._permission_pause_until = max(
+                self._permission_pause_until, now + 30 * 60_000)
+            self._event("error", "API Key/权限异常，全局暂停开仓并等待人工检查",
+                        symbol=symbol, apiCode="-2015/-2014")
+        elif "-1021" in message:
+            self._event("error", "交易所时间戳越窗，请检查本机时钟/代理链路",
+                        symbol=symbol, apiCode="-1021")
+        elif "-4131" in message:
+            self._event("error", "超出交易所仓位风险限额，需下调名义上限",
+                        symbol=symbol, apiCode="-4131")
 
     def _mark_unsupported(self, symbol: str, err: Exception) -> bool:
         """识别"该合约未开通"类错误（TradFi 永续需先签协议 -4411 或 -4131），
@@ -375,7 +546,15 @@ class QuantEngine:
             try:
                 cs = self.bars_fn(sym)
                 if cs and len(cs) >= 30:
-                    self.indicators[sym] = IND.market_state(cs)
+                    state = IND.market_state(cs)
+                    self.indicators[sym] = state
+                    if self.decision_cfg.drift_enabled and state.get("roc") is not None:
+                        bucket = int(getattr(cs[-1], "open_time", 0) or 0)
+                        if self._vol_last_bar.get(sym) != bucket:
+                            self._vol_last_bar[sym] = bucket
+                            if self._vol_drift.add(abs(float(state["roc"]))):
+                                self._handle_drift("_market_", "volatility",
+                                                   self._vol_drift)
             except Exception:
                 continue
         self._refresh_drawdown()
@@ -396,16 +575,290 @@ class QuantEngine:
             self.dd_state["peak"] = round(dd["peak"], 2)
             now = _now_ms()
             # 触发熔断：当前回撤超过阈值，且之前没在暂停期
-            if dd["current"] / 100 <= -DD_LIMIT_PCT and now >= self.dd_state["paused_until"]:
-                self.dd_state["paused_until"] = now + DD_PAUSE_MIN * 60_000
+            limit = self.decision_cfg.drawdown_limit_pct
+            pause_min = self.decision_cfg.drawdown_pause_min
+            if dd["current"] / 100 <= -limit and now >= self.dd_state["paused_until"]:
+                self.dd_state["paused_until"] = now + pause_min * 60_000
                 self._event("skip",
                             f"账户回撤 {dd['current']:.2f}% 触及熔断线 "
-                            f"{-DD_LIMIT_PCT * 100:.0f}%，暂停开仓 {DD_PAUSE_MIN} 分钟")
+                            f"{-limit * 100:.0f}%，暂停开仓 {pause_min} 分钟")
         except Exception:
             pass
 
     def _dd_paused(self) -> bool:
         return _now_ms() < self.dd_state.get("paused_until", 0)
+
+    def _build_features(self, symbol: str, bars: list, state: dict,
+                        direction: str) -> dict:
+        now = _now_ms()
+        features: dict = {}
+        if bars:
+            features["macd"] = macd(bars)
+            features["squeeze"] = squeeze_state(bars)
+            features["cvd"] = cvd_metrics(bars)
+            features["vsaBull"] = vsa_metrics(bars, "bullish")
+            features["vsaBear"] = vsa_metrics(bars, "bearish")
+            features["close"] = float(bars[-1].close)
+        depth = self.depth_fn(symbol) if self.depth_fn else None
+        features["obi"] = order_book_imbalance(
+            depth, levels=10, now_ms=now,
+            max_age_ms=int(self.decision_cfg.stale_depth_sec * 1000),
+        )
+        market = self.market_data_fn(symbol) if self.market_data_fn else {}
+        oi = market.get("oi") if isinstance(market, dict) else None
+        if oi and bars and len(bars) >= 2:
+            lookback = 10
+            base = bars[-min(len(bars), lookback + 1)].close
+            price_change = (bars[-1].close - base) / base if base else 0.0
+            factors = open_interest_bias(float(oi.get("changePct") or 0), price_change)
+            features["oi"] = {**factors, "changePct": oi.get("changePct"), "priceChange": price_change}
+        funding = market.get("funding") if isinstance(market, dict) else None
+        if funding:
+            features["funding"] = funding_context(
+                funding.get("rate"), funding.get("nextTime"),
+                "BUY" if direction == "bullish" else "SELL", now,
+            )
+        if self.news_fn:
+            try:
+                features["sentiment"] = aggregate_news_sentiment(
+                    self.news_fn() or [], symbol, now)
+            except Exception:
+                features["sentiment"] = {"score": 0.0, "confidence": 0.0}
+        if self.watch_bars_fn:
+            try:
+                watched = self.watch_bars_fn(symbol)
+                if watched:
+                    _, h1, h4 = watched
+                    if h4:
+                        features["htf"] = ema_direction(
+                            h4, self.decision_cfg.watch_ema_fast,
+                            self.decision_cfg.watch_ema_slow)
+                        if self.decision_cfg.hmm_shadow and len(h4) >= 60:
+                            bucket = int(getattr(h4[-1], "open_time", 0) or 0)
+                            key = (symbol, bucket)
+                            fit = self._hmm_cache.get(key)
+                            if fit is None:
+                                fit = hmm_regime(h4, window=min(180, len(h4)),
+                                                 iterations=18)
+                                self._hmm_cache[key] = fit
+                            features["hmm"] = fit
+                            if (self.decision_cfg.hmm_use_in_score and
+                                    fit.get("ok") and
+                                    fit.get("confidence", 0) >=
+                                    self.decision_cfg.hmm_min_confidence):
+                                label = fit.get("label")
+                                if label in ("bull", "bear", "range"):
+                                    features["htf"] = {
+                                        "direction": ("bullish" if label == "bull"
+                                                      else "bearish" if label == "bear"
+                                                      else "neutral"),
+                                        "strength": fit["confidence"],
+                                        "source": "hmm",
+                                    }
+            except Exception:
+                pass
+        if self.liquidation_fn:
+            try:
+                features["liquidation"] = self.liquidation_fn(symbol)
+            except Exception:
+                pass
+        return features
+
+    def _position_risk_inputs(self, st: dict) -> list[PositionRiskInput]:
+        out = []
+        for symbol, pos in st.get("positions", {}).items():
+            stop = pos.get("sl")
+            if not stop and pos.get("entry"):
+                distance = abs(float(pos.get("slPct") or abs(SL_PCT) * 100)) / 100
+                stop = float(pos["entry"]) * (1 - distance if pos.get("side") == "BUY"
+                                              else 1 + distance)
+            out.append(PositionRiskInput(
+                symbol=symbol, side=str(pos.get("side") or ""),
+                qty=float(pos.get("qty") or 0), entry=float(pos.get("entry") or 0),
+                sl=float(stop) if stop else None,
+            ))
+        return out
+
+    def _returns_for_symbols(self, symbols: set[str]) -> dict[str, list[float]]:
+        out = {}
+        if not self.bars_fn:
+            return out
+        for symbol in symbols:
+            try:
+                bars = self.bars_fn(symbol)
+                if bars:
+                    out[symbol] = return_series(
+                        bars, self.decision_cfg.correlation_lookback)
+            except Exception:
+                continue
+        return out
+
+    def _place_protection(self, a, symbol: str, side: str, qty: float,
+                          sl: float, tp: float | None) -> tuple[int | None, int | None]:
+        close_side = "SELL" if side == "BUY" else "BUY"
+        sl_order = place_protective_order(
+            a["api_key"], a["api_secret"], symbol, close_side,
+            "STOP_MARKET", qty, sl,
+        )
+        tp_order = None
+        try:
+            if tp:
+                tp_order = place_protective_order(
+                    a["api_key"], a["api_secret"], symbol, close_side,
+                    "TAKE_PROFIT_MARKET", qty, tp,
+                )
+            else:
+                return sl_order.get("orderId"), None
+        except Exception:
+            # TP is allowed to fall back to software monitoring; the stop is
+            # the non-negotiable protection leg.
+            self._event("error",
+                        f"{symbol.upper()} 交易所止盈单挂载失败，已回落到软件止盈",
+                        account=a.get("name"), symbol=symbol)
+            return sl_order.get("orderId"), None
+        return sl_order.get("orderId"), tp_order.get("orderId")
+
+    def _cancel_protection(self, a, symbol: str) -> None:
+        if not self.decision_cfg.exchange_protection:
+            return
+        try:
+            cancel_all_open_orders(a["api_key"], a["api_secret"], symbol)
+        except Exception as e:
+            self._event("error", f"撤销保护单失败({symbol}): {e}", symbol=symbol)
+
+    def _place_entry_order(self, a, symbol: str, side: str, qty: float,
+                           reference_price: float) -> dict | None:
+        """Optional maker-first entry with cancel-and-replace timeout."""
+        if not self.decision_cfg.maker_first:
+            recent = list(self._recent_entry_slippage)
+            if len(recent) == 3 and sum(recent) / 3 > 0.3:
+                depth = self.depth_fn(symbol) if self.depth_fn else None
+                now = _now_ms()
+                if (depth and now - int(depth.get("ts") or 0) <=
+                        self.decision_cfg.stale_depth_sec * 1000):
+                    bids = depth.get("bids") or []
+                    asks = depth.get("asks") or []
+                    tick = self._tick_size(a["api_key"], a["api_secret"], symbol)
+                    if bids and asks and tick > 0:
+                        raw = float(asks[0][0] if side == "BUY" else bids[0][0])
+                        price = round(round((raw + (tick if side == "BUY" else -tick)) /
+                                            tick) * tick, 12)
+                        try:
+                            order = self._place_order(
+                                a["api_key"], a["api_secret"], symbol, side, qty,
+                                order_type="LIMIT", price=price,
+                                time_in_force="IOC",
+                            )
+                            if float(order.get("executedQty") or 0) > 0:
+                                order["iocFallback"] = True
+                                return order
+                            self._event(
+                                "skip",
+                                f"{symbol.upper()} 连续高滑点，IOC 未成交，放弃信号",
+                                symbol=symbol,
+                            )
+                            return None
+                        except Exception as e:
+                            self._event("error",
+                                        f"{symbol.upper()} IOC 下单失败: {e}",
+                                        symbol=symbol)
+                            return None
+            return self._place_order(
+                a["api_key"], a["api_secret"], symbol, side, qty)
+        depth = self.depth_fn(symbol) if self.depth_fn else None
+        now = _now_ms()
+        if not depth or now - int(depth.get("ts") or 0) > self.decision_cfg.stale_depth_sec * 1000:
+            self._event("system", f"{symbol.upper()} 盘口不可用，maker-first 回落市价",
+                        symbol=symbol)
+            return self._place_order(a["api_key"], a["api_secret"], symbol, side, qty)
+        bids = depth.get("bids") or []
+        asks = depth.get("asks") or []
+        if not bids or not asks:
+            return self._place_order(a["api_key"], a["api_secret"], symbol, side, qty)
+        tick = self._tick_size(a["api_key"], a["api_secret"], symbol)
+        if tick <= 0:
+            return self._place_order(a["api_key"], a["api_secret"], symbol, side, qty)
+        attempts = 1 + self.decision_cfg.maker_max_reposts
+        remaining = qty
+        fills = []
+        for _ in range(attempts):
+            current_depth = self.depth_fn(symbol) if self.depth_fn else depth
+            book = current_depth or depth
+            raw_price = (book.get("bids") or [[reference_price]])[0][0] if side == "BUY" else (
+                (book.get("asks") or [[reference_price]])[0][0])
+            price = round(round(float(raw_price) / tick) * tick, 12)
+            try:
+                order = self._place_order(
+                    a["api_key"], a["api_secret"], symbol, side, remaining,
+                    order_type="LIMIT", price=price, time_in_force="GTX",
+                )
+            except Exception as e:
+                self._event("error", f"{symbol.upper()} maker 挂单失败: {e}", symbol=symbol)
+                return None
+            order_id = order.get("orderId")
+            deadline = time.monotonic() + self.decision_cfg.maker_timeout_sec
+            status = order
+            while time.monotonic() < deadline:
+                time.sleep(1.0)
+                try:
+                    status = query_order(
+                        a["api_key"], a["api_secret"], symbol, int(order_id))
+                except Exception:
+                    continue
+                if status.get("status") in ("FILLED", "CANCELED", "REJECTED", "EXPIRED"):
+                    break
+            executed = float(status.get("executedQty") or order.get("executedQty") or 0)
+            if executed > 0:
+                fills.append({
+                    "qty": executed,
+                    "avgPrice": float(status.get("avgPrice") or price),
+                    "orderId": order_id,
+                })
+                remaining -= executed
+                if remaining <= 1e-12:
+                    break
+            if status.get("status") not in ("FILLED", "CANCELED", "REJECTED", "EXPIRED"):
+                try:
+                    cancel_order(a["api_key"], a["api_secret"], symbol, int(order_id))
+                except Exception:
+                    pass
+        if not fills:
+            self._event("skip", f"{symbol.upper()} maker-first 超时未成交，放弃本次信号",
+                        symbol=symbol)
+            return None
+        total_qty = sum(item["qty"] for item in fills)
+        avg = sum(item["qty"] * item["avgPrice"] for item in fills) / total_qty
+        return {
+            "orderId": fills[-1]["orderId"],
+            "avgPrice": avg,
+            "executedQty": total_qty,
+            "makerFirst": True,
+            "partial": total_qty + 1e-12 < qty,
+        }
+
+    def _replace_exchange_stop(self, a, pos: dict, new_stop: float) -> None:
+        if not self.decision_cfg.exchange_protection:
+            return
+        symbol = pos["symbol"]
+        old_id = pos.get("slOrderId")
+        close_side = "SELL" if pos["side"] == "BUY" else "BUY"
+        try:
+            if old_id:
+                cancel_order(a["api_key"], a["api_secret"], symbol, int(old_id))
+            order = place_protective_order(
+                a["api_key"], a["api_secret"], symbol, close_side,
+                "STOP_MARKET", float(pos["qty"]), float(new_stop),
+            )
+            pos["slOrderId"] = order.get("orderId")
+            pos["protectionOk"] = bool(pos.get("slOrderId") or pos.get("tpOrderId"))
+            self._event("protection",
+                        f"{symbol.upper()} 吊灯止损移至 {new_stop:.8f}",
+                        account=pos.get("account"), symbol=symbol,
+                        slOrderId=pos.get("slOrderId"))
+        except Exception as e:
+            pos["protectionOk"] = False
+            self._event("error",
+                        f"{symbol.upper()} 保护单更新失败: {e}", symbol=symbol)
 
     # ---------- 信号入口（收线确认信号驱动） ----------
 
@@ -448,29 +901,55 @@ class QuantEngine:
             if not price or price <= 0:
                 self._event("skip", "取不到最新价，这次信号跳过", account=self._primary_account(), symbol=symbol)
                 return
-            # 市场状态过滤（形态之外的第二层）：震荡/极端波动/超买超卖/逆势
-            if USE_MARKET_GATE:
-                st = self.indicators.get(symbol) or {}
-                if st:
-                    ok, why = IND.signal_gate(st, direction)
-                    if not ok:
-                        self.gate_log.append({
-                            "ts": _now_ms(), "symbol": symbol, "direction": direction,
-                            "reason": why, "state": {
-                                "regime": st.get("regime"), "rsi": st.get("rsi"),
-                                "z": st.get("z"), "adx": st.get("adx"),
-                                "volState": st.get("volState"), "squeeze": st.get("squeeze"),
-                            },
-                        })
-                        self._event("skip", f"市场状态过滤：{why}", account=self._primary_account(),
-                                    symbol=symbol, pattern=hit.get("pattern"))
-                        return
+            bars = self.bars_fn(symbol) if self.bars_fn else []
+            st = self.indicators.get(symbol) or {}
+            if not st and len(bars) >= 30:
+                st = IND.market_state(bars)
+                self.indicators[symbol] = st
+            features = self._build_features(symbol, bars, st, direction)
+            pattern_stats = self.pattern_stats_fn() if self.pattern_stats_fn else {}
+            signal_score = None
+            if self.decision_cfg.scoring_enabled:
+                if not st:
+                    why = "市场状态数据不足，无法计算共鸣分"
+                    self._event("skip", f"信号评分拦截：{why}", account=self._primary_account(),
+                                symbol=symbol, pattern=hit.get("pattern"))
+                    return
+                signal_score = score_signal(
+                    direction, st, features, self.decision_cfg,
+                    pattern=hit.get("pattern"), pattern_stats=pattern_stats,
+                )
+                if not signal_score.allowed:
+                    why = "；".join(signal_score.vetoes) or "信号分不足"
+                    self.gate_log.append({
+                        "ts": _now_ms(), "symbol": symbol, "direction": direction,
+                        "reason": why, "score": signal_score.score,
+                        "gap": signal_score.gap, "grade": signal_score.grade,
+                        "breakdown": signal_score.breakdown,
+                    })
+                    self._event("skip", f"信号评分拦截：{why}",
+                                account=self._primary_account(), symbol=symbol,
+                                pattern=hit.get("pattern"), score=signal_score.score,
+                                gap=signal_score.gap)
+                    return
+            elif USE_MARKET_GATE and st:
+                ok, why = IND.signal_gate(st, direction)
+                if not ok:
+                    self.gate_log.append({
+                        "ts": _now_ms(), "symbol": symbol, "direction": direction,
+                        "reason": why,
+                    })
+                    self._event("skip", f"市场状态过滤：{why}", account=self._primary_account(),
+                                symbol=symbol, pattern=hit.get("pattern"))
+                    return
             # 「收到信号」记录已在入口处统一落库，这里不再重复发。
             side = "BUY" if direction == "bullish" else "SELL"
             for a in self._tradable_accounts():
                 name = a.get("name", "")
                 try:
-                    self._decide_open(name, a, symbol, side, direction, float(price), hit)
+                    self._decide_open(name, a, symbol, side, direction, float(price), hit,
+                                      features=features, signal_score=signal_score,
+                                      bars=bars)
                 except Exception as e:
                     self.stats["errors"] += 1
                     self._event("error", f"决策异常({name}/{symbol}): {e}", symbol=symbol)
@@ -478,132 +957,253 @@ class QuantEngine:
             self.stats["errors"] += 1
             self._event("error", f"信号处理异常: {e}")
 
-    def _decide_open(self, name, a, symbol, side, direction, price, hit):
+    def _decide_open(self, name, a, symbol, side, direction, price, hit,
+                     features=None, signal_score=None, bars=None):
         st = self._st(name)
         now = _now_ms()
-        # 风控 0：该合约未开通权限（如 TradFi 需签协议）→ 不再尝试
         if symbol in self._unsupported:
             return
-        # 风控 0.5：账户回撤熔断
-        if self._dd_paused():
-            left = int((self.dd_state["paused_until"] - now) / 1000)
-            self._event("skip", f"账户回撤熔断中，还需 {max(1, left)} 秒恢复",
-                        account=name, symbol=symbol)
+        if now < self._rest_pause_until:
+            left = int((self._rest_pause_until - now) / 1000)
+            self._event("skip", f"交易所限频冷却中，还需 {left} 秒",
+                        account=name, symbol=symbol, reasonCode="rest_pause")
             return
-        # 风控 1：该账户已有该币种持仓
-        if symbol in st["positions"]:
-            held = st["positions"][symbol].get("qty")
-            self._event("skip", f"该币已有 {fmt_qty(held)} 的仓位，不重复开",
-                        account=name, symbol=symbol)
+        if now < self._permission_pause_until:
+            left = int((self._permission_pause_until - now) / 1000)
+            self._event("skip", f"API 权限异常冷却中，还需 {left} 秒",
+                        account=name, symbol=symbol, reasonCode="permission_pause")
             return
-        # 风控 2：最大持仓数
-        if len(st["positions"]) >= MAX_POSITIONS:
-            self._event("skip",
-                        f"仓位已满 {len(st['positions'])}/{MAX_POSITIONS}，等先平掉一个",
-                        account=name, symbol=symbol)
+        if now < self._drift_shadow_until:
+            left = int((self._drift_shadow_until - now) / 1000)
+            self._event("skip", f"机制漂移影子模式中，停止真实开仓（还剩 {left} 秒）",
+                        account=name, symbol=symbol, reasonCode="drift_shadow")
             return
-        # 风控 3：同币种冷却
-        if now - st["cooldown"].get(symbol, 0) < COOLDOWN_SEC * 1000:
-            left = int((COOLDOWN_SEC * 1000 - (now - st["cooldown"].get(symbol, 0))) / 1000)
-            self._event("skip", f"刚平过这个币，还需等 {left} 秒",
-                        account=name, symbol=symbol)
-            return
-        # 风控 3.5：同方向持仓上限（防止同向信号聚集造成方向过度集中）
-        same_dir = sum(1 for p in st["positions"].values() if p.get("side") == side)
-        if same_dir >= MAX_SAME_DIR:
-            self._event("skip",
-                        f"同方向已持 {same_dir} 个仓（上限 {MAX_SAME_DIR}），不再加",
-                        account=name, symbol=symbol)
-            return
-        # 风控 3.7：形态历史胜率质量门——胜率过低的形态不入场（与形态统计系统联动）
-        if self.pattern_stats_fn:
-            pst = (self.pattern_stats_fn() or {}).get(hit.get("pattern"))
-            if pst:
-                n_dec = pst["wins"] + pst["losses"]
-                if n_dec >= self.min_pattern_samples:
-                    wr = pst["wins"] / n_dec
-                    if wr < self.min_pattern_winrate:
-                        self._event("skip",
-                                    f"该形态历史胜率仅 {round(wr * 100)}%，低于门槛 {round(self.min_pattern_winrate * 100)}%，跳过",
-                                    account=name, symbol=symbol)
-                        return
-        # 风控 4：可用余额与保证金
-        avail = self._available(a)
-        margin = max(MARGIN_MIN, round(avail * MARGIN_PCT, 2))
-        if avail < MARGIN_MIN:
-            self._event("skip",
-                        f"可用余额 {fmt_qty(avail)} U，不够最低 {fmt_qty(MARGIN_MIN)} U",
-                        account=name, symbol=symbol)
-            return
-        qty_raw = margin / price
-        step = self._step_size(a["api_key"], a["api_secret"], symbol)
-        qty = self._quantize(qty_raw, step)
-        if qty <= 0:
-            self._event("skip",
-                        f"保证金 {fmt_qty(margin)} U 太少，按最小下单量算出 0，跳过",
-                        account=name, symbol=symbol)
-            return
-        # 下单
-        try:
-            r = self._place_order(a["api_key"], a["api_secret"], symbol, side, qty)
-        except Exception as e:
-            self.stats["errors"] += 1
-            if self._mark_unsupported(symbol, e):
-                st["cooldown"][symbol] = now
+        drift_caution = now < self._drift_caution_until
+        equity, avail = self._balance_snapshot(a)
+        if equity <= 0:
+            equity = avail
+        watched = self.watch_bars_fn(symbol) if self.watch_bars_fn else None
+        watch_plan = None
+        if self.decision_cfg.watch_enabled:
+            if not watched:
+                self._event("skip", "4h/1h 盯盘数据未就绪，暂不开仓",
+                            account=name, symbol=symbol)
                 return
-            self._event("error", f"下单失败({name}/{symbol}): {e}", symbol=symbol)
-            st["cooldown"][symbol] = now
-            return
-        entry_price = float(r.get("avgPrice") or price)
-        # 按当前 ATR 给出该仓位的止损/止盈价（不再用全局固定百分比）
+            entry_bars, h1_bars, h4_bars = watched
+            watch_plan = build_watch_plan(
+                symbol, direction, entry_bars, h1_bars, h4_bars,
+                equity=equity, available=avail, config=self.decision_cfg,
+                entry_price=price,
+            )
+            if not watch_plan.allowed:
+                self.gate_log.append({
+                    "ts": now, "symbol": symbol, "direction": direction,
+                    "reason": f"多周期盯盘：{watch_plan.reason}",
+                    "watch": watch_plan.metrics,
+                })
+                self._event("skip", f"多周期盯盘：{watch_plan.reason}",
+                            account=name, symbol=symbol, pattern=hit.get("pattern"))
+                return
+        if not self.decision_cfg.scoring_enabled and self.pattern_stats_fn:
+            pst = (self.pattern_stats_fn() or {}).get(hit.get("pattern")) or {}
+            wins = int(pst.get("wins") or 0)
+            losses = int(pst.get("losses") or 0)
+            if wins + losses >= self.min_pattern_samples:
+                winrate = wins / (wins + losses)
+                if winrate < self.min_pattern_winrate:
+                    self._event(
+                        "skip",
+                        f"该形态历史胜率仅 {round(winrate * 100)}%，低于门槛 "
+                        f"{round(self.min_pattern_winrate * 100)}%，跳过",
+                        account=name, symbol=symbol,
+                    )
+                    return
         st_ind = self.indicators.get(symbol) or {}
-        if USE_ATR_STOPS:
+        if not st_ind and bars and len(bars) >= 30:
+            st_ind = IND.market_state(bars)
+            self.indicators[symbol] = st_ind
+        if watch_plan:
+            plan = {
+                "sl": watch_plan.sl,
+                "tp": watch_plan.tp,
+                "slPct": abs(watch_plan.entry - watch_plan.sl) / watch_plan.entry * 100,
+                "tpPct": abs(watch_plan.tp - watch_plan.entry) / watch_plan.entry * 100,
+            }
+        elif USE_ATR_STOPS:
             plan = IND.adaptive_sl_tp(
-                entry_price, st_ind.get("atr"), side,
+                price, st_ind.get("atr"), side,
                 sl_mult=ATR_SL_MULT, tp_mult=ATR_TP_MULT,
                 sl_min_pct=SL_MIN_PCT, tp_min_pct=TP_MIN_PCT,
                 sl_max_pct=SL_MAX_PCT, tp_max_pct=TP_MAX_PCT)
         else:
             plan = IND.adaptive_sl_tp(
-                entry_price, None, side,
+                price, None, side,
                 sl_min_pct=abs(SL_PCT), tp_min_pct=TP_PCT,
                 sl_max_pct=abs(SL_PCT), tp_max_pct=TP_PCT)
+        positions = self._position_risk_inputs(st)
+        symbols = {symbol, *(p.symbol for p in positions)}
+        cascade = (features or {}).get("liquidation") or {}
+        data_ok = True
+        if self.data_health_fn:
+            try:
+                data_ok = bool(self.data_health_fn(symbol))
+            except Exception:
+                data_ok = False
+        risk_input = RiskInput(
+            account=name, symbol=symbol, side=side, entry=price, sl=plan["sl"],
+            equity=equity, available=avail, positions=positions,
+            returns_by_symbol=self._returns_for_symbols(symbols),
+            step_size=self._step_size(a["api_key"], a["api_secret"], symbol),
+            now_ms=now, data_ok=data_ok,
+            is_demo=bool(self.feed_is_live_fn and not self.feed_is_live_fn()),
+            drawdown_paused=self._dd_paused(),
+            drawdown_pct=float(self.dd_state.get("current") or 0),
+            signal_score=signal_score.score if signal_score else None,
+            signal_grade=signal_score.grade if signal_score else None,
+            confidence=signal_score.confidence if signal_score else None,
+            atr_pct=st_ind.get("atrPct"),
+            liquidation_cascade=bool(cascade.get("blocked") or cascade.get("active")),
+            funding_blocked=bool((features or {}).get("funding", {}).get("blocked")),
+            max_positions_override=(
+                min(2, self.decision_cfg.max_positions) if drift_caution else None),
+            cooldown_extra_sec=900 if drift_caution else 0,
+        )
+        decision = self.risk.evaluate(risk_input)
+        if not decision.allowed:
+            self.gate_log.append({
+                "ts": now, "symbol": symbol, "direction": direction,
+                "reason": decision.reason, "code": decision.code,
+                "metrics": decision.metrics,
+            })
+            self._event("skip", f"统一风控：{decision.reason}",
+                        account=name, symbol=symbol, pattern=hit.get("pattern"),
+                        riskCode=decision.code)
+            return
+        qty = decision.qty
+        self.risk.record_order_attempt(name, now)
+        try:
+            r = self._place_entry_order(a, symbol, side, qty, price)
+        except Exception as e:
+            self.stats["errors"] += 1
+            if self._mark_unsupported(symbol, e):
+                st["cooldown"][symbol] = now
+                return
+            st["cooldown"][symbol] = now
+            self._event("error", f"下单失败({name}/{symbol}): {e}", symbol=symbol)
+            return
+        if not r:
+            st["cooldown"][symbol] = now
+            return
+        qty = float(r.get("executedQty") or qty)
+        qty = self._quantize(qty, self._step_size(a["api_key"], a["api_secret"], symbol))
+        if qty <= 0:
+            return
+        entry_price = float(r.get("avgPrice") or price)
+        adverse_slippage = (entry_price - price) * (1 if side == "BUY" else -1)
+        atr_at_entry = st_ind.get("atr")
+        slippage_atr = adverse_slippage / atr_at_entry if atr_at_entry else 0.0
+        self._recent_entry_slippage.append(abs(slippage_atr))
+        if slippage_atr > 0.3:
+            self._event("slippage",
+                        f"{symbol.upper()} 开仓滑点 {slippage_atr:.2f}×ATR",
+                        account=name, symbol=symbol,
+                        expected=price, fill=entry_price,
+                        slippageAtr=round(slippage_atr, 6))
+        sl_order_id = tp_order_id = None
+        if self.decision_cfg.exchange_protection:
+            try:
+                sl_order_id, tp_order_id = self._place_protection(
+                    a, symbol, side, qty, plan["sl"], plan["tp"])
+            except Exception as e:
+                self.stats["errors"] += 1
+                close_side = "SELL" if side == "BUY" else "BUY"
+                try:
+                    self._place_order(a["api_key"], a["api_secret"], symbol,
+                                      close_side, qty, reduce_only=True)
+                except Exception as close_error:
+                    self._event("error",
+                                f"保护单失败且紧急平仓失败({name}/{symbol}): {close_error}",
+                                account=name, symbol=symbol)
+                self._event("error",
+                            f"保护单挂载失败，已拒绝裸仓({name}/{symbol}): {e}",
+                            account=name, symbol=symbol)
+                self._cancel_protection(a, symbol)
+                return
         pos = {
-            "symbol": symbol, "side": side, "qty": qty, "margin": margin,
+            "symbol": symbol, "side": side, "qty": qty,
+            "account": name,
+            "margin": round(qty * entry_price, 8),
             "entry": entry_price, "entryTs": now,
             "orderId": r.get("orderId"), "pattern": hit.get("pattern"),
             "name_zh": hit.get("name_zh"), "direction": direction,
-            # 自适应止损止盈（监控时优先用这两个价，缺失则退回全局百分比）
             "sl": round(plan["sl"], 8) if plan["sl"] else None,
             "tp": round(plan["tp"], 8) if plan["tp"] else None,
             "slPct": round(plan["slPct"], 3),
             "tpPct": round(plan["tpPct"], 3),
-            "atrAtEntry": st_ind.get("atr"),
+            "atrAtEntry": atr_at_entry,
             "regimeAtEntry": st_ind.get("regime"),
             "rsiAtEntry": st_ind.get("rsi"),
+            "score": signal_score.score if signal_score else None,
+            "scoreGrade": signal_score.grade if signal_score else None,
+            "scoreBreakdown": signal_score.breakdown if signal_score else None,
+            "watchPlan": watch_plan.metrics if watch_plan else None,
+            "slOrderId": sl_order_id, "tpOrderId": tp_order_id,
+            "protectionOk": bool(sl_order_id),
+            "slippageAtr": round(slippage_atr, 6),
+            "invalidation": self._invalidation_price(hit, side, atr_at_entry),
+            "executionType": "maker" if r.get("makerFirst") else "market",
+            "partialFill": bool(r.get("partial")),
         }
         st["positions"][symbol] = pos
         st["cooldown"][symbol] = now
         self.stats["decisions"] += 1
         self._save_positions()
-        self._event("open",
-                    f"{'做多' if side == 'BUY' else '做空'} {symbol.upper()} "
-                    f"数量 {qty} @ {pos['entry']}（保证金 {margin}）",
-                    account=name, symbol=symbol, side=side, qty=qty, entry=pos["entry"],
-                    orderId=pos["orderId"], margin=margin, pattern=hit.get("pattern"),
-                    name_zh=hit.get("name_zh"), direction=direction,
-                    slPct=pos["slPct"], tpPct=pos["tpPct"], atr=pos["atrAtEntry"])
+        self._event(
+            "open",
+            f"{'做多' if side == 'BUY' else '做空'} {symbol.upper()} "
+            f"数量 {qty} @ {entry_price}（风险 {decision.risk_pct:.2f}%，"
+            f"热度 {decision.heat_pct:.2f}%）",
+            account=name, symbol=symbol, side=side, qty=qty, entry=entry_price,
+            orderId=pos["orderId"], margin=pos["margin"], pattern=hit.get("pattern"),
+            name_zh=hit.get("name_zh"), direction=direction,
+            slPct=pos["slPct"], tpPct=pos["tpPct"], atr=atr_at_entry,
+            score=pos["score"], scoreGrade=pos["scoreGrade"],
+            heatPct=decision.heat_pct, kellyPct=decision.kelly_pct * 100,
+            warnings=decision.warnings, slippageAtr=pos["slippageAtr"],
+            slOrderId=sl_order_id, tpOrderId=tp_order_id,
+        )
         self._broadcast_positions()
 
-    def _available(self, a) -> float:
+    @staticmethod
+    def _invalidation_price(hit: dict, side: str, atr: float | None) -> float | None:
+        geometry = hit.get("geometry") or {}
+        neck = geometry.get("neck")
+        if neck is None or not atr:
+            return None
+        if side == "BUY":
+            return float(neck) - 0.1 * atr
+        return float(neck) + 0.1 * atr
+
+    def _balance_snapshot(self, a) -> tuple[float, float]:
+        name = str(a.get("name") or a.get("id") or "")
+        now = _now_ms()
+        cached = self._balance_cache.get(name)
+        if cached and now - cached[2] < 10_000:
+            return cached[0], cached[1]
         try:
             balances = signed_request(a["api_key"], a["api_secret"], "/fapi/v2/balance")
             for b in balances:
                 if b.get("asset") == "USDT":
-                    return float(b.get("availableBalance", 0))
+                    wallet = float(b.get("balance", 0) or 0)
+                    available = float(b.get("availableBalance", 0) or 0)
+                    self._balance_cache[name] = (wallet, available, now)
+                    return wallet, available
         except Exception as e:
             self._event("error", f"可用余额获取失败({a.get('name')}): {e}")
-        return 0.0
+        return 0.0, 0.0
+
+    def _available(self, a) -> float:
+        return self._balance_snapshot(a)[1]
 
     # ---------- 持仓监控（止损/止盈） ----------
 
@@ -666,6 +1266,56 @@ class QuantEngine:
                 if prev_peak is None or peak > prev_peak + 0.0001:
                     pos["peak"] = peak      # 首次/明显创新高才标记，循环结束统一写盘
                     peak_dirty = True
+                bars = self.bars_fn(symbol) if self.bars_fn else []
+                atr_now = (self.indicators.get(symbol) or {}).get("atr")
+                if bars and atr_now:
+                    last_closed = next(
+                        (bar for bar in reversed(bars) if getattr(bar, "closed", False)), None)
+                    if last_closed is not None:
+                        if direction_up:
+                            pos["peakPrice"] = max(
+                                float(pos.get("peakPrice") or pos["entry"]),
+                                float(last_closed.high))
+                        else:
+                            pos["peakPrice"] = min(
+                                float(pos.get("peakPrice") or pos["entry"]),
+                                float(last_closed.low))
+                        invalidation = pos.get("invalidation")
+                        if invalidation:
+                            invalidated = (
+                                float(last_closed.close) < float(invalidation)
+                                if direction_up else
+                                float(last_closed.close) > float(invalidation)
+                            )
+                            if invalidated:
+                                self._close(
+                                    name, a, symbol, price,
+                                    f"形态失效(收盘{last_closed.close}穿越{invalidation})")
+                                continue
+                        armed = peak >= self.decision_cfg.trail_arm_atr * atr_now / pos["entry"]
+                        if armed:
+                            if direction_up:
+                                chandelier = float(pos["peakPrice"]) - (
+                                    self.decision_cfg.trail_atr_mult * atr_now)
+                                new_stop = max(float(pos.get("sl") or 0), chandelier)
+                            else:
+                                chandelier = float(pos["peakPrice"]) + (
+                                    self.decision_cfg.trail_atr_mult * atr_now)
+                                old_stop = float(pos.get("sl") or 1e30)
+                                new_stop = min(old_stop, chandelier)
+                            min_step = max(atr_now * 0.05, pos["entry"] * 0.0002)
+                            improvement = (
+                                new_stop - float(pos.get("sl") or 0)
+                                if direction_up else
+                                float(pos.get("sl") or 1e30) - new_stop
+                            )
+                            if improvement > min_step:
+                                pos["sl"] = round(new_stop, 8)
+                                pos["slPct"] = round(
+                                    abs(new_stop - pos["entry"]) / pos["entry"] * 100, 3)
+                                pos["trailAtr"] = round(new_stop, 8)
+                                peak_dirty = True
+                                self._replace_exchange_stop(a, pos, new_stop)
                 # 优先用开仓时按 ATR 算出的止损/止盈价；缺失时退回全局百分比
                 hit_sl = hit_tp = False
                 if pos.get("sl") or pos.get("tp"):
@@ -682,7 +1332,7 @@ class QuantEngine:
                               else f"止损{pos.get('slPct', 0):.2f}%")
                     self._close(name, a, symbol, price,
                                 f"{reason}({move * 100:.2f}%, {detail})")
-                elif peak >= max(TRAIL_ARM, (pos.get("slPct") or 0) / 100 * 0.5) and move <= peak - max(TRAIL_GAP, (pos.get("slPct") or 0) / 100 * 0.15):
+                elif not atr_now and peak >= max(TRAIL_ARM, (pos.get("slPct") or 0) / 100 * 0.5) and move <= peak - max(TRAIL_GAP, (pos.get("slPct") or 0) / 100 * 0.15):
                     # 移动止盈：浮盈曾达门槛，回撤到阈值 → 锁定剩余利润
                     self._close(name, a, symbol, price,
                                 f"移动止盈(峰值{peak * 100:.2f}%→{move * 100:.2f}%)")
@@ -717,6 +1367,7 @@ class QuantEngine:
         if live_amt is not None:
             if abs(live_amt) < 1e-9:
                 # 交易所已无仓位 → 直接核销，不再下单
+                self._cancel_protection(a, symbol)
                 st["positions"].pop(symbol)
                 self._save_positions()
                 self._event("close", f"{reason}：交易所已没有这个仓位，清理本地记录", account=name, symbol=symbol)
@@ -728,6 +1379,7 @@ class QuantEngine:
         else:
             close_qty = abs(pos["qty"])
         close_side = "SELL" if pos["side"] == "BUY" else "BUY"
+        self._cancel_protection(a, symbol)
         step = self._step_size(a["api_key"], a["api_secret"], symbol)
         close_qty = self._quantize(close_qty, step)
         if close_qty <= 0:
@@ -737,6 +1389,16 @@ class QuantEngine:
         try:
             r = self._place_order(a["api_key"], a["api_secret"], symbol, close_side, close_qty, reduce_only=True)
         except Exception as e:
+            if "-2022" in str(e):
+                amt = self._live_amt(a["api_key"], a["api_secret"], symbol)
+                if amt is not None and abs(amt) < 1e-9:
+                    self._cancel_protection(a, symbol)
+                    st["positions"].pop(symbol, None)
+                    self._save_positions()
+                    self._event("close", f"{reason}：平仓竞态，仓位已由交易所了结",
+                                account=name, symbol=symbol, apiCode="-2022")
+                    self._broadcast_positions()
+                    return
             pos["closeFails"] = fails + 1
             self.stats["errors"] += 1
             self._event("error", f"平仓失败({name}/{symbol}) 第{fails + 1}次: {e}",
@@ -744,14 +1406,22 @@ class QuantEngine:
             if pos["closeFails"] >= 3:
                 self._event("error", f"{name}/{symbol} 平仓连续失败3次，暂停重试等待审计核销", symbol=symbol)
             return
-        move = (price - pos["entry"]) / pos["entry"] * (1 if pos["side"] == "BUY" else -1)
-        pnl = round((price - pos["entry"]) * close_qty * (1 if pos["side"] == "BUY" else -1), 2)
+        fill_price = float(r.get("avgPrice") or 0) or price
+        direction_sign = 1 if pos["side"] == "BUY" else -1
+        move = (fill_price - pos["entry"]) / pos["entry"] * direction_sign
+        pnl = round((fill_price - pos["entry"]) * close_qty * direction_sign, 2)
+        close_slippage = (price - fill_price) * direction_sign
+        atr_at_entry = float(pos.get("atrAtEntry") or 0)
+        slippage_atr = close_slippage / atr_at_entry if atr_at_entry else 0.0
         trade = {
             "ts": _now_ms(), "account": name, "symbol": symbol, "side": pos["side"],
-            "qty": close_qty, "entry": pos["entry"], "exit": price, "pnl": pnl,
+            "qty": close_qty, "entry": pos["entry"], "exit": fill_price, "pnl": pnl,
             "movePct": round(move * 100, 2), "reason": reason,
             "entryTs": pos["entryTs"], "holdMin": round((now_ms() - pos["entryTs"]) / 60000, 1),
             "pattern": pos.get("pattern"), "orderId": pos.get("orderId"), "closeId": r.get("orderId"),
+            "slippageAtr": round(slippage_atr, 6),
+            "entrySlippageAtr": float(pos.get("slippageAtr") or 0),
+            "atrAtEntry": atr_at_entry,
         }
         st["positions"].pop(symbol)
         self._save_positions()
@@ -763,10 +1433,60 @@ class QuantEngine:
             self.stats["losses"] += 1
         self._event("close", f"{reason}平仓 {symbol.upper()}，盈亏 {pnl}",
                     account=name, symbol=symbol, pnl=pnl, side=pos["side"],
-                    qty=close_qty, entry=pos["entry"], exit=price)
+                    qty=close_qty, entry=pos["entry"], exit=fill_price,
+                    slippageAtr=round(slippage_atr, 6))
+        if slippage_atr > 0.3:
+            self._event("slippage",
+                        f"{symbol.upper()} 平仓滑点 {slippage_atr:.2f}×ATR",
+                        account=name, symbol=symbol,
+                        expected=price, fill=fill_price,
+                        slippageAtr=round(slippage_atr, 6))
         self._broadcast_positions()
 
     # ---------- 每 5 分钟自审计（对账 + 兜底） ----------
+
+    def _audit_protection(self, a, pos: dict) -> bool:
+        if not self.decision_cfg.exchange_protection:
+            return True
+        symbol = pos["symbol"]
+        stop = pos.get("sl")
+        target = pos.get("tp")
+        if not stop:
+            return True
+        try:
+            orders = open_orders(a["api_key"], a["api_secret"], symbol)
+            stop_orders = [o for o in orders if o.get("type") == "STOP_MARKET"]
+            expected = float(stop)
+            atr = float(pos.get("atrAtEntry") or 0)
+            tolerance = max(float(pos["entry"]) * 0.0005, atr * 0.1)
+            valid = any(
+                abs(float(o.get("stopPrice") or 0) - expected) <= tolerance
+                for o in stop_orders
+            )
+            if valid:
+                pos["protectionOk"] = True
+                return True
+            self._event("audit", f"{symbol.upper()} 止损保护单缺失或价格漂移，准备补挂",
+                        account=pos.get("account"), symbol=symbol)
+            try:
+                cancel_all_open_orders(a["api_key"], a["api_secret"], symbol)
+            except Exception:
+                pass
+            sl_id, tp_id = self._place_protection(
+                a, symbol, pos["side"], float(pos["qty"]), expected, target)
+            pos["slOrderId"] = sl_id
+            pos["tpOrderId"] = tp_id
+            pos["protectionOk"] = bool(sl_id)
+            self._event("audit", f"{symbol.upper()} 保护单已补挂",
+                        account=pos.get("account"), symbol=symbol,
+                        slOrderId=sl_id, tpOrderId=tp_id)
+            return True
+        except Exception as e:
+            pos["protectionOk"] = False
+            self._event("error",
+                        f"{symbol.upper()} 保护单补挂失败，准备市价保命平仓: {e}",
+                        account=pos.get("account"), symbol=symbol)
+            return False
 
     @_serialized
     def audit(self) -> None:
@@ -822,6 +1542,31 @@ class QuantEngine:
                         pos["qty"] = abs(li["amt"])
                         changed = True
                         self._event("audit", f"{sym.upper()} 的持仓数量和交易所对不上，已按交易所更新为 {abs(li['amt'])}", account=name, symbol=sym)
+                # 止损单是最后防线：缺失/漂移时补挂，补挂失败则保命平仓
+                for sym, pos in list(st["positions"].items()):
+                    if (name, sym) in self._manual:
+                        continue
+                    if not pos.get("sl"):
+                        mark = live.get(sym, {}).get("price") or pos.get("entry", 0)
+                        st_ind = self.indicators.get(sym) or {}
+                        if mark:
+                            recovered_plan = IND.adaptive_sl_tp(
+                                float(mark), st_ind.get("atr"), pos["side"],
+                                sl_mult=ATR_SL_MULT, tp_mult=ATR_TP_MULT,
+                                sl_min_pct=SL_MIN_PCT, tp_min_pct=TP_MIN_PCT,
+                                sl_max_pct=SL_MAX_PCT, tp_max_pct=TP_MAX_PCT)
+                            pos.update({
+                                "sl": recovered_plan["sl"],
+                                "tp": recovered_plan["tp"],
+                                "slPct": recovered_plan["slPct"],
+                                "tpPct": recovered_plan["tpPct"],
+                            })
+                            changed = True
+                    if not self._audit_protection(a, pos):
+                        price = live.get(sym, {}).get("price") or pos.get("entry", 0)
+                        if price:
+                            self._close(name, a, sym, float(price),
+                                        "保护单缺失且补挂失败")
                 # 豁免登记的仓位在交易所已不存在（未被跟踪故未走上面核销）→ 清理登记，
                 # 否则残留豁免会让量化引擎后续在同账户同币种开的仓绕过止盈止损
                 for (n, sym) in list(self._manual):
@@ -893,7 +1638,13 @@ class QuantEngine:
                     "peak": self.dd_state.get("peak", 0),
                     "paused": self._dd_paused(),
                     "pausedUntil": self.dd_state.get("paused_until", 0),
-                    "limit": -DD_LIMIT_PCT * 100,
+                    "limit": -self.decision_cfg.drawdown_limit_pct * 100,
+                },
+                "drift": {
+                    "cautionUntil": self._drift_caution_until,
+                    "shadowUntil": self._drift_shadow_until,
+                    "caution": _now_ms() < self._drift_caution_until,
+                    "shadow": _now_ms() < self._drift_shadow_until,
                 },
                 # 过滤器拦截记录（最近 N 条）
                 "gateLog": list(self.gate_log)[-20:],
@@ -902,11 +1653,20 @@ class QuantEngine:
                     "atrSlMult": ATR_SL_MULT, "atrTpMult": ATR_TP_MULT,
                     "slMinPct": SL_MIN_PCT * 100, "slMaxPct": SL_MAX_PCT * 100,
                     "tpMinPct": TP_MIN_PCT * 100, "tpMaxPct": TP_MAX_PCT * 100,
-                    "ddLimitPct": -DD_LIMIT_PCT * 100, "ddPauseMin": DD_PAUSE_MIN,
-                    "maxPositions": MAX_POSITIONS, "maxSameDir": MAX_SAME_DIR,
-                    "cooldownSec": COOLDOWN_SEC, "maxHoldMin": MAX_HOLD_MIN,
-                    "trailArm": TRAIL_ARM * 100, "trailGap": TRAIL_GAP * 100,
-                    "marginPct": MARGIN_PCT * 100,
+                    "ddLimitPct": -self.decision_cfg.drawdown_limit_pct * 100,
+                    "ddPauseMin": self.decision_cfg.drawdown_pause_min,
+                    "maxPositions": self.decision_cfg.max_positions,
+                    "maxSameDir": self.decision_cfg.max_same_direction,
+                    "cooldownSec": self.decision_cfg.cooldown_base_sec,
+                    "cooldownMaxSec": self.decision_cfg.cooldown_max_sec,
+                    "maxHoldMin": MAX_HOLD_MIN,
+                    "trailArmAtr": self.decision_cfg.trail_arm_atr,
+                    "trailAtrMult": self.decision_cfg.trail_atr_mult,
+                    "marginPct": self.decision_cfg.margin_pct_default * 100,
+                    "riskPerTradePct": self.decision_cfg.risk_per_trade_pct * 100,
+                    "portfolioHeatMaxPct": self.decision_cfg.portfolio_heat_max_pct * 100,
+                    "dailyLossLimitPct": self.decision_cfg.daily_loss_limit_pct * 100,
+                    "dailyProfitLockPct": self.decision_cfg.daily_profit_lock_pct * 100,
                     "rsiOverbought": IND.RSI_OVERBOUGHT, "rsiOversold": IND.RSI_OVERSOLD,
                     "zExtreme": IND.Z_EXTREME, "adxTrend": IND.ADX_TREND,
                     "adxRange": IND.ADX_RANGE, "squeezePct": IND.BW_SQUEEZE_PCT,
