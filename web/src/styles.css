@@ -154,12 +154,14 @@ body {
   min-height: 0;
 }
 
-/* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3），固定高度 */
+/* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3）。
+   高度随视窗自适应：小屏收缩（下限 220），高屏回到 340 上限，
+   把更多空间留给上方的策略分析。 */
 .row3 {
   display: flex;
   gap: var(--gap);
   flex: 0 0 auto;
-  height: 340px;
+  height: clamp(220px, 34vh, 340px);
   min-height: 0;
 }
 
