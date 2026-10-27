@@ -116,41 +116,41 @@
 .tags em[data-tone="low"] { color: #475569; background: rgba(100, 116, 139, 0.12); }
 .tags em[data-tone="squeeze"] { color: #b45309; background: rgba(245, 158, 11, 0.2); }
 
-/* 指标：2 列 × 4 行，格子更大、留白更多 */
+/* 指标：单列 8 行，每行「名称 ……… 数值」。
+   卡片宽仅 ~115px，两列会让每个数值只剩 ~50px、长数值（如 ROC -0.27）被裁。
+   单列每行独占整宽，是最舒服的读法。 */
 .metrics {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 3px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
 }
 .metric {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 3px;
+  gap: 6px;
   min-width: 0;
-  padding: 3px 5px;
+  padding: 2px 5px;
   border-radius: 4px;
-  line-height: 1.3;
+  line-height: 1.35;
   font-variant-numeric: tabular-nums;
   overflow: hidden;
   transition: background-color 400ms ease, color 400ms ease;
 }
 .metric u {
-  font-size: 8px;
+  font-size: 8.5px;
   font-weight: 600;
   text-decoration: none;
   opacity: 0.75;
   white-space: nowrap;
   flex: none;
-  overflow: hidden;
 }
 .metric b {
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
-  overflow: visible;
   white-space: nowrap;
-  letter-spacing: -0.3px;
   flex: none;
+  letter-spacing: -0.2px;
 }
 .metric[data-na] {
   background: rgba(28, 35, 51, 0.035);
