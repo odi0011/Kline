@@ -111,7 +111,7 @@ body {
   flex: 1;
   position: relative;
   padding: 12px 20px;
-  overflow-y: auto;
+  overflow: hidden;      /* 行内精确分配视窗高度；内容溢出由各面板内部滚动 */
   display: flex;
   flex-direction: column;
   gap: var(--gap);
@@ -143,16 +143,24 @@ body {
 }
 
 /* 量化交易区：删掉第二行账户面板后填满剩余高度 */
-/* 第二行：策略分析（决策依据全流程），独占并铺满剩余视窗高度。
-   .right 是 overflow-y:auto 的 flex 列，flex:1 在滚动容器里不会自动分配，
-   所以用 calc 直接把「视窗高 - 第一行(192) - 第三行(340) - 间距/内边距」算给它。 */
+/* 第二行：策略分析（决策依据全流程），独占剩余视窗高度。
+   注意 .right 是 overflow:auto 的滚动容器 —— 在滚动容器里子项的 flex:1
+   不会按视窗分配，必须让 .right 本身不滚动、由内部各行精确分配。
+   策略面板内部自带 ScrollArea，压缩后内容仍可滚动查看。 */
 .row2 {
   display: flex;
   gap: var(--gap);
   flex: 1 1 auto;
-  min-height: 320px;
-  height: calc(100vh - 192px - 340px - var(--gap) * 2 - 24px);
-  max-height: calc(100vh - 192px - 340px - var(--gap) * 2 - 24px);
+  min-height: 0;
+}
+
+/* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3），固定高度 */
+.row3 {
+  display: flex;
+  gap: var(--gap);
+  flex: 0 0 auto;
+  height: 340px;
+  min-height: 0;
 }
 
 /* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3），固定高度 */
