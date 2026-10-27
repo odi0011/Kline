@@ -183,7 +183,10 @@ export default function App() {
         if (typeof s.patterns.live_preview === 'boolean') setLivePreview(s.patterns.live_preview)
       }
       if (Array.isArray(s.accounts)) setSrvAccounts(s.accounts)
+      if (s.ai) setAiCfg(s.ai)
     })
+    const offAiModels = live.on('ai_models', (m) => setAiModelsResult(m.result || null))
+    const offAiTest = live.on('ai_test', (m) => setAiTestResult({ ...(m.result || {}), at: Date.now() }))
     const offQuant = live.on('quant', (m) => setQuantSnap(m.snapshot))
     const offQEvents = live.on('quant_events', (m) => setQuantEvents(m.events || []))
     const offTrades = live.on('quant_trades', (m) => setQuantTrades(m.trades || []))
@@ -203,7 +206,7 @@ export default function App() {
       })
     })
     live.connect()
-    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offQEvent(); offTrades(); offTrade(); offNews(); live.close() }
+    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offQEvent(); offTrades(); offTrade(); offNews(); offAiModels(); offAiTest(); live.close() }
   }, [])
 
   // ==================== 命中动画：串行队列 ====================
@@ -514,6 +517,13 @@ export default function App() {
     liveRef.current && liveRef.current.sendSettings({ accounts: next })
   }
 
+  // AI 设置：保存走 settings（服务端 merge，密钥留空/掩码即沿用）
+  const saveAi = (ai) => {
+    setAiCfg((prev) => ({ ...prev, ...ai, key: ai.key && ai.key.includes('•') ? prev.key : ai.key }))
+    liveRef.current && liveRef.current.sendSettings({ ai })
+  }
+  const aiAction = (msg) => liveRef.current && liveRef.current.send(msg)
+
   // 币种勾选：最少 MIN_SYMBOLS 个、最多 MAX_SYMBOLS 个，超限直接忽略
   const toggleSymbol = (sym) => setSettings((s) => {
     const cur = s.symbols || []
@@ -716,7 +726,9 @@ export default function App() {
         ui={ui} onUpdateUi={updateUi}
         patternsEnabled={patternsEnabled} livePreview={livePreview}
         onTogglePattern={togglePattern} onToggleLivePreview={toggleLivePreview}
-        accounts={srvAccounts} onSaveAccount={saveAccount} />
+        accounts={srvAccounts} onSaveAccount={saveAccount}
+        ai={aiCfg} onSaveAi={saveAi} onAiAction={aiAction}
+        aiModelsResult={aiModelsResult} aiTestResult={aiTestResult} />
 
       {/* 命中飞线：K线卡片 → 形态卡片，落地后触发卡片背景扩散 */}
       <HitFlight flight={flight} onLand={onFlightLand} onDone={onFlightDone} />

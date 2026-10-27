@@ -169,10 +169,17 @@ export class LiveClient {
     }
   }
 
-  /** 下发设置（账户/形态/外观）：服务端热生效并持久化到 config.yaml */
+  /** 下发设置（账户/形态/外观/AI）：服务端热生效并持久化到 config.yaml */
   sendSettings(settings) {
     if (this.ws && this.ws.readyState === 1) {
       this.ws.send(JSON.stringify({ type: "set_settings", settings }))
+    }
+  }
+
+  /** 通用指令下发（AI 列模型/测连通等一次性请求） */
+  send(msg) {
+    if (this.ws && this.ws.readyState === 1 && msg && msg.type) {
+      this.ws.send(JSON.stringify(msg))
     }
   }
 

@@ -56,6 +56,7 @@ class BroadcastHub:
         self.stats_dirty = False
         self.settings_fn = None           # 当前可编辑设置（main 注入）
         self.on_settings = None           # 客户端下发设置时的回调：应用+持久化，返回新设置
+        self.ai_fn = None                 # AI 辅助（main 注入）：("list"|"test"|"guess", arg1, arg2) -> dict
         self.quant_fn = None              # 量化快照（main 注入）
         self.quant_events_fn = None       # 决策流水查询（main 注入）：(acct, limit) -> list
         self.analysis_fn = None           # 结构分析（main 注入）：(sym, iv, candles) -> dict
@@ -210,6 +211,22 @@ class BroadcastHub:
                         print(f"[settings] 收到 set_settings: {str(msg.get('settings'))[:150]}")
                         new_settings = self.on_settings(msg.get("settings") or {})
                         await ws.send(json.dumps({"type": "settings", "settings": new_settings},
+                                                 separators=(",", ":")))
+                    elif mtype == "ai_list_models" and self.ai_fn:
+                        # 用服务端保存的密钥去问 /models（配合前端刚填的端点）
+                        res = await asyncio.to_thread(
+                            self.ai_fn, "list", msg.get("base") or "", msg.get("key") or "")
+                        await ws.send(json.dumps({"type": "ai_models", "result": res},
+                                                 separators=(",", ":")))
+                    elif mtype == "ai_test_model" and self.ai_fn:
+                        res = await asyncio.to_thread(
+                            self.ai_fn, "test", msg.get("model") or "")
+                        await ws.send(json.dumps({"type": "ai_test", "result": res},
+                                                 separators=(",", ":")))
+                    elif mtype == "ai_guess_meta" and self.ai_fn:
+                        res = await asyncio.to_thread(
+                            self.ai_fn, "guess", msg.get("model") or "")
+                        await ws.send(json.dumps({"type": "ai_meta", "result": res},
                                                  separators=(",", ":")))
                     elif mtype == "query_quant_trades" and self.trades_fn:
                         acct = str(msg.get("account") or "")

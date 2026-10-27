@@ -3,7 +3,8 @@
    下发服务端热生效并持久化到 config.yaml（币种展示选择除外，存浏览器本地）。 */
 import { useEffect, useId, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
-import { X, Palette, Wallet, Activity, Image as ImageIcon, Plus } from "lucide-react"
+import { X, Palette, Wallet, Activity, Image as ImageIcon, Plus, Bot } from "lucide-react"
+import AiPane from "./ai-pane"
 import Input from "@/components/arc/input/input"
 import ColorPicker from "@/components/arc/color-picker/color-picker"
 import MorphSelect from "@/components/arc/morph-select/morph-select"
@@ -16,6 +17,7 @@ const SECTIONS = [
   { id: "appearance", label: "外观", Icon: Palette },
   { id: "account", label: "账户", Icon: Wallet },
   { id: "patterns", label: "形态", Icon: Activity },
+  { id: "ai", label: "AI", Icon: Bot },
 ]
 
 const THEME_PRESETS = ["#f0b90b", "#3b82f6", "#16a34a", "#8b5cf6", "#f97316", "#06b6d4"]
@@ -31,12 +33,11 @@ const UPDOWN_OPTIONS = [
 ]
 const DIR_LABEL = { bullish: "涨", bearish: "跌", neutral: "变盘" }
 
-function Row({ label, children, hint }) {
+function Row({ label, children }) {
   return (
     <div className={styles.row}>
       <div className={styles.rowLabel}>
         <span className={styles.rowName}>{label}</span>
-        {hint && <span className={styles.rowHint}>{hint}</span>}
       </div>
       <div className={styles.rowControl}>{children}</div>
     </div>
@@ -51,7 +52,7 @@ function AppearancePane({ ui, onUpdateUi }) {
   return (
     <>
       <SectionTitle>主题</SectionTitle>
-      <Row label="主题色" hint="影响菜单高亮、胜率徽标等点缀色">
+      <Row label="主题色">
         <ColorPicker value={ui.themeColor} onChange={(v) => onUpdateUi({ themeColor: v })}
           presets={THEME_PRESETS} />
       </Row>
@@ -59,7 +60,7 @@ function AppearancePane({ ui, onUpdateUi }) {
         <MorphSelect options={FONT_OPTIONS} value={ui.font} onChange={(id) => onUpdateUi({ font: id })} />
       </Row>
       <SectionTitle>K线颜色</SectionTitle>
-      <Row label="涨跌配色" hint="自定义可分别指定涨/跌色">
+      <Row label="涨跌配色">
         <MorphSelect options={UPDOWN_OPTIONS} value={ui.upDown} onChange={(id) => onUpdateUi({ upDown: id })} />
       </Row>
       {ui.upDown === "custom" && (
@@ -72,7 +73,6 @@ function AppearancePane({ ui, onUpdateUi }) {
           </div>
         </Row>
       )}
-      <div className={styles.note}>外观保存在服务端配置，对所有打开此页面的人生效。</div>
     </>
   )
 }
@@ -115,7 +115,7 @@ function AccountPane({ accounts, onSaveAccount }) {
 
   return (
     <>
-      <SectionTitle>{cur ? "账户信息（修改后保存即生效并写入服务端配置）" : "接入账户（保存即生效并写入服务端配置）"}</SectionTitle>
+      <SectionTitle>{cur ? "账户信息" : "接入账户"}</SectionTitle>
       <div className={styles.form}>
         <div className={styles.formRow}>
           <Input label="账户名称" placeholder="例如：主账户" value={draft.name}
@@ -151,9 +151,6 @@ function AccountPane({ accounts, onSaveAccount }) {
           )}
         </div>
       </div>
-      <div className={styles.note}>
-        只读查询权限即可（账户权益/持仓）；请勿开启提币权限。Key 不回传明文到浏览器，留空掩码即沿用原值。
-      </div>
     </>
   )
 }
@@ -163,14 +160,14 @@ function PatternsPane({ patternsEnabled, livePreview, onTogglePattern, onToggleL
   return (
     <>
       <SectionTitle>预警</SectionTitle>
-      <Row label="盘中预警" hint="K线未收线时形态一旦满足立即提示（收线确认不受影响）">
+      <Row label="盘中预警">
         <label className={styles.switch}>
           <input type="checkbox" checked={!!livePreview}
             onChange={() => onToggleLivePreview()} />
           <span className={styles.knob} aria-hidden />
         </label>
       </Row>
-      <SectionTitle>形态启停（关闭后立即停止检测该形态，保存到服务端）</SectionTitle>
+      <SectionTitle>形态启停</SectionTitle>
       <div className={styles.patternToggles}>
         {Object.entries(PATTERN_META).map(([key, p]) => {
           const on = enabled.includes(key)
@@ -185,14 +182,13 @@ function PatternsPane({ patternsEnabled, livePreview, onTogglePattern, onToggleL
           )
         })}
       </div>
-      <div className={styles.note}>至少保留一个形态；变更立即影响服务端检测并持久化。</div>
     </>
   )
 }
 
 export function SettingsDialog({ open, onClose, section, onSectionChange,
   ui, onUpdateUi, patternsEnabled, livePreview, onTogglePattern, onToggleLivePreview,
-  accounts, onSaveAccount }) {
+  accounts, onSaveAccount, ai, onSaveAi, onAiAction, aiModelsResult, aiTestResult }) {
   const [hover, setHover] = useState(null)
   const groupId = useId()
 
@@ -244,6 +240,8 @@ export function SettingsDialog({ open, onClose, section, onSectionChange,
                 {section === "account" && <AccountPane accounts={accounts} onSaveAccount={onSaveAccount} />}
                 {section === "patterns" && <PatternsPane patternsEnabled={patternsEnabled} livePreview={livePreview}
                   onTogglePattern={onTogglePattern} onToggleLivePreview={onToggleLivePreview} />}
+                {section === "ai" && <AiPane ai={ai} onSave={onSaveAi} onAiAction={onAiAction}
+                  aiModelsResult={aiModelsResult} aiTestResult={aiTestResult} />}
               </div>
             </div>
           </motion.div>

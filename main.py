@@ -29,6 +29,10 @@ from quant import QuantEngine
 from server.hub import BroadcastHub
 from storage import Storage
 from accounts import fetch_account
+from ai.provider import (
+    PROVIDER_PRESETS, CAPABILITIES, mask_cfg, merge_cfg,
+    list_models as ai_list_models, test_model as ai_test_model, guess_model_meta,
+)
 
 MASK_SEC = "••••••••"
 MASK_KEY = "····"
@@ -226,6 +230,9 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                          "all": list(pbase.all_patterns().keys())},
             "quant": {"enabled": quant.enabled},
             "ui": cfg.get("ui", {}),
+            # AI 配置同样只下发掩码；模型清单本身不含密钥，可原样下发
+            "ai": {"providers": PROVIDER_PRESETS, "capabilities": CAPABILITIES,
+                   **mask_cfg(cfg.get("ai", {}) or {})},
         }
 
     def apply_settings(s: dict) -> dict:
@@ -302,12 +309,52 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             for k in ("themeColor", "font", "upDown", "upColor", "downColor"):
                 if isinstance(ui.get(k), str) and ui[k]:
                     cur[k] = ui[k][:64]
+        ai = s.get("ai")
+        if isinstance(ai, dict):
+            # 密钥走 merge（掩码/留空则沿用原值）；模型清单整体替换
+            merged = merge_cfg(cfg.get("ai", {}) or {}, ai)
+            if isinstance(ai.get("models"), list):
+                models = []
+                for m in ai["models"][:40]:
+                    if not isinstance(m, dict) or not str(m.get("id") or "").strip():
+                        continue
+                    models.append({
+                        "id": str(m["id"])[:120],
+                        "label": str(m.get("label") or m["id"])[:80],
+                        "icon": str(m.get("icon") or "")[:300000],
+                        "caps": [c for c in (m.get("caps") or []) if c in ("text", "vision", "pdf", "video")],
+                        "ctx": int(m.get("ctx") or 0),
+                        "system": str(m.get("system") or "")[:4000],
+                        "active": bool(m.get("active")),
+                    })
+                merged["models"] = models
+            cfg["ai"] = merged
         save_config()
         print("[settings] 设置已应用并持久化")
         return current_settings()
 
     hub.settings_fn = current_settings
     hub.on_settings = apply_settings
+
+    def _ai_helper(kind: str, a: str = "", b: str = "") -> dict:
+        """AI 设置页的三个辅助动作：列模型 / 测连通 / 猜能力。
+
+        密钥优先级：本次请求里带的 key > 服务端已存的 key。
+        这样用户刚粘贴密钥就能直接"获取模型"，不必先保存一次。
+        """
+        saved = cfg.get("ai", {}) or {}
+        base = (a or saved.get("base") or "").strip()
+        key = (b or "").strip()
+        if not key or MASK_SEC in key:
+            key = str(saved.get("key") or "")
+        if kind == "list":
+            return ai_list_models(base, key, proxy_cfg or None)
+        if kind == "test":
+            return ai_test_model({"base": base, "key": key}, a, proxy_cfg or None)
+        if kind == "guess":
+            return guess_model_meta(a or b)
+        return {"ok": False, "error": f"未知动作 {kind}"}
+    hub.ai_fn = _ai_helper
 
     # 量化引擎：确认信号驱动开仓、5s 持仓监控、5 分钟自审计、全程记录
     iv0 = intervals[0]
