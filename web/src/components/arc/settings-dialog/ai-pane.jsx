@@ -42,6 +42,7 @@ const CTX_OPTIONS = [8192, 16384, 32768, 65536, 131072, 200000, 1000000]
 /** 单个模型卡片 */
 function ModelCard({ m, onChange, onRemove, onTest, testing, testResult, idx }) {
   const [open, setOpen] = useState(false)
+  const busy = testing && (!testResult || testResult.ok === null)
   return (
     <div className={styles.modelCard} data-active={m.active || undefined}>
       <div className={styles.modelHead}>
@@ -78,7 +79,7 @@ function ModelCard({ m, onChange, onRemove, onTest, testing, testResult, idx }) 
         <button type="button" className={styles.iconBtn} data-tone="test"
           onClick={() => onTest(m.id)} disabled={testing}
           title="测试连通性">
-          {testing ? <Loader2 size={12} className={styles.spin} /> : <Zap size={12} />}
+          {busy ? <Loader2 size={12} className={styles.spin} /> : <Zap size={12} />}
         </button>
         <button type="button" className={styles.iconBtn} data-tone="danger"
           onClick={onRemove} title="移除">
@@ -86,7 +87,7 @@ function ModelCard({ m, onChange, onRemove, onTest, testing, testResult, idx }) 
         </button>
       </div>
 
-      {testResult && (
+      {testResult && testResult.ok !== null && (
         <div className={styles.testLine} data-ok={testResult.ok || undefined}>
           {testResult.ok
             ? `连通正常 · ${testResult.ms}ms${testResult.reply ? ` · 回复「${testResult.reply}」` : ""}`
