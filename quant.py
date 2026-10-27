@@ -362,7 +362,11 @@ class QuantEngine:
         syms = set()
         for name in self.state:
             syms.update(self._st(name)["positions"].keys())
-        # 也把最近有过信号的币纳入（前端展示需要）
+        # 前端正在展示的币必须全部纳入：否则「开了 4 个币只显示 3 个」——
+        # 没持仓、最近也没有信号的那个币永远算不出指标。
+        if self.symbol_filter:
+            syms.update(self.symbol_filter)
+        # 也把最近有过信号的币纳入（未展示币的持仓风控仍需指标）
         for ev in list(self.events)[-20:]:
             s = ev.get("symbol")
             if s:

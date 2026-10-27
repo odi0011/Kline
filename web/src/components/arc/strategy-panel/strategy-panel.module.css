@@ -1,10 +1,11 @@
-/* 决策依据：币种宫格，一行 3 个，滚动。
-   面板只占第二行 40% 宽（约 290~420px），所以按币种分卡片而不是堆图表：
-   左侧有几个币，这里就有几张卡，每张卡里放该币的全部决策数值。
+/* 决策依据：币种宫格，一行 2 个，滚动。
+   面板占第二行 30%（约 220~300px）——左侧 K 线有几个币，这里就几张卡。
 
-   关键约束（上一版血泪教训）：
-   · 卡片内容必须能在 ~90px 宽里排下 → 指标用「缩写 + 数值」两字宽单元
-   · 任何区块都不许溢出：格子里 overflow:hidden，外层只滚不撑高 */
+   布局约束：
+   · 卡片头部：图标 + 币种 + 方向（左）／状态标签（右，占用原价格位置）
+   · 8 个指标 4 列 × 2 行，每格「缩写 + 数值」，热力底色表意
+   · 底部两行：止损/止盈/盈亏比 + ATR/带宽/DI 明细
+   · 任何元素 overflow:hidden，绝不溢出压到相邻面板 */
 
 .wrap {
   flex: 1 1 auto;
@@ -13,7 +14,6 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 3px;
   padding: 0 2px;
   overflow: hidden;
   container-type: inline-size;
@@ -28,7 +28,7 @@
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px;
   align-content: start;
   padding-bottom: 2px;
@@ -39,7 +39,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   padding: 4px 5px 5px;
   border-radius: 6px;
   border: 1px solid rgba(28, 35, 51, 0.09);
@@ -48,7 +48,7 @@
   transition: border-color 160ms ease, background-color 160ms ease;
 }
 .cell:hover {
-  background: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.88);
   border-color: rgba(28, 35, 51, 0.18);
 }
 /* 有持仓的卡片：描边加深，一眼区分"正在场内" */
@@ -57,11 +57,13 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent, #f0b90b) 18%, transparent);
 }
 
+/* 头部：左=图标+名称+方向，右=状态标签 */
 .cellHead {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 3px;
   min-width: 0;
+  margin-bottom: 1px;
 }
 .sym {
   display: inline-flex;
@@ -73,6 +75,7 @@
   letter-spacing: 0.1px;
   white-space: nowrap;
   overflow: hidden;
+  flex: none;
 }
 .sym i {
   font-style: normal;
@@ -84,23 +87,15 @@
 }
 .sym i[data-side="long"] { color: #0f766e; background: rgba(13, 148, 136, 0.16); }
 .sym i[data-side="short"] { color: #be123c; background: rgba(225, 29, 72, 0.15); }
-.price {
-  margin-left: auto;
-  font-size: 8.5px;
-  font-weight: 600;
-  color: var(--text-secondary, #5b6472);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
-/* 状态标签行 */
+/* 状态标签（占据原价格位置，右对齐） */
 .tags {
+  margin-left: auto;
   display: flex;
   gap: 2px;
-  min-height: 11px;
+  min-width: 0;
   overflow: hidden;
+  justify-content: flex-end;
 }
 .tags em {
   font-style: normal;
@@ -113,109 +108,85 @@
   color: var(--text-muted, #8b949e);
   background: rgba(28, 35, 51, 0.06);
 }
-.tags em[data-tone="trend"] { color: #0e7490; background: rgba(14, 116, 144, 0.12); }
-.tags em[data-tone="range"] { color: #7c5c00; background: rgba(180, 140, 10, 0.15); }
-.tags em[data-tone="high"] { color: #b91c1c; background: rgba(220, 38, 38, 0.12); }
+.tags em[data-tone="trend"] { color: #0e7490; background: rgba(14, 116, 144, 0.13); }
+.tags em[data-tone="range"] { color: #7c5c00; background: rgba(180, 140, 10, 0.16); }
+.tags em[data-tone="mixed"] { color: #6b7280; background: rgba(107, 114, 128, 0.12); }
+.tags em[data-tone="high"] { color: #b91c1c; background: rgba(220, 38, 38, 0.13); }
 .tags em[data-tone="low"] { color: #475569; background: rgba(100, 116, 139, 0.12); }
-.tags em[data-tone="squeeze"] { color: #b45309; background: rgba(245, 158, 11, 0.18); }
+.tags em[data-tone="squeeze"] { color: #b45309; background: rgba(245, 158, 11, 0.2); }
 
-/* 指标：2 列 × 3 行，每格「缩写 + 数值」 */
+/* 指标：4 列 × 2 行 */
 .metrics {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 2px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1.5px;
 }
 .metric {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 2px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
   min-width: 0;
-  padding: 1px 3px;
+  padding: 1px 1px;
   border-radius: 3px;
+  line-height: 1.15;
   font-variant-numeric: tabular-nums;
   transition: background-color 400ms ease, color 400ms ease;
 }
 .metric u {
-  font-size: 7px;
+  font-size: 6.5px;
   font-weight: 600;
   text-decoration: none;
-  opacity: 0.72;
-  flex: none;
+  opacity: 0.7;
+  white-space: nowrap;
 }
 .metric b {
   font-size: 9px;
   font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 100%;
+  white-space: nowrap;
 }
 .metric[data-na] {
   background: rgba(28, 35, 51, 0.035);
   color: var(--text-muted, #b0b7c3);
 }
 
-/* 止损/止盈距离 */
+/* 止损 / 止盈 / 盈亏比 */
 .band {
   display: flex;
+  align-items: baseline;
   justify-content: space-between;
-  gap: 3px;
-  padding-top: 2px;
-  border-top: 1px dashed rgba(28, 35, 51, 0.09);
+  gap: 2px;
+  margin-top: 1px;
+  padding-top: 3px;
+  border-top: 1px dashed rgba(28, 35, 51, 0.1);
   font-size: 8.5px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
 }
 .band span[data-tone="sl"] { color: #c2410c; }
 .band span[data-tone="tp"] { color: #047857; }
+.band span[data-tone="rr"] {
+  color: var(--text-secondary, #5b6472);
+  font-size: 8px;
+  opacity: 0.9;
+}
 
-/* ---------- 底栏：回撤 / 拦截 ---------- */
-
-.foot {
-  flex: none;
-  height: 16px;
+/* ATR / 带宽 / DI 明细 */
+.detail {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-top: 2px;
-  border-top: 1px solid rgba(28, 35, 51, 0.07);
-  overflow: hidden;
-  font-size: 8.5px;
-}
-.footDd,
-.footGate {
-  display: inline-flex;
-  align-items: baseline;
+  justify-content: space-between;
   gap: 2px;
-  white-space: nowrap;
-}
-.footDd u,
-.footGate u {
-  text-decoration: none;
-  color: var(--text-muted, #98a1ae);
-}
-.footDd b,
-.footGate b {
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: #1c2333;
-}
-.footDd em {
-  font-style: normal;
-  color: var(--text-muted, #98a1ae);
-}
-.footDd s {
-  text-decoration: none;
   font-size: 7.5px;
-  font-weight: 700;
-  color: #fff;
-  background: hsl(6 76% 55%);
-  border-radius: 2px;
-  padding: 0 2px;
-}
-.footGate {
-  margin-left: auto;
-  padding-left: 6px;
-  border-left: 1px solid rgba(28, 35, 51, 0.07);
+  color: var(--text-muted, #98a1ae);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .empty {
@@ -224,7 +195,7 @@
   padding: 6px 2px;
 }
 
-/* 更窄时（<250px）2 列，保证每格还有 ~110px */
-@container (max-width: 250px) {
-  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* 极窄（<190px）：指标退回 2 列，避免每格放不下 */
+@container (max-width: 190px) {
+  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

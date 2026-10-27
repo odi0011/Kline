@@ -154,9 +154,9 @@ body {
   min-height: 0;
 }
 
-/* 决策依据面板：只占第二行左侧 40%，右侧 60% 空出留给后续模块 */
+/* 决策依据面板：只占第二行左侧 30%，右侧 70% 空出留给后续模块 */
 .strategy-slot {
-  flex: 0 0 40%;
+  flex: 0 0 30%;
   min-width: 0;
   display: flex;
   min-height: 0;
