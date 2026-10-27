@@ -326,6 +326,8 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                         min_pattern_winrate=float(qcfg.get("min_pattern_winrate", 0.35)),
                         min_pattern_samples=int(qcfg.get("min_pattern_samples", 5)))
     quant.enabled = bool(qcfg.get("enabled", True))
+    # 假数据防护：demo 模式下引擎拒绝一切新开仓（形态来自随机游走，没有交易意义）
+    quant.feed_is_live_fn = lambda: hub.mode != "demo"
     quant.pattern_stats_fn = storage.pattern_stats
     # 决策流水落库：引擎线程内同步写 MySQL（连接已加锁，开销可忽略）
     quant.storage_fn = storage.save_quant_event
@@ -481,15 +483,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 print(f"[quant] 运行异常: {e}")
 
     async def supervisor():
-        if mode == "demo":
-            await feed.run()
-            return
-        feed_task = asyncio.create_task(feed.run())
-        await feed.demo_requested.wait()
-        print("[feed] 已切换到演示模式（页面顶部会提示）")
-        hub.mode = "demo"
-        feed_box["feed"] = DemoSource(symbols, on_trade)
-        await feed_box["feed"].run()
+        # 行情断开/停流一律重连，绝不自动切换演示数据：
+        # 假行情会驱动形态引擎产生假信号 → 量化在测试盘下真单 + 污染胜率统计。
+        # 演示模式只能来自 config 的 feed.mode: demo（显式选择）。
+        await feed.run()
 
     print("K线形态识别器已启动，Ctrl+C 退出")
 

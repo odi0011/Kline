@@ -38,7 +38,6 @@ class BinanceFuturesStream:
         self.last_trade_ms = 0
         self.connect_ms = 0
         self.stall_count = 0
-        self.demo_requested = asyncio.Event()
 
     @property
     def connected(self) -> bool:
@@ -82,8 +81,6 @@ class BinanceFuturesStream:
                         raise
                     self._connected.clear()
                     self._ws = None
-                    if self.demo_requested.is_set():
-                        return
                     print(f"[feed] 连接断开: {type(e).__name__}: {e}，{backoff:.0f}s 后重连")
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, 30)
@@ -92,20 +89,22 @@ class BinanceFuturesStream:
             self._connected.clear()
 
     async def _watchdog(self) -> None:
-        """握手成功但数据帧停流（被墙/代理分流直连的典型症状）→ 强制重连；
-        连续 stall 次数超限 → 请求降级演示模式。"""
+        """握手成功但数据帧停流（被墙/代理分流直连的典型症状）→ 强制重连。
+
+        注意：这里**绝不降级为演示数据**——假行情会驱动形态引擎产生假信号，
+        进而让量化引擎在测试盘下真单、污染胜率统计。行情断了就继续重连，
+        由前端把连接状态如实显示出来。
+        """
         while True:
             await asyncio.sleep(2)
-            if not self._connected.is_set() or self.demo_requested.is_set():
+            if not self._connected.is_set():
                 continue
             anchor = max(self.last_trade_ms, self.connect_ms)
             if anchor and time.time() * 1000 - anchor > self.stall_sec * 1000:
                 self.stall_count += 1
                 self.last_trade_ms = 0
                 self.connect_ms = 0
-                if self.stall_count >= 2:
-                    self.demo_requested.set()
-                    print("[feed] 连接反复无数据，触发降级为演示模式")
+                print(f"[feed] 数据停流 {self.stall_sec:.0f}s（第 {self.stall_count} 次），强制重连")
                 ws, self._ws = self._ws, None
                 if ws:
                     try:
@@ -127,6 +126,7 @@ class BinanceFuturesStream:
             # m = isBuyerMaker：True 时买方挂单 → 这笔记为主动卖出
             buyer_maker = bool(d.get("m", False))
             self.last_trade_ms = recv_ms
+            self.stall_count = 0          # 收到真实数据 → 停流计数清零
             self.lags.append(recv_ms - trade_ms)
             self.on_trade(symbol, price, qty, trade_ms, recv_ms, buyer_maker)
         except Exception:

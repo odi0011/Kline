@@ -563,6 +563,11 @@ export default function App() {
 
   return (
     <div className="app">
+      {mode === 'demo' && (
+        <div className="demo-banner" role="alert">
+          演示行情：当前显示的是随机模拟数据，不是真实行情；量化不会据此下单
+        </div>
+      )}
       <main className="left">
         <ScrollArea orientation="vertical" label="币种K线" className="left-scroll" fade={20}>
           <div className="left-inner">
@@ -591,9 +596,6 @@ export default function App() {
       </main>
 
       <aside className="right">
-        {mode === 'demo' && (
-          <span className="mini-tag demo-float" title="币安连接失败，当前为模拟随机数据，非真实行情">演示</span>
-        )}
         <div className="top-row">
           <div className="pattern-zone">
             <ScrollArea orientation="horizontal" scrollbars="auto" scrollButtons label="K线形态图鉴" viewportRef={cardsViewportRef}>

@@ -114,6 +114,9 @@ class QuantEngine:
         self._err_dedupe: dict[str, int] = {}
         self._mark_cache: dict[str, tuple] = {}
         self._unsupported: set[str] = set()   # 未开通合约权限的币种（如 TradFi 需签协议）
+        # 行情是否真实：main 注入 lambda，返回 False 时拒绝一切新开仓。
+        # 演示/模拟数据上的形态是随机噪声，绝不能变成真实委托。
+        self.feed_is_live_fn = None
         self._lock = threading.Lock()
         self._warned_dupes = False
         self._step_sizes: dict[str, float] = {}
@@ -410,6 +413,12 @@ class QuantEngine:
         try:
             symbol = hit.get("symbol")
             if not symbol:
+                return
+            # 行情非真实（演示/降级数据）→ 一律不下单：随机游走产生的形态没有交易意义
+            if self.feed_is_live_fn is not None and not self.feed_is_live_fn():
+                self._event("skip", "当前为演示行情（非真实数据），不下单",
+                            account=self._primary_account(), symbol=symbol,
+                            pattern=hit.get("pattern"), name_zh=hit.get("name_zh"))
                 return
             # 不在当前观察范围内的币种直接忽略：不计入信号统计、不产生决策流水
             if self.symbol_filter is not None and symbol not in self.symbol_filter:

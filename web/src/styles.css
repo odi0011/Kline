@@ -194,11 +194,23 @@ body {
   margin-bottom: 10px;
 }
 
-.demo-float {
-  position: absolute;
-  top: 10px;
-  right: 16px;
-  z-index: 5;
+.demo-banner {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 9999;
+  padding: 6px 12px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: #7a3b00;
+  background: repeating-linear-gradient(
+    -45deg,
+    #ffd9a0 0 10px,
+    #ffe7c4 10px 20px
+  );
+  border-bottom: 1px solid #e8a94a;
+  box-shadow: 0 2px 10px rgba(120, 80, 0, 0.18);
 }
 
 /* 宫格：只显示一行，全部横向排列（滚动区悬停时显示滚动条） */
