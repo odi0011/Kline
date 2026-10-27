@@ -81,6 +81,9 @@ export default function App() {
   const [patternsEnabled, setPatternsEnabled] = useState(null)  // null = 未从服务端加载
   const [livePreview, setLivePreview] = useState(true)
   const [srvAccounts, setSrvAccounts] = useState(null)          // 服务端账户列表（含密钥）
+  const [aiCfg, setAiCfg] = useState({})                        // AI 配置（服务端，密钥为掩码）
+  const [aiModelsResult, setAiModelsResult] = useState(null)     // 一键获取模型的结果
+  const [aiTestResult, setAiTestResult] = useState(null)         // 单模型连通测试结果
   const [quantSnap, setQuantSnap] = useState(null)              // 量化引擎快照
   const [quantEvents, setQuantEvents] = useState(null)          // 持久化决策流水（MySQL）
   const [quantTrades, setQuantTrades] = useState([])            // 仓位历史（MySQL，7 天）
