@@ -268,7 +268,7 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
 
   // 贴底跟随：新行直接钉到底部。连续事件下不使用 smooth scroll，
   // 否则每次广播都会重启滚动动画，整列文字会看起来一直抖动。
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!follow) return
     const el = viewportRef.current
     if (!el) return
