@@ -11,10 +11,27 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Check, Image as ImageIcon, Loader2, Plus, RefreshCw, Trash2, Zap } from "lucide-react"
 import Input from "@/components/arc/input/input"
-import MorphSelect from "@/components/arc/morph-select/morph-select"
 import styles from "./settings-dialog.module.css"
 
 const CAP_LABEL = { text: "文本", vision: "识图", pdf: "PDF", video: "视频" }
+
+/* 下拉选择：选项多时用原生 select。MorphSelect 是分段控件，
+   10 个服务商会把整行挤爆（只能用于 2~4 个互斥选项）。 */
+function Dropdown({ label, value, options, onChange, className }) {
+  return (
+    <label className={[styles.dropdown, className].filter(Boolean).join(" ")}>
+      {label && <span className={styles.label2}>{label}</span>}
+      <span className={styles.selectWrap}>
+        <select className={styles.select} value={value} onChange={(e) => onChange(e.target.value)}>
+          {options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+        </select>
+        <svg className={styles.caret} width="8" height="5" viewBox="0 0 8 5" aria-hidden>
+          <path d="M0 0l4 5 4-5z" fill="currentColor" />
+        </svg>
+      </span>
+    </label>
+  )
+}
 
 /* 按模型名猜默认能力与上下文（与后端 ai/provider.guess_model_meta 同规则）。
    添加模型时用它预填，用户可以再改。 */
@@ -100,13 +117,12 @@ function ModelCard({ m, onChange, onRemove, onTest, testing, testResult, idx }) 
           <div className={styles.modelRow}>
             <Input label="显示名称" value={m.label || ""}
               onChange={(e) => onChange({ label: e.target.value })} />
-            <div className={styles.ctxField}>
-              <span className={styles.label2}>上下文长度</span>
-              <MorphSelect
-                options={CTX_OPTIONS.map((n) => ({ id: String(n), label: `${n / 1000}K` }))}
-                value={String(m.ctx || 8192)}
-                onChange={(v) => onChange({ ctx: Number(v) })} />
-            </div>
+            <Dropdown
+              label="上下文长度"
+              className={styles.ctxField}
+              options={CTX_OPTIONS.map((n) => ({ id: String(n), label: `${n / 1000}K` }))}
+              value={String(m.ctx || 8192)}
+              onChange={(v) => onChange({ ctx: Number(v) })} />
           </div>
           <div className={styles.capRow}>
             <span className={styles.label2}>能力</span>
@@ -240,11 +256,12 @@ export default function AiPane({ ai, onSave, onAiAction, aiModelsResult, aiTestR
     <>
       <div className={styles.aiForm}>
         <div className={styles.formRow}>
-          <div className={styles.ctxField}>
-            <span className={styles.label2}>服务商</span>
-            <MorphSelect options={providerOptions} value={draft.provider}
-              onChange={pickProvider} />
-          </div>
+          <Dropdown
+            label="服务商"
+            className={styles.providerField}
+            options={providerOptions}
+            value={draft.provider}
+            onChange={pickProvider} />
           <Input label="API 端点" placeholder="https://api.example.com/v1"
             value={draft.base} onChange={(e) => edit({ base: e.target.value })} />
         </div>

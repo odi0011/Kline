@@ -389,3 +389,36 @@
 .textarea:focus { outline: none; border-color: var(--accent, #f0b90b); }
 .spin { animation: spin 900ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* 下拉选择（选项多时替代分段控件） */
+.dropdown { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.selectWrap { position: relative; display: block; }
+.select {
+  width: 100%;
+  height: 30px;
+  padding: 0 22px 0 9px;
+  border-radius: 7px;
+  border: 1px solid rgba(28, 35, 51, 0.14);
+  background: #fff;
+  font-size: 10.5px;
+  font-family: inherit;
+  color: #1c2333;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  text-overflow: ellipsis;
+}
+.select:hover { border-color: rgba(28, 35, 51, 0.26); }
+.select:focus { outline: none; border-color: var(--accent, #f0b90b); }
+.caret {
+  position: absolute;
+  right: 8px; top: 50%;
+  transform: translateY(-50%);
+  color: #98a1ae;
+  pointer-events: none;
+}
+.providerField { flex: 0 0 132px; }
+
+/* AI 表单首行：服务商固定宽 + 端点自适应 */
+.aiForm .formRow:first-child { align-items: flex-end; }
+.aiForm .formRow:first-child > :last-child { flex: 1 1 auto; min-width: 0; }
