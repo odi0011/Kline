@@ -152,6 +152,7 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
   const drainTimerRef = useRef(null)
   const initializedRef = useRef(false)
   const signalGateRef = useRef(new Map())
+  const mountedAtRef = useRef(Date.now())
 
   // 视口高度（虚拟窗口大小）+ 容器宽度（决定是否精简内容）
   useLayoutEffect(() => {
@@ -201,7 +202,7 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
   // 首次读到持久化历史时一次性铺好；后续只追加未见事件，不再整批重置列表。
   useEffect(() => {
     const source = pushedEvents || snap.events
-    if (!source) return
+    if (!source?.length) return
     if (!initializedRef.current) {
       const initial = [...source].sort((a, b) => (a.ts || 0) - (b.ts || 0))
       setEvents(initial)
@@ -226,7 +227,12 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
     }
     if (!fresh.length) return
 
+    const historical = []
     for (const ev of fresh) {
+      if ((ev.ts || 0) < mountedAtRef.current - 250) {
+        historical.push(ev)
+        continue
+      }
       const gateKey = `${ev.symbol || ""}|${ev.pattern || ""}`
       let notBefore = now
       if (ev.kind === "signal") {
@@ -238,6 +244,13 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
         if (gate && now - gate.signalAt <= 4000) notBefore = gate.due
       }
       pendingRef.current.push({ ev, notBefore })
+    }
+    if (historical.length) {
+      setEvents((cur) => {
+        const merged = cur.concat(historical)
+        merged.sort((a, b) => (a.ts || 0) - (b.ts || 0))
+        return merged.slice(-3000)
+      })
     }
     pumpPending()
   }, [pushedEvents, snap.events, pumpPending])
