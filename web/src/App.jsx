@@ -677,7 +677,8 @@ export default function App() {
       {/* 第二行：决策依据可视化只占左侧 40%，右侧 60% 留给后续模块 */}
       <div className="row2">
         <div className="strategy-slot">
-          <StrategyPanel analysis={quantSnap && quantSnap.analysis} symbols={orderedSymbols} />
+          <StrategyPanel analysis={quantSnap && quantSnap.analysis} symbols={orderedSymbols}
+            chartColors={chartColors} />
         </div>
         <div className="row2-rest" />
       </div>
