@@ -45,19 +45,37 @@
   border: 1px solid rgba(28, 35, 51, 0.085);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.62));
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.045);
   overflow: hidden;
-  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+  /* 不做 hover 边框/阴影变化：这是常驻监控区，鼠标扫过不该有任何跳动 */
 }
-.cell:hover {
-  border-color: rgba(28, 35, 51, 0.16);
-  box-shadow: 0 2px 6px rgba(16, 24, 40, 0.08);
-}
+/* 有持仓：主题色描边（静态，不闪） */
 .cell[data-held] {
   border-color: color-mix(in srgb, var(--accent, #f0b90b) 60%, rgba(28, 35, 51, 0.1));
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--accent, #f0b90b) 16%, transparent),
-    0 1px 4px rgba(16, 24, 40, 0.07);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent, #f0b90b) 16%, transparent);
+}
+/* 需关注（持仓 / 指标未就绪 / 触发判定条件）：主题色呼吸灯。
+   与 [data-held] 同色系，只多了呼吸节奏——一眼看出"这张卡现在要看" */
+.cell[data-alert] {
+  border-color: var(--accent, #f0b90b);
+  animation: cellBreath 2.4s ease-in-out infinite;
+}
+@keyframes cellBreath {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--accent, #f0b90b) 22%, transparent),
+      0 0 6px color-mix(in srgb, var(--accent, #f0b90b) 12%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--accent, #f0b90b) 42%, transparent),
+      0 0 14px color-mix(in srgb, var(--accent, #f0b90b) 30%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cell[data-alert] {
+    animation: none;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #f0b90b) 38%, transparent);
+  }
 }
 
 .cellHead {
@@ -390,6 +408,11 @@
   overflow: hidden;
 }
 .band span { white-space: nowrap; }
+.bandNa {
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--text-muted, #b0b7c3);
+}
 .band span[data-tone="sl"] { color: #c2410c; }
 .band span[data-tone="tp"] { color: #047857; }
 .band span[data-tone="rr"] {

@@ -140,12 +140,15 @@ export default function StrategyPanel({ analysis, symbols, chartColors }) {
   const down = chartColors?.down || "#dc2626"
 
   // 严格跟随左侧 K 线展示的币种（App 传入的 symbols 已按"持仓优先"排序）
+  // 左侧 K 线有几个币，这里就永远有几张卡（含指标尚未就绪的）。
+  // 不能因为后端 transient 缺数据就把卡片藏起来——否则会「突然出现/消失」。
+  // 数据缺失时卡片内显示占位（--），结构保持稳定。
   const cards = useMemo(() => {
     const list = Array.isArray(symbols) ? symbols : []
-    return list
-      .map((s) => String(s).toLowerCase())
-      .filter((s) => syms[s])
-      .map((s) => [s, syms[s]])
+    return list.map((s) => {
+      const k = String(s).toLowerCase()
+      return [k, syms[k] || null]
+    })
   }, [symbols, syms])
 
   const planBySym = useMemo(() => {
@@ -226,8 +229,26 @@ export default function StrategyPanel({ analysis, symbols, chartColors }) {
               const atrHot = atrP != null && atrP >= 85
               const rvHot = rv != null && rv >= 0.0015
 
+              // ---- 是否需要提醒（卡片边框呼吸灯）----
+              // 「有问题 / 数据异常 / 触发判定条件」任一成立即亮起：
+              //   · 有持仓（正在场内，需要盯）
+              //   · 指标尚未就绪（数据异常，卡片显示 --）
+              //   · RSI 超买超卖 / %B 破轨 / |Z|≥2 极值
+              //   · 布林挤压（即将变盘）/ ATR 分位≥85（极端波动）
+              const alerts = []
+              if (!st) alerts.push("指标未就绪")
+              if (rsi != null && (rsi >= 70 || rsi <= 30)) alerts.push(rsi >= 70 ? "RSI超买" : "RSI超卖")
+              if (pctB != null && (pctB > 1 || pctB < 0)) alerts.push("布林破轨")
+              if (z != null && Math.abs(z) >= 2) alerts.push("Z极值")
+              if (squeezed) alerts.push("布林挤压")
+              if (atrHot) alerts.push("极端波动")
+              const alert = alerts.length > 0
+
               return (
-                <div key={sym} className={styles.cell} data-held={side ? "y" : undefined}>
+                <div key={sym} className={styles.cell}
+                  data-held={side ? "y" : undefined}
+                  data-alert={alert || undefined}
+                  title={alert ? `需关注：${alerts.join(" · ")}` : undefined}>
                   {/* 头部：图标 + 币种 + 方向（左）／状态标签（右） */}
                   <div className={styles.cellHead}>
                     <CoinAvatar symbol={sym} size={16} />
@@ -236,6 +257,7 @@ export default function StrategyPanel({ analysis, symbols, chartColors }) {
                       {side && <i data-side={side === "多" ? "long" : "short"}>{side}</i>}
                     </span>
                     <span className={styles.tags}>
+                      {!st && <em data-tone="muted">计算中</em>}
                       {st?.regime && <em data-tone={regime.tone}>{regime.text}</em>}
                       {vol && <em data-tone={vol.tone}>{vol.text}</em>}
                       {st?.squeeze && <em data-tone="squeeze">挤压</em>}
@@ -291,9 +313,17 @@ export default function StrategyPanel({ analysis, symbols, chartColors }) {
 
                   {/* ---------- 风控区间 ---------- */}
                   <div className={styles.band}>
-                    <span data-tone="sl" title="止损距离（1.5×ATR，夹紧 0.4%~2%）">-{b.sl.toFixed(2)}%</span>
-                    <span data-tone="tp" title="止盈距离（2.5×ATR，夹紧 0.18%~3%）">+{b.tp.toFixed(2)}%</span>
-                    <span data-tone="rr" title="盈亏比 = 止盈 ÷ 止损">{(b.sl > 0 ? b.tp / b.sl : 0).toFixed(2)}</span>
+                    {st && st.price > 0 && st.atr > 0 ? (
+                      <>
+                        <span data-tone="sl" title="止损距离（1.5×ATR，夹紧 0.4%~2%）">-{b.sl.toFixed(2)}%</span>
+                        <span data-tone="tp" title="止盈距离（2.5×ATR，夹紧 0.18%~3%）">+{b.tp.toFixed(2)}%</span>
+                        <span data-tone="rr" title="盈亏比 = 止盈 ÷ 止损">{(b.sl > 0 ? b.tp / b.sl : 0).toFixed(2)}</span>
+                      </>
+                    ) : (
+                      <span className={styles.bandNa}>
+                        {st ? "ATR 未就绪，暂无风控区间" : "指标计算中…"}
+                      </span>
+                    )}
                   </div>
                 </div>
               )
