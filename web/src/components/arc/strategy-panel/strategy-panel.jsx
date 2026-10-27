@@ -107,12 +107,21 @@ function riskBand(st, p) {
   return { sl: slPct * 100, tp: tpPct * 100 }
 }
 
-export default function StrategyPanel({ analysis }) {
+export default function StrategyPanel({ analysis, symbols }) {
   const syms = analysis?.symbols || {}
   const params = analysis?.params
   const plans = analysis?.positionPlans || []
 
-  const cards = useMemo(() => Object.entries(syms), [syms])
+  // 严格跟随左侧 K 线展示的币种（App 传入的 symbols 已按"持仓优先"排序）：
+  // 只显示这些币，且顺序与左侧一致。池里其它币即使算出了指标也不显示，
+  // 保证「左侧看哪些币，这里就分析哪些币」这条规则唯一。
+  const cards = useMemo(() => {
+    const list = Array.isArray(symbols) ? symbols : []
+    return list
+      .map((s) => String(s).toLowerCase())
+      .filter((s) => syms[s])
+      .map((s) => [s, syms[s]])
+  }, [symbols, syms])
   const planBySym = useMemo(() => {
     const m = new Map()
     for (const p of plans) if (p?.symbol) m.set(String(p.symbol).toLowerCase(), p)
@@ -138,7 +147,7 @@ export default function StrategyPanel({ analysis }) {
                 <div key={sym} className={styles.cell} data-held={side ? "y" : undefined}>
                   {/* 头部：图标 + 币种 + 方向（左）／状态标签（右，原价格位） */}
                   <div className={styles.cellHead}>
-                    <CoinAvatar symbol={sym} size={13} />
+                    <CoinAvatar symbol={sym} size={16} />
                     <span className={styles.sym}>
                       {SYM(sym)}
                       {side && <i data-side={side === "多" ? "long" : "short"}>{side}</i>}
