@@ -398,16 +398,26 @@ export default function App() {
   }
 
   // 新命中入队（按时间正序播放；同一 hit 只入队一次）
+  //
+  // 只播「收线确认」的命中：盘中预警（mode === "live"）是同一根未收盘K线上的
+  // 反复试算，币安 4 个币各报一次就会一次性冒出好几段动画；而且盘中预警不进
+  // 量化决策（main.py 只对 confirmed 调 on_signal），动画落到流水后没有任何
+  // 真实记录跟着出现——正是"虚拟动画跑完却没有数据"的来源。
   useEffect(() => {
     if (!hits.length) return
     const fresh = []
+    const now = Date.now()
     for (const h of hits.slice(0, 8)) {
+      if (h.mode !== "confirmed") continue          // 盘中预警不播动画
+      if (now - (Number(h.ts) || 0) > 20000) continue  // 陈旧命中（切回前台/重连积压）不补播
       const key = h.id || `${h.ts}-${h.symbol}-${h.pattern}`
       if (queuedRef.current.has(key)) continue
       queuedRef.current.add(key)
       fresh.push(h)
     }
     if (!fresh.length) return
+    // 去重集合只保留最近 500 条，防长时间运行无限增长
+    if (queuedRef.current.size > 500) queuedRef.current.clear()
     // hits 最新在前 → 反转成时间正序；上限 8 条防止突发刷屏
     jobQueueRef.current.push(...fresh.reverse())
     if (jobQueueRef.current.length > 8) jobQueueRef.current.splice(0, jobQueueRef.current.length - 8)
