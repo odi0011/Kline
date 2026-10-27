@@ -1,4 +1,4 @@
-/* 交易所公告：币安 / 欧易 官方公告（真实数据，后台 10 分钟刷新一次）。
+/* 新闻流：交易所公告 + 加密媒体 + 综合财经（真实数据，后台 10 分钟刷新）。
    与另外两个板块同一套视觉：无边框、虚拟滚动、单行 + 中间省略。
    点条目在浏览器新标签打开原文。 */
 import { useMemo, useRef, useState } from "react"
@@ -16,6 +16,23 @@ const fmtClock = (ts) => {
   return `${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
 }
 
+/* 来源徽标：交易所用品牌色、加密媒体用中性深色、综合财经用蓝灰 —— 一眼区分消息性质 */
+const SRC_STYLE = {
+  "币安": { kind: "exchange", label: "币安" },
+  "欧易": { kind: "exchange", label: "欧易" },
+  "Cointelegraph": { kind: "media", label: "CT" },
+  "CoinDesk": { kind: "media", label: "CD" },
+  "The Block": { kind: "media", label: "BLK" },
+  "Decrypt": { kind: "media", label: "DEC" },
+  "CryptoSlate": { kind: "media", label: "CS" },
+  "英为财情·加密": { kind: "finance", label: "财经" },
+  "英为财情·外汇": { kind: "finance", label: "外汇" },
+  "英为财情·商品": { kind: "finance", label: "商品" },
+  "WSJ·市场": { kind: "finance", label: "WSJ" },
+  "ForexLive": { kind: "finance", label: "FL" },
+}
+const srcMeta = (s) => SRC_STYLE[s] || { kind: "media", label: String(s || "?").slice(0, 4) }
+
 /** 标题切片：中文按字切，过长时中间省略（保住尾部日期/关键词） */
 function splitTitle(title) {
   const s = String(title || "")
@@ -29,12 +46,12 @@ function splitTitle(title) {
 
 function NewsRow({ it }) {
   const [head, tail] = splitTitle(it.title)
-  const binance = it.source === "币安"
+  const meta = srcMeta(it.source)
   return (
     <a className={styles.row} href={it.url || "#"} target="_blank" rel="noopener noreferrer"
-      title={`${it.source} · ${it.cat || ""}\n${it.title}`}>
-      <span className={styles.src} data-src={binance ? "binance" : "okx"}>
-        {binance ? "币安" : "欧易"}
+      title={`${it.source}${it.cat ? ` · ${it.cat}` : ""}\n${it.title}`}>
+      <span className={styles.src} data-kind={meta.kind}>
+        {meta.label}
       </span>
       <span className={styles.time}>{fmtClock(it.ts)}</span>
       <span className={styles.text}>

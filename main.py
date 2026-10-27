@@ -571,11 +571,18 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         await asyncio.sleep(3)      # 等其它任务先起来
         while True:
             try:
-                items = await asyncio.to_thread(fetch_news, 12, proxy_cfg or None)
+                # 传入当前展示的币种：相关的新闻排前面（交易所公告 + 加密媒体 + 综合财经）
+                shown = sorted(quant.symbol_filter or []) or symbols[:6]
+                items = await asyncio.to_thread(
+                    fetch_news, 10, proxy_cfg or None, shown, 80)
                 if items:
                     hub.news = items
                     await hub.broadcast({"type": "news", "items": items})
-                    print(f"[news] 已更新 {len(items)} 条交易所公告")
+                    srcs = {}
+                    for it in items:
+                        srcs[it.get("source", "?")] = srcs.get(it.get("source", "?"), 0) + 1
+                    print(f"[news] 已更新 {len(items)} 条：" +
+                          ", ".join(f"{k}×{v}" for k, v in sorted(srcs.items(), key=lambda x: -x[1])))
             except Exception as e:
                 print(f"[news] 拉取失败: {e}")
             await asyncio.sleep(600)
