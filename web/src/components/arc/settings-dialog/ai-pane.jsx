@@ -26,6 +26,7 @@ import styles from "./ai-pane.module.css"
 
 const CAP_LABEL = { text: "文本", vision: "识图", pdf: "PDF", video: "视频" }
 const CAP_KEYS = Object.keys(CAP_LABEL)
+const RETIRED_PROVIDERS = new Set(["groq", "ollama"])
 
 const FALLBACK_PROVIDERS = [
   { id: "openai", label: "OpenAI", base: "https://api.openai.com/v1" },
@@ -35,8 +36,6 @@ const FALLBACK_PROVIDERS = [
   { id: "qwen", label: "阿里通义千问", base: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
   { id: "siliconflow", label: "硅基流动", base: "https://api.siliconflow.cn/v1" },
   { id: "openrouter", label: "OpenRouter", base: "https://openrouter.ai/api/v1" },
-  { id: "groq", label: "Groq", base: "https://api.groq.com/openai/v1" },
-  { id: "ollama", label: "Ollama（本地）", base: "http://127.0.0.1:11434/v1" },
   { id: "custom", label: "自定义", base: "" },
 ]
 
@@ -70,6 +69,10 @@ function endpointHost(base) {
   }
 }
 
+function normalizeProvider(id) {
+  return !id || RETIRED_PROVIDERS.has(id) ? "custom" : id
+}
+
 function formatTokens(value) {
   const n = Number(value)
   if (!Number.isFinite(n) || n <= 0) return "未设置"
@@ -90,14 +93,13 @@ function MorphProviderField({ providers, value, onChange }) {
         provider.label,
         providerBrandLabel(provider.id),
         provider.base,
-        provider.id === "ollama" ? "本地 模型 local" : "",
       ].filter(Boolean).join(" "),
     })
-    const cloud = providers.filter((p) => p.id !== "ollama" && p.id !== "custom").map(option)
-    const local = providers.filter((p) => p.id === "ollama" || p.id === "custom").map(option)
+    const cloud = providers.filter((p) => p.id !== "custom").map(option)
+    const local = providers.filter((p) => p.id === "custom").map(option)
     return [
       cloud.length ? { label: "云端服务", options: cloud } : null,
-      local.length ? { label: "本地与其他", options: local } : null,
+      local.length ? { label: "其他", options: local } : null,
     ].filter(Boolean)
   }, [providers])
 
@@ -452,7 +454,7 @@ function ModelPicker({
 
 export default function AiPane({ ai, onSave, onAiAction, aiModelsResult, aiTestResult }) {
   const [draft, setDraft] = useState(() => ({
-    provider: ai?.provider || "custom",
+    provider: normalizeProvider(ai?.provider),
     base: ai?.base || "",
     key: ai?.key || "",
     models: Array.isArray(ai?.models) ? ai.models : [],
@@ -479,7 +481,7 @@ export default function AiPane({ ai, onSave, onAiAction, aiModelsResult, aiTestR
     if (signature === lastAiRef.current) return
     lastAiRef.current = signature
     setDraft({
-      provider: ai?.provider || "custom",
+      provider: normalizeProvider(ai?.provider),
       base: ai?.base || "",
       key: ai?.key || "",
       models: Array.isArray(ai?.models) ? ai.models : [],

@@ -2,7 +2,7 @@
 
 支持 OpenAI 兼容协议（/chat/completions、/models），覆盖绝大多数服务商：
   OpenAI / DeepSeek / Moonshot / 智谱 / 阿里通义 / 硅基流动 / OpenRouter /
-  本地 Ollama、vLLM、LM Studio、one-api 等。
+  其他 OpenAI 兼容端点。
 
 职责边界（刻意保持很窄）：
   · 只做「读配置 / 写配置 / 列模型 / 测连通」，不在这里跑推理。
@@ -30,8 +30,6 @@ PROVIDER_PRESETS = [
     {"id": "qwen", "label": "阿里通义千问", "base": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
     {"id": "siliconflow", "label": "硅基流动", "base": "https://api.siliconflow.cn/v1"},
     {"id": "openrouter", "label": "OpenRouter", "base": "https://openrouter.ai/api/v1"},
-    {"id": "groq", "label": "Groq", "base": "https://api.groq.com/openai/v1"},
-    {"id": "ollama", "label": "Ollama（本地）", "base": "http://127.0.0.1:11434/v1"},
     {"id": "custom", "label": "自定义", "base": ""},
 ]
 
