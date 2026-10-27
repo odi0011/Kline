@@ -38,9 +38,32 @@ const VOL = {
   low: { text: "低波", tone: "low" },
 }
 
-/** 带安全带的区间滑块：官方 Progress 填充条 + 安全带浅色窗口。
- *  不画圆点——10px 高的轨道本身就能读出位置，圆点在小尺寸下反而杂乱。 */
-function RangeSlider({ v, min, max, safe, tone }) {
+/** 文字是否落在填充区（决定用深色还是浅色字，实现自动反色） */
+const overFill = (textMidPct, fillPct) => textMidPct <= fillPct
+
+/** 条内文字层：左侧「标签 数值」、右侧「状态判定」。
+ *  两段文字各自按所在位置的填充覆盖率决定前景色 —— 填充到哪儿，
+ *  哪儿的字就翻成白字，未填充区保持深灰，不需要额外状态维护。 */
+function BarText({ label, value, status, pos, tone }) {
+  // 粗略估计文字所占区间中点：左段约占 0..38%，右段约占 62..100%
+  const leftLight = overFill(19, pos)
+  const rightLight = overFill(81, pos)
+  return (
+    <span className={styles.barText}>
+      <span className={styles.barLeft} data-light={leftLight || undefined}>
+        <u>{label}</u>
+        <b>{value}</b>
+      </span>
+      <span className={styles.barRight} data-light={rightLight || undefined} data-tone={tone || undefined}>
+        {status}
+      </span>
+    </span>
+  )
+}
+
+/** 带安全带的区间滑块：官方 Progress 填充条 + 安全带浅色窗口 + 内嵌文字。
+ *  不画圆点——文字本身就标出了当前值所在比例。 */
+function RangeSlider({ v, min, max, safe, label, value, status, tone }) {
   const pos = clamp(((v - min) / (max - min)) * 100, 0, 100)
   const s0 = clamp(((safe[0] - min) / (max - min)) * 100, 0, 100)
   const s1 = clamp(((safe[1] - min) / (max - min)) * 100, 0, 100)
@@ -48,12 +71,13 @@ function RangeSlider({ v, min, max, safe, tone }) {
     <span className={styles.slider} data-tone={tone}>
       <Progress value={pos} max={100} className={styles.arcBar} />
       <span className={styles.sliderSafe} style={{ left: `${s0}%`, width: `${s1 - s0}%` }} />
+      <BarText label={label} value={value} status={status} pos={pos} tone={tone} />
     </span>
   )
 }
 
-/** 单向阈值能量条：官方 Progress + 阈值刻线 */
-function Gauge({ v, min, max, threshold }) {
+/** 单向阈值能量条：官方 Progress + 阈值刻线 + 内嵌文字 */
+function Gauge({ v, min, max, threshold, label, value, status }) {
   const pos = clamp(((v - min) / (max - min)) * 100, 0, 100)
   const tpos = clamp(((threshold - min) / (max - min)) * 100, 0, 100)
   const tone = v >= threshold ? "hot" : v >= threshold - 5 ? "warm" : "cool"
@@ -61,14 +85,18 @@ function Gauge({ v, min, max, threshold }) {
     <span className={styles.gauge} data-tone={tone}>
       <Progress value={pos} max={100} className={styles.arcBar} />
       <span className={styles.gaugeTick} style={{ left: `${tpos}%` }} />
+      <BarText label={label} value={value} status={status} pos={pos} tone={tone} />
     </span>
   )
 }
 
-/** 0 轴对称双向偏转条：中轴 + 官方 Progress（值转成半幅宽度） */
-function BiBar({ v, scale, up, down }) {
+/** 0 轴对称双向偏转条：中轴 + 官方 Progress（值转成半幅宽度）+ 内嵌文字。
+ *  反色按「离中轴的距离」判断：正值看右半幅覆盖率，负值看左半幅。 */
+function BiBar({ v, scale, up, down, label, value, status }) {
   const half = clamp(Math.abs(v) / scale, 0, 1) * 50
   const positive = v >= 0
+  const leftLight = overFill(19, positive ? 0 : half * 2)   // 负值才填充左半
+  const rightLight = overFill(81, positive ? half * 2 : 0)
   return (
     <span className={styles.bibar} data-dir={positive ? "up" : "down"}
       style={{ "--bibar-color": positive ? up : down, "--arc-fill": positive ? up : down }}>
@@ -79,31 +107,28 @@ function BiBar({ v, scale, up, down }) {
       <span className={styles.bibarHalf} data-side="r">
         {positive && <Progress value={(half / 50) * 100} max={100} className={styles.arcBar} />}
       </span>
+      <span className={styles.barText}>
+        <span className={styles.barLeft} data-light={leftLight || undefined}>
+          <u>{label}</u>
+          <b>{value}</b>
+        </span>
+        <span className={styles.barRight} data-light={rightLight || undefined} data-tone={positive ? "up" : "down"}>
+          {status}
+        </span>
+      </span>
     </span>
   )
 }
 
-/** 布林挤压监测：官方 Progress；挤压时轨道收窄 + 换琥珀色 */
-function SqueezeBar({ v }) {
+/** 布林挤压监测：官方 Progress + 内嵌文字；挤压时整条收窄并换琥珀色 */
+function SqueezeBar({ v, label, value, status }) {
   const squeezed = v != null && v < 15
+  const pos = clamp(v ?? 0, 0, 100)
   return (
     <span className={styles.squeeze} data-squeeze={squeezed || undefined}>
-      <Progress value={clamp(v ?? 0, 0, 100)} max={100} className={styles.arcBar} />
+      <Progress value={pos} max={100} className={styles.arcBar} />
+      <BarText label={label} value={value} status={status} pos={squeezed ? 0 : pos} tone={squeezed ? "warn" : "normal"} />
     </span>
-  )
-}
-
-/** 单行：60px 标签+数值 / 自适应微图表 / 45px 状态判定 */
-function Row({ label, value, status, tone, na, children }) {
-  return (
-    <div className={styles.mRow} data-na={na || undefined}>
-      <span className={styles.mLabel}>
-        <u>{label}</u>
-        <b>{value}</b>
-      </span>
-      <span className={styles.mChart}>{children}</span>
-      <span className={styles.mStatus} data-tone={tone || undefined}>{status}</span>
-    </div>
   )
 }
 
@@ -219,41 +244,35 @@ export default function StrategyPanel({ analysis, symbols, chartColors }) {
 
                   {/* ---------- 动量 · 极值 ---------- */}
                   <div className={styles.groupLabel}>动量 · 极值</div>
-                  <Row label="RSI" value={rsi == null ? "--" : String(Math.round(rsi))}
-                    status={rsiStatus} tone={rsiTone} na={rsi == null}>
-                    {rsi == null ? <span className={styles.chartNa} /> :
-                      <RangeSlider v={rsi} min={0} max={100} safe={[30, 70]} tone={rsiTone} />}
-                  </Row>
-                  <Row label="%B" value={pctB == null ? "--" : pctB.toFixed(2)}
-                    status={bStatus} tone={bTone} na={pctB == null}>
-                    {pctB == null ? <span className={styles.chartNa} /> :
-                      <RangeSlider v={pctB} min={-0.2} max={1.2} safe={[0, 1]} tone={bTone} />}
-                  </Row>
-                  <Row label="Z值" value={z == null ? "--" : z.toFixed(1)}
-                    status={zStatus} tone={zTone} na={z == null}>
-                    {z == null ? <span className={styles.chartNa} /> :
-                      <RangeSlider v={z} min={-3} max={3} safe={[-2, 2]} tone={zTone} />}
-                  </Row>
+                  {rsi == null ? <div className={styles.mNa}>RSI --</div> : (
+                    <RangeSlider v={rsi} min={0} max={100} safe={[30, 70]} tone={rsiTone}
+                      label="RSI" value={String(Math.round(rsi))} status={rsiStatus} />
+                  )}
+                  {pctB == null ? <div className={styles.mNa}>%B --</div> : (
+                    <RangeSlider v={pctB} min={-0.2} max={1.2} safe={[0, 1]} tone={bTone}
+                      label="%B" value={pctB.toFixed(2)} status={bStatus} />
+                  )}
+                  {z == null ? <div className={styles.mNa}>Z值 --</div> : (
+                    <RangeSlider v={z} min={-3} max={3} safe={[-2, 2]} tone={zTone}
+                      label="Z值" value={z.toFixed(1)} status={zStatus} />
+                  )}
 
                   {/* ---------- 趋势 · 动能 ---------- */}
                   <div className={styles.groupLabel}>趋势 · 动能</div>
-                  <Row label="ADX" value={adx == null ? "--" : String(Math.round(adx))}
-                    status={adxStatus} tone={adxTone} na={adx == null}>
-                    {adx == null ? <span className={styles.chartNa} /> :
-                      <Gauge v={adx} min={0} max={50} threshold={25} />}
-                  </Row>
-                  <Row label="ROC" value={roc == null ? "--" : (roc * 100).toFixed(2)}
-                    status={rocStatus} tone={rocTone} na={roc == null}>
-                    {roc == null ? <span className={styles.chartNa} /> :
-                      <BiBar v={roc} scale={0.015} up={up} down={down} />}
-                  </Row>
+                  {adx == null ? <div className={styles.mNa}>ADX --</div> : (
+                    <Gauge v={adx} min={0} max={50} threshold={25}
+                      label="ADX" value={String(Math.round(adx))} status={adxStatus} />
+                  )}
+                  {roc == null ? <div className={styles.mNa}>ROC --</div> : (
+                    <BiBar v={roc} scale={0.015} up={up} down={down}
+                      label="ROC" value={(roc * 100).toFixed(2)} status={rocStatus} />
+                  )}
 
                   {/* ---------- 波动 · 振幅 ---------- */}
                   <div className={styles.groupLabel}>波动 · 振幅</div>
-                  <Row label="BW" value={bw == null ? "--" : String(Math.round(bw))}
-                    status={bwStatus} tone={bwTone} na={bw == null}>
-                    {bw == null ? <span className={styles.chartNa} /> : <SqueezeBar v={bw} />}
-                  </Row>
+                  {bw == null ? <div className={styles.mNa}>BW --</div> : (
+                    <SqueezeBar v={bw} label="BW" value={String(Math.round(bw))} status={bwStatus} />
+                  )}
                   <div className={styles.dual}>
                     <span className={styles.dualItem} data-hot={atrHot || undefined}
                       title="ATR 绝对值（价格单位）+ 历史分位">

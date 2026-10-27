@@ -39,7 +39,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: 2px;
   padding: 7px 8px 8px;
   border-radius: 9px;
   border: 1px solid rgba(28, 35, 51, 0.085);
@@ -140,81 +140,78 @@
      [标签 ……… 数值]                [状态]
      [微图表 ——————————— 独占整宽]
    这样卡片只有 115px 宽时，微图表仍能拿到完整的横向空间。 */
-.mRow {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "label status"
-    "chart chart";
-  grid-template-rows: 15px 14px;
-  gap: 1px 5px;
-  height: 33px;
-  min-width: 0;
-  padding: 1px 0;
-}
-.mLabel {
-  grid-area: label;
-  min-width: 0;
+
+
+
+/* 数据不足时的占位条（与正常条等高，保持行距稳定） */
+.mNa {
   display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 6px;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--text-muted, #b0b7c3);
+  background: repeating-linear-gradient(-45deg,
+    rgba(28, 35, 51, 0.04) 0 3px, transparent 3px 6px);
+}
+
+/* ---------- 条内文字层 ----------
+   标签+数值居左、状态判定居右，都压在进度条上。
+   各自按所在位置的填充覆盖率翻转前景色（填充到哪儿，哪儿的字变白）。 */
+.barText {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 7px;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.barLeft {
+  display: inline-flex;
   align-items: baseline;
   gap: 4px;
-  overflow: hidden;
+  min-width: 0;
+  color: #3d4757;
+  transition: color 200ms ease;
 }
-.mChart { grid-area: chart; }
-.mStatus { grid-area: status; }
-
-.mLabel u {
-  font-size: 8.5px;
+.barLeft u {
+  font-size: 9px;
   font-weight: 600;
-  color: var(--text-secondary, #7c8697);
   text-decoration: none;
+  opacity: 0.72;
   white-space: nowrap;
-  flex: none;
-  letter-spacing: 0.1px;
 }
-.mLabel b {
+.barLeft b {
   font-size: 11.5px;
   font-weight: 700;
-  color: #1c2333;
-  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   letter-spacing: -0.2px;
 }
-.mChart {
-  min-width: 0;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  overflow: hidden;
-}
-.mStatus {
-  min-width: 0;
-  text-align: right;
-  font-size: 8px;
-  font-weight: 600;
-  color: var(--text-muted, #a3abb8);
+.barRight {
+  font-size: 8.5px;
+  font-weight: 700;
   white-space: nowrap;
-  overflow: hidden;
-  font-variant-numeric: tabular-nums;
+  color: #8b949e;
+  transition: color 200ms ease;
 }
-.mStatus[data-tone="normal"] { color: var(--text-muted, #a3abb8); }
-.mStatus[data-tone="warn"] { color: #b45309; }
-.mStatus[data-tone="extreme"] { color: #b91c1c; font-weight: 700; }
-.mStatus[data-tone="oversold"] { color: #047857; font-weight: 700; }
-.mStatus[data-tone="hot"] { color: #4f46e5; font-weight: 700; }
-.mStatus[data-tone="warm"] { color: #0e7490; }
-.mStatus[data-tone="cool"] { color: var(--text-muted, #b6bdc8); }
-.mStatus[data-tone="up"] { color: #b91c1c; }
-.mStatus[data-tone="down"] { color: #047857; }
-.mRow[data-na] { opacity: 0.55; }
-
-.chartNa {
-  flex: 1 1 auto;
-  height: 3px;
-  border-radius: 2px;
-  background: repeating-linear-gradient(-45deg,
-    rgba(28, 35, 51, 0.06) 0 3px, transparent 3px 6px);
-}
+/* 落在填充区 → 反白 */
+.barLeft[data-light] { color: #fff; }
+.barLeft[data-light] u { opacity: 0.85; }
+.barRight[data-light] { color: #fff; }
+/* 未反白时的语义色（常态灰、警戒橙、极值红、初生青、趋势靛、多头红、空头绿） */
+.barRight[data-tone="normal"] { color: #8b949e; }
+.barRight[data-tone="warn"] { color: #b45309; }
+.barRight[data-tone="extreme"] { color: #b91c1c; }
+.barRight[data-tone="oversold"] { color: #047857; }
+.barRight[data-tone="cool"] { color: #94a3b8; }
+.barRight[data-tone="warm"] { color: #0284c7; }
+.barRight[data-tone="hot"] { color: #4f46e5; }
+.barRight[data-tone="up"] { color: #b91c1c; }
+.barRight[data-tone="down"] { color: #047857; }
 
 /* ---------- 微图表 1：带安全带的区间滑块 ---------- */
 
@@ -224,17 +221,21 @@
   font-size: 0;          /* 组件自带 meta 区，这里不显示文字 */
 }
 .arcBar > div:last-child {
-  height: 10px;                                    /* 加高轨道，去掉圆点后靠厚度提升可读性 */
+  height: 22px;                                    /* 条内要放文字，轨道加高到 22px */
   border: 0;
-  background: rgba(28, 35, 51, 0.09);
+  border-radius: 6px;
+  background: rgba(28, 35, 51, 0.075);
 }
 /* 填充色由各图表通过 --arc-fill 指定（覆盖 Progress 默认的 --accent） */
-.arcBar > div:last-child > span { background: var(--arc-fill, var(--accent)); }
+.arcBar > div:last-child > span {
+  background: var(--arc-fill, var(--accent));
+  border-radius: 6px;
+}
 
 .slider {
   position: relative;
   width: 100%;
-  height: 16px;
+  height: 22px;
   display: flex;
   align-items: center;
 }
@@ -242,11 +243,11 @@
 .sliderSafe {
   position: absolute;
   top: 50%;
-  height: 10px;
+  height: 22px;
   transform: translateY(-50%);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.86);
-  box-shadow: inset 0 0 0 1px rgba(28, 35, 51, 0.05);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(28, 35, 51, 0.045);
   pointer-events: none;
 }
 .slider[data-tone="warn"] { --arc-fill: #f59e0b; }
@@ -259,7 +260,7 @@
 .gauge {
   position: relative;
   width: 100%;
-  height: 16px;
+  height: 22px;
   display: flex;
   align-items: center;
 }
@@ -268,9 +269,9 @@
 .gauge[data-tone="hot"] { --arc-fill: #6366f1; }
 .gaugeTick {
   position: absolute;
-  top: 2px; bottom: 2px;
+  top: 3px; bottom: 3px;
   width: 1.5px;
-  background: rgba(28, 35, 51, 0.35);
+  background: rgba(28, 35, 51, 0.32);
   border-radius: 1px;
   pointer-events: none;
 }
@@ -280,24 +281,24 @@
 .bibar {
   position: relative;
   width: 100%;
-  height: 16px;
+  height: 22px;
   display: flex;
   align-items: center;
 }
 .bibarHalf {
   flex: 1 1 50%;
   min-width: 0;
-  height: 16px;
+  height: 22px;
   display: flex;
   align-items: center;
 }
 .bibarHalf[data-side="l"] { justify-content: flex-end; }
-.bibarHalf .arcBar > div:last-child { height: 10px; }
+.bibarHalf .arcBar > div:last-child { height: 22px; }
 .bibarAxis {
   flex: none;
   width: 1.5px;
-  height: 14px;
-  background: rgba(28, 35, 51, 0.32);
+  height: 18px;
+  background: rgba(28, 35, 51, 0.3);
   border-radius: 1px;
   z-index: 1;
 }
@@ -309,22 +310,21 @@
 .squeeze {
   position: relative;
   width: 100%;
-  height: 16px;
+  height: 22px;
   display: flex;
   align-items: center;
   transition: width 320ms ease;
 }
 .squeeze .arcBar > div:last-child {
-  height: 10px;
-  background: rgba(28, 35, 51, 0.09);
+  height: 22px;
+  background: rgba(28, 35, 51, 0.075);
 }
 .squeeze .arcBar > div:last-child > span { background: #cbd5e1; }
-.squeeze[data-squeeze] { width: 42%; }
 .squeeze[data-squeeze] .arcBar > div:last-child > span {
   background: linear-gradient(90deg, #fbbf24, #f59e0b);
 }
 .squeeze[data-squeeze] .arcBar > div:last-child {
-  box-shadow: 0 0 0 1.5px rgba(245, 158, 11, 0.55);
+  box-shadow: 0 0 0 1.5px rgba(245, 158, 11, 0.5);
 }
 
 /* ---------- ATR / RV 紧凑双列 ---------- */
@@ -405,7 +405,4 @@
 }
 
 /* 面板窄于 210px 时压缩标签列，保住微图表宽度 */
-@container (max-width: 210px) {
-  .mLabel { flex-basis: 48px; }
-  .mStatus { flex-basis: 38px; font-size: 7.5px; }
-}
+
