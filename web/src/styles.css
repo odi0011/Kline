@@ -84,6 +84,9 @@ body {
   --foreground: #1c2333;
   --text-secondary: #5b6472;
   --text-muted: #8b949e;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
   --radius-panel: 12px;
   --radius-surface: 12px;
   --radius-pill: 999px;

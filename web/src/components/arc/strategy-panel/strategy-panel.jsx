@@ -20,12 +20,11 @@
 import { useMemo } from "react"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import CoinAvatar from "@/components/ui/coin-avatar"
+import { Progress } from "@/components/arc/progress/progress"
 import styles from "./strategy-panel.module.css"
 
 const SYM = (s) => String(s || "").replace(/usdt$/i, "").toUpperCase()
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
-/** 数值 → 轨道百分比（0~100） */
-const pct = (v, min, max) => clamp(((v - min) / (max - min)) * 100, 0, 100)
 
 const REGIME = {
   trend: { text: "趋势", tone: "trend" },
@@ -39,60 +38,58 @@ const VOL = {
   low: { text: "低波", tone: "low" },
 }
 
-/** 带安全带的区间滑块（RSI / %B / Z） */
+/** 带安全带的区间滑块：官方 Progress 做填充条 + 安全带标记 + 位置圆点。
+ *  轨道/圆头/spring 全部来自 uiarc Progress，不自绘。 */
 function RangeSlider({ v, min, max, safe, tone }) {
-  const pos = pct(v, min, max)
-  const s0 = pct(safe[0], min, max)
-  const s1 = pct(safe[1], min, max)
+  const pos = clamp(((v - min) / (max - min)) * 100, 0, 100)
+  const s0 = clamp(((safe[0] - min) / (max - min)) * 100, 0, 100)
+  const s1 = clamp(((safe[1] - min) / (max - min)) * 100, 0, 100)
   return (
-    <span className={styles.slider}>
-      <span className={styles.sliderTrack}>
-        <span className={styles.sliderSafe} style={{ left: `${s0}%`, width: `${s1 - s0}%` }} />
-      </span>
-      <span className={styles.sliderDot} data-tone={tone} style={{ left: `${pos}%` }} />
+    <span className={styles.slider} data-tone={tone}>
+      <span className={styles.sliderSafe} style={{ left: `${s0}%`, width: `${s1 - s0}%` }} />
+      <Progress value={pos} max={100} className={styles.arcBar} />
+      <span className={styles.sliderDot} style={{ left: `${pos}%` }} />
     </span>
   )
 }
 
-/** 单向阈值能量条（ADX）：threshold 为分水岭 */
+/** 单向阈值能量条：官方 Progress + 阈值刻线 */
 function Gauge({ v, min, max, threshold }) {
-  const pos = pct(v, min, max)
+  const pos = clamp(((v - min) / (max - min)) * 100, 0, 100)
+  const tpos = clamp(((threshold - min) / (max - min)) * 100, 0, 100)
   const tone = v >= threshold ? "hot" : v >= threshold - 5 ? "warm" : "cool"
   return (
-    <span className={styles.gauge}>
-      <span className={styles.gaugeFill} data-tone={tone} style={{ width: `${pos}%` }} />
-      <span className={styles.gaugeTick} style={{ left: `${pct(threshold, min, max)}%` }} />
+    <span className={styles.gauge} data-tone={tone}>
+      <Progress value={pos} max={100} className={styles.arcBar} />
+      <span className={styles.gaugeTick} style={{ left: `${tpos}%` }} />
     </span>
   )
 }
 
-/** 0 轴对称双向偏转条（ROC）：正向右、负向左，颜色跟随涨跌配色 */
+/** 0 轴对称双向偏转条：中轴 + 官方 Progress（值转成半幅宽度） */
 function BiBar({ v, scale, up, down }) {
-  const len = clamp(Math.abs(v) / scale, 0, 1) * 50
+  const half = clamp(Math.abs(v) / scale, 0, 1) * 50
   const positive = v >= 0
   return (
-    <span className={styles.bibar}>
+    <span className={styles.bibar} data-dir={positive ? "up" : "down"}
+      style={{ "--bibar-color": positive ? up : down }}>
+      <span className={styles.bibarHalf} data-side="l">
+        {!positive && <Progress value={(half / 50) * 100} max={100} className={styles.arcBar} />}
+      </span>
       <span className={styles.bibarAxis} />
-      <span
-        className={styles.bibarFill}
-        style={{
-          [positive ? "left" : "right"]: "50%",
-          width: `${len}%`,
-          background: positive ? up : down,
-        }}
-      />
+      <span className={styles.bibarHalf} data-side="r">
+        {positive && <Progress value={(half / 50) * 100} max={100} className={styles.arcBar} />}
+      </span>
     </span>
   )
 }
 
-/** 布林挤压监测条（BW 分位）：常态低对比灰条；挤压时轨道收窄 + 琥珀胶囊 */
+/** 布林挤压监测：官方 Progress；挤压时轨道收窄 + 换琥珀色 */
 function SqueezeBar({ v }) {
   const squeezed = v != null && v < 15
   return (
     <span className={styles.squeeze} data-squeeze={squeezed || undefined}>
-      <span className={styles.squeezeTrack}>
-        {v != null && <span className={styles.squeezeFill} style={{ width: `${clamp(v, 0, 100)}%` }} />}
-      </span>
+      <Progress value={clamp(v ?? 0, 0, 100)} max={100} className={styles.arcBar} />
     </span>
   )
 }

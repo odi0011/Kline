@@ -231,6 +231,14 @@
 
 /* ---------- 微图表 1：带安全带的区间滑块 ---------- */
 
+/* 官方 uiarc Progress 作为填充条：只调整尺寸与配色，不改其结构与动效 */
+.arcBar {
+  width: 100%;
+  font-size: 0;          /* 组件自带 meta 区，这里不显示文字 */
+}
+.arcBar > div:last-child { height: 6px; }   /* track */
+.arcBar > div:last-child > span { background: var(--arc-fill, #64748b); }
+
 .slider {
   position: relative;
   width: 100%;
@@ -238,21 +246,21 @@
   display: flex;
   align-items: center;
 }
-.sliderTrack {
-  position: relative;
-  width: 100%;
-  height: 5px;
-  border-radius: 999px;
-  background: rgba(28, 35, 51, 0.11);
-  overflow: hidden;
-}
-/* 常态安全带：轨道中段的浅色窗口 */
+/* 常态安全带：叠在轨道上方的一层浅色窗口 */
 .sliderSafe {
   position: absolute;
-  top: 0; bottom: 0;
-  background: rgba(255, 255, 255, 0.82);
+  top: 50%;
+  height: 6px;
+  transform: translateY(-50%);
   border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(28, 35, 51, 0.06);
+  pointer-events: none;
 }
+.slider[data-tone="warn"] { --arc-fill: #f59e0b; }
+.slider[data-tone="extreme"] { --arc-fill: #ef4444; }
+.slider[data-tone="oversold"] { --arc-fill: #10b981; }
+.slider[data-tone="normal"] { --arc-fill: #64748b; }
 .sliderDot {
   position: absolute;
   top: 50%;
@@ -261,38 +269,30 @@
   margin-left: -4px;
   border-radius: 50%;
   transform: translateY(-50%);
-  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95), 0 1px 2px rgba(16, 24, 40, 0.28);
-  transition: left 320ms ease, background-color 220ms ease;
+  background: var(--arc-fill, #64748b);
+  box-shadow: 0 0 0 1.5px #fff, 0 1px 2px rgba(16, 24, 40, 0.28);
+  transition: left 320ms cubic-bezier(0.2, 0, 0, 1), background-color 220ms ease;
+  pointer-events: none;
 }
-.sliderDot[data-tone="normal"] { background: #6b7280; }
-.sliderDot[data-tone="warn"] { background: #f59e0b; }
-.sliderDot[data-tone="extreme"] { background: #ef4444; }
-.sliderDot[data-tone="oversold"] { background: #10b981; }
 
 /* ---------- 微图表 2：单向阈值能量条 ---------- */
 
 .gauge {
   position: relative;
   width: 100%;
-  height: 6px;
-  border-radius: 999px;
-  background: rgba(28, 35, 51, 0.09);
-  overflow: hidden;
+  height: 14px;
+  display: flex;
+  align-items: center;
 }
-.gaugeFill {
-  position: absolute;
-  left: 0; top: 0; bottom: 0;
-  border-radius: 999px;
-  transition: width 320ms ease, background-color 220ms ease;
-}
-.gaugeFill[data-tone="cool"] { background: #cbd5e1; }
-.gaugeFill[data-tone="warm"] { background: #67e8f9; }
-.gaugeFill[data-tone="hot"] { background: linear-gradient(90deg, #60a5fa, #6366f1); }
+.gauge[data-tone="cool"] { --arc-fill: #cbd5e1; }
+.gauge[data-tone="warm"] { --arc-fill: #38bdf8; }
+.gauge[data-tone="hot"] { --arc-fill: #6366f1; }
 .gaugeTick {
   position: absolute;
-  top: -1px; bottom: -1px;
+  top: 2px; bottom: 2px;
   width: 1px;
-  background: rgba(28, 35, 51, 0.3);
+  background: rgba(28, 35, 51, 0.32);
+  pointer-events: none;
 }
 
 /* ---------- 微图表 3：0 轴对称双向偏转条 ---------- */
@@ -300,57 +300,49 @@
 .bibar {
   position: relative;
   width: 100%;
-  height: 8px;
-  border-radius: 3px;
-  background: rgba(28, 35, 51, 0.055);
+  height: 14px;
+  display: flex;
+  align-items: center;
+  gap: 0;
 }
+.bibarHalf {
+  flex: 1 1 50%;
+  min-width: 0;
+  height: 14px;
+  display: flex;
+  align-items: center;
+}
+.bibarHalf[data-side="l"] { justify-content: flex-end; }
+.bibarHalf .arcBar > div:last-child { height: 6px; }
+.bibarHalf .arcBar > div:last-child > span { background: var(--bibar-color, #64748b); }
 .bibarAxis {
-  position: absolute;
-  left: 50%; top: 0; bottom: 0;
+  flex: none;
   width: 1px;
-  margin-left: -0.5px;
-  background: rgba(255, 255, 255, 0.95);
-  box-shadow: 0 0 0 0.5px rgba(28, 35, 51, 0.16);
+  height: 10px;
+  background: rgba(28, 35, 51, 0.28);
+  border-radius: 1px;
 }
-.bibarFill {
-  position: absolute;
-  top: 1px; bottom: 1px;
-  border-radius: 2px;
-  transition: width 320ms ease;
-}
+/* 负值时左半边反向填充：把 Progress 内部填充镜像 */
+.bibarHalf[data-side="l"] .arcBar { direction: rtl; }
 
 /* ---------- 微图表 4：布林挤压监测条 ---------- */
 
 .squeeze {
   position: relative;
   width: 100%;
-  height: 6px;
+  height: 14px;
   display: flex;
   align-items: center;
-}
-.squeezeTrack {
-  position: relative;
-  width: 100%;
-  height: 5px;
-  border-radius: 999px;
-  background: rgba(28, 35, 51, 0.09);
-  overflow: hidden;
   transition: width 320ms ease;
 }
-.squeezeFill {
-  position: absolute;
-  left: 0; top: 0; bottom: 0;
-  border-radius: 999px;
-  background: #cbd5e1;
-  transition: width 320ms ease, background-color 220ms ease;
-}
-/* 挤压：轨道整体收窄，填充变琥珀色 */
-.squeeze[data-squeeze] .squeezeTrack {
-  width: 26px;
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.5);
-}
-.squeeze[data-squeeze] .squeezeFill {
+.squeeze .arcBar > div:last-child { height: 6px; }
+.squeeze .arcBar > div:last-child > span { background: #cbd5e1; }
+.squeeze[data-squeeze] { width: 40%; }
+.squeeze[data-squeeze] .arcBar > div:last-child > span {
   background: linear-gradient(90deg, #fbbf24, #f59e0b);
+}
+.squeeze[data-squeeze] .arcBar > div:last-child {
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.55);
 }
 
 /* ---------- ATR / RV 紧凑双列 ---------- */
