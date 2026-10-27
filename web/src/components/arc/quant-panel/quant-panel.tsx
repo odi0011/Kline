@@ -253,12 +253,15 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
     return () => clearTimeout(id)
   }, [events])
 
-  // 贴底跟随（初次瞬间、后续平滑）
+  // 贴底跟随：新行直接钉到底部。连续事件下不使用 smooth scroll，
+  // 否则每次广播都会重启滚动动画，整列文字会看起来一直抖动。
   useEffect(() => {
     if (!follow) return
     const el = viewportRef.current
     if (!el) return
-    el.scrollTo({ top: el.scrollHeight, behavior: scrollTop === 0 ? "auto" : "smooth" })
+    const bottom = el.scrollHeight
+    if (bottom - el.scrollTop - el.clientHeight < 1) return
+    el.scrollTop = bottom
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events.length, follow])
 

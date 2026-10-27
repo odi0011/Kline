@@ -59,6 +59,40 @@ const circleSegments = (center, radius, startAngle, sweep, steps = 22) => {
   return points.slice(1).map((point, index) => lineSegment(points[index], point))
 }
 
+const roundedPolyline = (points, radius = 18) => {
+  if (points.length < 2) return []
+  const segments = []
+  let cursor = points[0]
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const corner = points[index]
+    const previous = points[index - 1]
+    const next = points[index + 1]
+    const inLength = Math.hypot(corner.x - previous.x, corner.y - previous.y) || 1
+    const outLength = Math.hypot(next.x - corner.x, next.y - corner.y) || 1
+    const inUnit = { x: (corner.x - previous.x) / inLength, y: (corner.y - previous.y) / inLength }
+    const outUnit = { x: (next.x - corner.x) / outLength, y: (next.y - corner.y) / outLength }
+    const inRadius = Math.min(radius, inLength * 0.32)
+    const outRadius = Math.min(radius, outLength * 0.32)
+    const start = { x: corner.x - inUnit.x * inRadius, y: corner.y - inUnit.y * inRadius }
+    const end = { x: corner.x + outUnit.x * outRadius, y: corner.y + outUnit.y * outRadius }
+    if (Math.hypot(start.x - cursor.x, start.y - cursor.y) > 0.1) {
+      segments.push(lineSegment(cursor, start))
+    }
+    segments.push(cubicSegment(
+      start,
+      { x: start.x + (corner.x - start.x) * 0.67, y: start.y + (corner.y - start.y) * 0.67 },
+      { x: end.x + (corner.x - end.x) * 0.67, y: end.y + (corner.y - end.y) * 0.67 },
+      end,
+    ))
+    cursor = end
+  }
+  const last = points[points.length - 1]
+  if (Math.hypot(last.x - cursor.x, last.y - cursor.y) > 0.1) {
+    segments.push(lineSegment(cursor, last))
+  }
+  return segments
+}
+
 function makeCurve(from, to, pulse) {
   const dx = to.x - from.x
   const dy = to.y - from.y
@@ -104,7 +138,7 @@ function makeCurve(from, to, pulse) {
   }
 
   if (variant === 3) {
-    // 故意拐错方向的直角路线。
+    // 故意拐错的折线路线，所有转角都做圆滑过渡。
     const gateX = from.x + dx * (0.3 + ((seed >>> 8) % 16) / 100)
     const dropY = to.y + dy * (((seed >>> 14) % 18) - 4) / 100
     const points = [
@@ -117,7 +151,7 @@ function makeCurve(from, to, pulse) {
     return {
       p0: from,
       p3: to,
-      parts: [{ segments: points.slice(1).map((point, index) => lineSegment(points[index], point)), weight: 1 }],
+      parts: [{ segments: roundedPolyline(points, 20), weight: 1 }],
     }
   }
 
@@ -141,7 +175,12 @@ function makeCurve(from, to, pulse) {
           weight: 0.76,
         },
         {
-          segments: [lineSegment(overshoot, to)],
+          segments: [cubicSegment(
+            overshoot,
+            { x: overshoot.x - ux * 10 + nx * 8, y: overshoot.y - uy * 10 + ny * 8 },
+            { x: to.x + ux * 10 - nx * 8, y: to.y + uy * 10 - ny * 8 },
+            to,
+          )],
           weight: 0.24,
         },
       ],

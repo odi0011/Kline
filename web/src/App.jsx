@@ -68,6 +68,45 @@ const fmtTime = (ts) => {
   return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`
 }
 
+const QUANT_STATE_KEYS = [
+  "price", "bars", "atr", "atrPct", "realizedVol", "boll", "bwPct",
+  "rsi", "z", "adx", "plusDI", "minusDI", "roc", "regime", "volState", "squeeze",
+]
+
+/** 量化快照偶尔会先广播一个指标尚未填充的帧。展示层保留上一份非空值，
+    避免左侧真实数据卡瞬间退回“计算中”再恢复。 */
+function mergeQuantSnapshot(current, next) {
+  if (!current?.analysis || !next?.analysis) return next
+  const oldAnalysis = current.analysis
+  const newAnalysis = next.analysis
+  const symbols = { ...(oldAnalysis.symbols || {}) }
+  for (const [symbol, incoming] of Object.entries(newAnalysis.symbols || {})) {
+    const previous = oldAnalysis.symbols?.[symbol]
+    if (!previous) {
+      symbols[symbol] = incoming
+      continue
+    }
+    const merged = { ...previous, ...incoming }
+    for (const key of QUANT_STATE_KEYS) {
+      if (incoming?.[key] == null && previous?.[key] != null) merged[key] = previous[key]
+    }
+    if (incoming?.boll && previous?.boll) {
+      merged.boll = { ...previous.boll }
+      for (const [key, value] of Object.entries(incoming.boll)) {
+        if (value != null) merged.boll[key] = value
+      }
+    }
+    symbols[symbol] = merged
+  }
+  const mergedAnalysis = { ...oldAnalysis, ...newAnalysis, symbols }
+  for (const key of ["liveFeatures", "liveEvaluations", "liveScoreHistory"]) {
+    if (!Object.keys(newAnalysis[key] || {}).length && Object.keys(oldAnalysis[key] || {}).length) {
+      mergedAnalysis[key] = oldAnalysis[key]
+    }
+  }
+  return { ...next, analysis: mergedAnalysis }
+}
+
 export default function App() {
   const [meta, setMeta] = useState(null)
   const [stats, setStats] = useState({ status: 'connecting', mode: '', lag: null })
@@ -210,7 +249,9 @@ export default function App() {
     })
     const offAiModels = live.on('ai_models', (m) => setAiModelsResult(m.result || null))
     const offAiTest = live.on('ai_test', (m) => setAiTestResult({ ...(m.result || {}), at: Date.now() }))
-    const offQuant = live.on('quant', (m) => setQuantSnap(m.snapshot))
+    const offQuant = live.on('quant', (m) => {
+      setQuantSnap((current) => mergeQuantSnapshot(current, m.snapshot))
+    })
     const offQEvents = live.on('quant_events', (m) => setQuantEvents(m.events || []))
     const offStructureInit = live.on('init', () => setStructureVersion((v) => v + 1))
     const offStructure = live.on('structure', () => setStructureVersion((v) => v + 1))

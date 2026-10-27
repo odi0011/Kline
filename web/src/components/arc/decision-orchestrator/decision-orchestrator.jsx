@@ -1,5 +1,5 @@
-/* 同一套量化引擎的全局计算流：币种汇入核心，六个因子节点协同计算，
-   最后进入统一风控与执行，再回流下一轮巡检。画面不承载交易结果。 */
+/* 量化计算网络：指标流进入数据总线，经过多层协同计算、路由和专家分流，
+   最终汇入风控与执行并回流。画面只表达计算过程，不承载交易结果。 */
 import { useEffect, useId, useMemo, useState } from "react"
 import { motion, useReducedMotion } from "motion/react"
 import {
@@ -13,10 +13,8 @@ import {
   Waves,
   Zap,
 } from "lucide-react"
-import CoinAvatar from "@/components/ui/coin-avatar"
 import styles from "./decision-orchestrator.module.css"
 
-const SYM = (symbol) => String(symbol || "").replace(/usdt$/i, "").toUpperCase()
 const clamp = (value, low = 0, high = 100) => Math.min(high, Math.max(low, value))
 const number = (value, fallback = null) => {
   const n = Number(value)
@@ -54,34 +52,33 @@ const toneForScore = (score) => {
   return "weak"
 }
 
-const CORE = { x: 185, y: 175 }
-const INTAKE = { x: 62, y: 175 }
-const COLLECTOR = { x: 329, y: 175 }
+const BUS = { x: 27, y: 175 }
+const LAYERS = [
+  { id: "l1", x: 73, ys: [92, 147, 202, 257] },
+  { id: "l2", x: 118, ys: [69, 116, 163, 210, 257] },
+  { id: "l3", x: 163, ys: [92, 147, 202, 257] },
+]
+const ROW_Y = [92, 126, 160, 194, 228, 262]
+const ROUTER = { left: 202, right: 254, top: 64, bottom: 296 }
+const EXPERT_X = 316
+const COLLECTOR = { x: 366, y: 175 }
 const OUTPUT = {
-  risk: { x: 356, y: 137 },
-  execution: { x: 356, y: 213 },
+  risk: { x: 381, y: 137 },
+  execution: { x: 381, y: 213 },
 }
 const EXPERT_LAYOUT = [
-  { id: "trend", label: "趋势", x: 88, y: 119, Icon: TrendingUp, tone: "var(--color-sky-500)" },
-  { id: "momentum", label: "动量", x: 185, y: 58, Icon: Activity, tone: "var(--color-violet-500)" },
-  { id: "flow", label: "量价", x: 282, y: 119, Icon: Waves, tone: "var(--color-teal-500)" },
-  { id: "structure", label: "结构", x: 282, y: 231, Icon: Network, tone: "var(--color-amber-500)" },
-  { id: "derivatives", label: "衍生", x: 185, y: 292, Icon: Scale, tone: "var(--color-blue-500)" },
-  { id: "information", label: "信息", x: 88, y: 231, Icon: Newspaper, tone: "var(--color-pink-500)" },
+  { id: "trend", label: "趋势", Icon: TrendingUp, tone: "var(--color-sky-500)" },
+  { id: "momentum", label: "动量", Icon: Activity, tone: "var(--color-violet-500)" },
+  { id: "flow", label: "量价", Icon: Waves, tone: "var(--color-teal-500)" },
+  { id: "structure", label: "结构", Icon: Network, tone: "var(--color-amber-500)" },
+  { id: "derivatives", label: "衍生", Icon: Scale, tone: "var(--color-blue-500)" },
+  { id: "information", label: "信息", Icon: Newspaper, tone: "var(--color-pink-500)" },
 ]
 
 const pos = (point) => ({
   left: `${(point.x / 400) * 100}%`,
   top: `${(point.y / 350) * 100}%`,
 })
-
-const computePath = (target) =>
-  `M ${CORE.x} ${CORE.y} C ${CORE.x + (target.x - CORE.x) * 0.34} ${CORE.y} ` +
-  `${CORE.x + (target.x - CORE.x) * 0.72} ${target.y} ${target.x} ${target.y}`
-
-const collectPath = (source) =>
-  `M ${source.x} ${source.y} C ${source.x + (COLLECTOR.x - source.x) * 0.36} ${source.y} ` +
-  `${COLLECTOR.x} ${COLLECTOR.y + (source.y - COLLECTOR.y) * 0.24} ${COLLECTOR.x} ${COLLECTOR.y}`
 
 function nearestLevels(structure, price, boll) {
   const current = number(price)
@@ -103,25 +100,30 @@ function nearestLevels(structure, price, boll) {
   }
 }
 
+const edgePath = (from, to, bend = 0) => {
+  const dx = to.x - from.x
+  return `M ${from.x} ${from.y} C ${from.x + dx * 0.34} ${from.y + bend} ` +
+    `${to.x - dx * 0.27} ${to.y - bend * 0.45} ${to.x} ${to.y}`
+}
+
 function FlowParticle({ path, delay, duration, tone = "accent" }) {
   return (
     <g className={styles.particle} data-tone={tone} opacity="0">
-      <circle r="3.2" className={styles.particleHalo} />
-      <circle r="1.25" className={styles.particleCore} />
+      <circle r="2.6" className={styles.particleHalo} />
+      <circle r="1" className={styles.particleCore} />
       <animateMotion path={path} dur={`${duration}s`} begin={`${delay}s`} repeatCount="indefinite" />
-      <animate attributeName="opacity" values="0;0.92;0.92;0" keyTimes="0;0.12;0.8;1"
+      <animate attributeName="opacity" values="0;0.96;0.96;0" keyTimes="0;0.12;0.82;1"
         dur={`${duration}s`} begin={`${delay}s`} repeatCount="indefinite" />
     </g>
   )
 }
 
-function DataPacket({ path, text, delay, duration, midpoint, tone = "metric", reduced }) {
-  const chars = [...text]
-  const width = Math.max(20, 8 + chars.reduce(
-    (sum, char) => sum + (/[\u3400-\u9fff]/.test(char) ? 6.1 : 3.45),
+function DataPacket({ path, text, delay, duration, midpoint, reduced }) {
+  const width = Math.max(24, 8 + [...text].reduce(
+    (sum, char) => sum + (/[\u3400-\u9fff]/.test(char) ? 6.2 : 3.6),
     0,
   ))
-  const shape = (
+  const body = (
     <>
       <rect x={-width / 2} y="-6" width={width} height="12" rx="6" className={styles.packetBg} />
       <text x="0" y="0.5" textAnchor="middle" dominantBaseline="middle"
@@ -129,12 +131,12 @@ function DataPacket({ path, text, delay, duration, midpoint, tone = "metric", re
     </>
   )
   if (reduced) {
-    return <g className={styles.dataPacket} data-tone={tone}
-      transform={`translate(${midpoint.x} ${midpoint.y})`}>{shape}</g>
+    return <g className={styles.dataPacket}
+      transform={`translate(${midpoint.x} ${midpoint.y})`}>{body}</g>
   }
   return (
-    <g className={styles.dataPacket} data-tone={tone} opacity="0">
-      {shape}
+    <g className={styles.dataPacket} opacity="0">
+      {body}
       <animateMotion path={path} dur={`${duration}s`} begin={`${delay}s`} repeatCount="indefinite" />
       <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.82;1"
         dur={`${duration}s`} begin={`${delay}s`} repeatCount="indefinite" />
@@ -214,19 +216,6 @@ export default function DecisionOrchestrator({ analysis, symbols, events, struct
     })
   }, [ordered, traces, gateLog, latestBySymbol, liveEvaluations, liveFeatures, symbolStates])
 
-  const nodeScores = {
-    trend: avg(lanes.map((lane) => lane.breakdown.trend)),
-    momentum: avg(lanes.map((lane) => lane.breakdown.momentum)),
-    flow: avg(lanes.map((lane) => lane.breakdown.volume)),
-    structure: avg(lanes.map((lane) => lane.breakdown.structure)),
-    derivatives: avg(lanes.map((lane) => lane.derivativeScore)),
-    information: avg(lanes.map((lane) => lane.sentimentScore)),
-  }
-  const expertNodes = EXPERT_LAYOUT.map((node) => ({ ...node, score: nodeScores[node.id] }))
-  const overallScore = avg(lanes.map((lane) => lane.score))
-  const scoredCount = lanes.filter((lane) => lane.score != null).length
-  const riskCount = lanes.filter((lane) => lane.trace?.risk).length + plans.length
-  const executionCount = lanes.filter((lane) => lane.trace?.status === "opened").length
   const signalAge = latestSignal ? Date.now() - (number(latestSignal.ts, 0) || 0) : Infinity
   const recentSignal = signalAge < 12000 ? latestSignal : null
   const signalActive = signalAge < 5000 ? latestSignal : null
@@ -243,68 +232,102 @@ export default function DecisionOrchestrator({ analysis, symbols, events, struct
   const focusHMM = focusFeatures.hmm || {}
   const focusPrice = number(focusLane?.trace?.price) ?? number(focusState.price)
   const levels = nearestLevels(structures?.[focusSymbol], focusPrice, focusBoll)
+
+  const scoreById = {
+    trend: avg(lanes.map((lane) => lane.breakdown.trend)),
+    momentum: avg(lanes.map((lane) => lane.breakdown.momentum)),
+    flow: avg(lanes.map((lane) => lane.breakdown.volume)),
+    structure: avg(lanes.map((lane) => lane.breakdown.structure)),
+    derivatives: avg(lanes.map((lane) => lane.derivativeScore)),
+    information: avg(lanes.map((lane) => lane.sentimentScore)),
+  }
+  const experts = EXPERT_LAYOUT.map((expert) => ({ ...expert, score: scoreById[expert.id] }))
+  const scoredCount = lanes.filter((lane) => lane.score != null).length
+  const riskCount = lanes.filter((lane) => lane.trace?.risk).length + plans.length
+  const executionCount = lanes.filter((lane) => lane.trace?.status === "opened").length
+
+  const layerNodes = LAYERS.map((layer) => layer.ys.map((y, index) => ({
+    id: `${layer.id}-${index}`,
+    x: layer.x,
+    y,
+  })))
+  const backendEdges = []
+  for (let layerIndex = 0; layerIndex < layerNodes.length - 1; layerIndex += 1) {
+    for (const [fromIndex, from] of layerNodes[layerIndex].entries()) {
+      for (const [toIndex, to] of layerNodes[layerIndex + 1].entries()) {
+        const bend = ((fromIndex + toIndex + layerIndex) % 5 - 2) * 4
+        backendEdges.push({
+          id: `${from.id}-${to.id}`,
+          path: edgePath(from, to, bend),
+          layer: layerIndex,
+        })
+      }
+    }
+  }
+  const inputEdges = layerNodes[0].map((node, index) => ({
+    id: `bus-${node.id}`,
+    path: edgePath(BUS, node, (index - 1.5) * 3),
+  }))
+  const routerFeeds = ROW_Y.map((y, index) => {
+    const from = layerNodes[2][index % layerNodes[2].length]
+    const to = { x: ROUTER.left + 2, y }
+    return {
+      id: `router-${experts[index].id}`,
+      from,
+      to,
+      y,
+      path: edgePath(from, to, ((index % 3) - 1) * 8),
+    }
+  })
+  const expertDrops = ROW_Y.map((y, index) => ({
+    id: `drop-${experts[index].id}`,
+    path: `M ${ROUTER.right + 2} ${y} C ${ROUTER.right + 8} ${y} ${EXPERT_X - 49} ${y} ${EXPERT_X - 46} ${y}`,
+  }))
+  const collectorPaths = ROW_Y.map((y, index) => ({
+    id: `collect-${experts[index].id}`,
+    path: `M ${EXPERT_X + 47} ${y} C ${EXPERT_X + 56} ${y} ${COLLECTOR.x - 5} ${COLLECTOR.y + (y - COLLECTOR.y) * 0.18} ${COLLECTOR.x} ${COLLECTOR.y}`,
+  }))
+  const outputPaths = [
+    { id: "risk", path: `M ${COLLECTOR.x} ${COLLECTOR.y} C 374 ${COLLECTOR.y} 377 154 ${OUTPUT.risk.x} ${OUTPUT.risk.y}` },
+    { id: "execution", path: `M ${COLLECTOR.x} ${COLLECTOR.y} C 374 ${COLLECTOR.y} 377 196 ${OUTPUT.execution.x} ${OUTPUT.execution.y}` },
+  ]
+  const feedbackPath = `M ${OUTPUT.execution.x} 229 C ${OUTPUT.execution.x} 309 318 330 203 330 C 80 330 18 309 18 280`
+
   const metricChoices = {
-    trend: [
-      `ADX ${fixed(focusState.adx, 0)}`,
-      `ATR ${fixed(focusState.atrPct, 0)}`,
-    ],
+    trend: [`ADX ${fixed(focusState.adx, 0)}`, `ATR ${fixed(focusState.atrPct, 0)}`],
     momentum: [
       `RSI ${fixed(focusState.rsi, 0)}`,
       `ROC ${signedPct(number(focusState.roc) == null ? null : number(focusState.roc) * 100, 2)}`,
     ],
-    flow: [
-      `%B ${fixed(focusBoll.pctB, 2)}`,
-      `Z ${fixed(focusState.z, 1)}`,
-    ],
-    structure: [
-      `压 ${compactPrice(levels.resistance)}`,
-      `撑 ${compactPrice(levels.support)}`,
-    ],
+    flow: [`%B ${fixed(focusBoll.pctB, 2)}`, `Z ${fixed(focusState.z, 1)}`],
+    structure: [`压 ${compactPrice(levels.resistance)}`, `撑 ${compactPrice(levels.support)}`],
     derivatives: [
       `OI ${signedPct(number(focusOI.changePct) == null ? null : number(focusOI.changePct) * 100, 2)}`,
       `费率 ${signedPct(number(focusFunding.rate) == null ? null : number(focusFunding.rate) * 100, 3)}`,
     ],
-    information: [
-      `情绪 ${fixed(focusSentiment.score, 2)}`,
-      `HMM ${focusHMM.label || "--"}`,
-    ],
+    information: [`情绪 ${fixed(focusSentiment.score, 2)}`, `HMM ${focusHMM.label || "--"}`],
   }
-
-  const coinPoints = ordered.map((symbol, index, all) => {
-    const y = all.length <= 1 ? CORE.y : 62 + (index / (all.length - 1)) * 226
+  const feedPackets = routerFeeds.map((edge, index) => {
+    const choices = metricChoices[experts[index].id] || []
+    const metric = choices[(scanIndex + index) % Math.max(1, choices.length)] || "--"
     return {
-      symbol,
-      y,
-      score: lanes.find((lane) => lane.symbol === symbol)?.score,
-      path: `M 18 ${y} C 39 ${y} 52 ${INTAKE.y + (y - INTAKE.y) * 0.1} ${INTAKE.x} ${INTAKE.y}`,
-    }
-  })
-  const expertPaths = expertNodes.map((node) => ({ node, path: computePath(node) }))
-  const metricPackets = expertPaths.map((entry, index) => {
-    const choices = metricChoices[entry.node.id] || []
-    return {
-      ...entry,
-      text: choices[(scanIndex + index) % Math.max(1, choices.length)] || "--",
+      ...edge,
+      text: metric,
       midpoint: {
-        x: (CORE.x + entry.node.x) / 2,
-        y: (CORE.y + entry.node.y) / 2,
+        x: (edge.from.x + edge.to.x) / 2,
+        y: (edge.from.y + edge.to.y) / 2,
       },
     }
   })
-  const focusPoint = coinPoints.find((coin) => coin.symbol === focusSymbol) || null
-  const signalPoint = coinPoints.find((coin) => coin.symbol === recentSignal?.symbol) || focusPoint
-  const collectorPaths = expertNodes.map((node) => ({ node, path: collectPath(node) }))
-  const intakePath = `M ${INTAKE.x} ${INTAKE.y} C 94 175 130 175 154 175`
-  const outputPaths = [
-    { key: "risk", path: `M ${COLLECTOR.x} ${COLLECTOR.y} C 338 ${COLLECTOR.y} 342 156 ${OUTPUT.risk.x} ${OUTPUT.risk.y}` },
-    { key: "execution", path: `M ${COLLECTOR.x} ${COLLECTOR.y} C 338 ${COLLECTOR.y} 342 194 ${OUTPUT.execution.x} ${OUTPUT.execution.y}` },
-  ]
-  const loopPath = "M 356 230 C 356 296 312 330 185 330 C 58 330 14 294 14 253 C 14 211 15 180 18 150"
+
+  const animatedBackendEdges = backendEdges.filter((_, index) => index % 3 === 0)
+  const busArrivalDelay = (pulse) =>
+    (pulse.delay || 0) + (pulse.spawn ?? 170) + (pulse.duration || 1400)
 
   return (
     <motion.section
       className={styles.root}
-      aria-label="量化计算流动"
+      aria-label="量化计算网络"
       data-ready={scoredCount > 0 || undefined}
       data-signal={signalActive ? "y" : undefined}
       initial={reduced ? false : { opacity: 0, scale: 0.985 }}
@@ -313,172 +336,155 @@ export default function DecisionOrchestrator({ analysis, symbols, events, struct
     >
       <svg className={styles.network} viewBox="0 0 400 350" preserveAspectRatio="none" aria-hidden>
         <defs>
-          <linearGradient id={`source-${uid}`} x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0" stopColor="var(--accent)" stopOpacity="0.04" />
-            <stop offset="0.75" stopColor="var(--accent)" stopOpacity="0.3" />
-            <stop offset="1" stopColor="var(--accent)" stopOpacity="0.7" />
-          </linearGradient>
-          <linearGradient id={`collect-${uid}`} x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0" stopColor="var(--color-emerald-500)" stopOpacity="0.08" />
-            <stop offset="1" stopColor="var(--color-emerald-500)" stopOpacity="0.55" />
+          <linearGradient id={`bus-${uid}`} x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stopColor="var(--accent)" stopOpacity="0.46" />
+            <stop offset="1" stopColor="var(--color-teal-500)" stopOpacity="0.18" />
           </linearGradient>
         </defs>
 
-        <path className={styles.outerOrbit}
-          d="M 356 230 C 356 296 312 330 185 330 C 58 330 14 294 14 253 C 14 211 15 180 18 150" />
-        <path className={styles.hexOrbit}
-          d="M 88 119 L 185 58 L 282 119 L 282 231 L 185 292 L 88 231 Z" />
-        <path className={styles.intakeBeam} d={intakePath} />
+        <rect className={styles.layerBand} x="60" y="55" width="26" height="240" rx="13" />
+        <rect className={styles.layerBand} x="105" y="55" width="26" height="240" rx="13" />
+        <rect className={styles.layerBand} x="150" y="55" width="26" height="240" rx="13" />
 
-        <g className={styles.beams}>
-          {coinPoints.map((coin) => (
-            <path key={`source-line-${coin.symbol}`} className={styles.sourceBeam}
-              d={coin.path} stroke={`url(#source-${uid})`} />
+        <g className={styles.wires}>
+          {inputEdges.map((edge) => (
+            <path key={edge.id} className={styles.inputWire} d={edge.path}
+              stroke={`url(#bus-${uid})`} />
           ))}
-          {expertPaths.map(({ node, path }) => (
-            <path key={`compute-line-${node.id}`} className={styles.computeBeam} d={path}
-              style={{ "--beam-tone": node.tone }} />
+          {backendEdges.map((edge) => (
+            <path key={edge.id} className={styles.backendWire} d={edge.path}
+              style={{ "--edge-layer": edge.layer }} />
           ))}
-          {collectorPaths.map(({ node, path }) => (
-            <path key={`collect-line-${node.id}`} className={styles.collectBeam} d={path}
-              stroke={`url(#collect-${uid})`} />
+          {routerFeeds.map((edge) => (
+            <path key={edge.id} className={styles.routerWire} d={edge.path} />
           ))}
-          {outputPaths.map(({ key, path }) => (
-            <path key={`output-line-${key}`} className={styles.outputBeam} d={path} />
+          {expertDrops.map((edge) => (
+            <path key={edge.id} className={styles.expertWire} d={edge.path} />
           ))}
-          <path className={styles.loopBeam} d={loopPath} />
+          {collectorPaths.map((edge) => (
+            <path key={edge.id} className={styles.collectWire} d={edge.path} />
+          ))}
+          {outputPaths.map((edge) => (
+            <path key={edge.id} className={styles.outputWire} d={edge.path} />
+          ))}
+          <path className={styles.feedbackWire} d={feedbackPath} />
         </g>
+
+        {layerNodes.flat().map((node, index) => (
+          <circle key={node.id} className={styles.microNode} cx={node.x} cy={node.y} r="3.2"
+            style={{ "--node-delay": `${(index % 7) * -0.31}s` }} />
+        ))}
 
         {!reduced && (
           <g>
-            {coinPoints.map((coin, index) => (
-              <FlowParticle key={`source-flow-${coin.symbol}`} path={coin.path}
-                delay={0.1 + index * 0.21} duration={2.8 + (index % 3) * 0.34} />
+            {animatedBackendEdges.map((edge, index) => (
+              <FlowParticle key={`flow-${edge.id}`} path={edge.path}
+                delay={index * 0.17} duration={3.8 + (index % 4) * 0.42} tone="node" />
             ))}
-            <FlowParticle path={intakePath} delay={0.08} duration={2.1} tone="collect" />
-            {expertPaths.map(({ node, path }, index) => (
-              <FlowParticle key={`compute-flow-${node.id}`} path={path}
-                delay={index * 0.34} duration={3.1 + (index % 2) * 0.4} tone="node" />
+            {routerFeeds.map((edge, index) => (
+              <FlowParticle key={`router-flow-${edge.id}`} path={edge.path}
+                delay={0.4 + index * 0.22} duration={3.1 + (index % 3) * 0.3} tone="router" />
             ))}
-            {collectorPaths.map(({ node, path }, index) => (
-              <FlowParticle key={`collect-flow-${node.id}`} path={path}
-                delay={0.45 + index * 0.29} duration={2.6 + (index % 3) * 0.28} tone="collect" />
+            {collectorPaths.map((edge, index) => (
+              <FlowParticle key={`collect-flow-${edge.id}`} path={edge.path}
+                delay={0.25 + index * 0.18} duration={2.7 + (index % 2) * 0.4} tone="collect" />
             ))}
-            {outputPaths.map(({ key, path }, index) => (
-              <FlowParticle key={`output-flow-${key}`} path={path}
-                delay={0.2 + index * 0.7} duration={2.2} tone="output" />
+            {outputPaths.map((edge, index) => (
+              <FlowParticle key={`output-flow-${edge.id}`} path={edge.path}
+                delay={0.3 + index * 0.7} duration={2.2} tone="output" />
             ))}
-            <FlowParticle path={loopPath} delay={0.35} duration={6.4} tone="loop" />
-            <FlowParticle path={loopPath} delay={3.55} duration={6.4} tone="loop" />
+            <FlowParticle path={feedbackPath} delay={0.8} duration={7.2} tone="loop" />
           </g>
         )}
 
-        {focusPoint && focusPrice != null && (
-          <DataPacket key={`price-${focusSymbol}-${focusPrice}`}
-            path={focusPoint.path} text={`${SYM(focusSymbol)} ${priceText(focusPrice)}`}
-            delay={0.2} duration={5.6} tone="price" reduced={reduced}
-            midpoint={{ x: 93, y: (CORE.y + focusPoint.y) / 2 }} />
-        )}
-        {metricPackets.map(({ node, path, text, midpoint }, index) => (
-          <DataPacket key={`metric-${node.id}-${text}`}
-            path={path} text={text} midpoint={midpoint} reduced={reduced}
-            delay={0.35 + index * 0.23} duration={6.2 + (index % 3) * 0.55} />
+        {feedPackets.map((packet) => (
+          <DataPacket key={`metric-${packet.id}-${packet.text}`}
+            path={packet.path} text={packet.text} midpoint={packet.midpoint}
+            delay={0.22 + (packet.y % 4) * 0.33} duration={7.2}
+            reduced={reduced} />
         ))}
       </svg>
 
-      <div className={styles.coinRail} aria-hidden>
-        {coinPoints.map((coin, index) => (
-          <span key={coin.symbol} className={styles.coinToken}
-            style={{ top: `${(coin.y / 350) * 100}%`, "--coin-delay": `${index * -0.37}s` }}
-            data-focus={focusSymbol === coin.symbol || undefined}
-            data-signal={signalActive?.symbol === coin.symbol || undefined}
-            aria-label={coin.symbol}>
-            <CoinAvatar symbol={coin.symbol} size={15} />
-            <i data-tone={toneForScore(coin.score)} />
-          </span>
-        ))}
-      </div>
-
-      <div className={styles.intakeNode} data-metric-intake="" style={pos(INTAKE)}
-        data-active={metricPulses.length ? "y" : undefined}
+      <div className={styles.dataBus} style={pos(BUS)}
+        data-metric-intake="" data-active={metricPulses.length ? "y" : undefined}
         role="img" aria-label="数据接收">
-        <span className={styles.intakeHalo} />
-        <span className={styles.intakeRing} />
-        <span className={styles.intakeDisc}><Database size={12} strokeWidth={1.8} /></span>
+        <span className={styles.busHead}><Database size={10} strokeWidth={1.8} /></span>
+        <span className={styles.busTrack}>
+          {[0, 1, 2, 3, 4, 5].map((item) => <i key={item} data-tone={item % 2 ? "warm" : "cool"} />)}
+        </span>
         {metricPulses.slice(-10).map((pulse) => (
-          <span key={pulse.id} className={styles.intakeImpact}
+          <span key={pulse.id} className={styles.busImpact}
             style={{
               "--impact-color": pulse.color,
-              animationDelay: `${(pulse.delay || 0) + (pulse.spawn ?? 170) + (pulse.duration || 1400)}ms`,
+              animationDelay: `${busArrivalDelay(pulse)}ms`,
             }} />
         ))}
       </div>
 
-      {signalActive && signalPoint && (
-        <motion.div key={signalActive.id || signalActive.ts} className={styles.signalPacket}
-          initial={reduced
-            ? { left: `${(INTAKE.x / 400) * 100}%`, top: "50%", opacity: 0 }
-            : { left: "4.5%", top: `${(signalPoint.y / 350) * 100}%`, opacity: 0, scale: 0.72 }}
-          animate={{
-            left: `${(INTAKE.x / 400) * 100}%`, top: "50%",
-            opacity: reduced ? 0 : [0, 1, 1, 0],
-            scale: reduced ? 1 : [0.72, 1, 1, 1],
-          }}
-          transition={{ duration: reduced ? 0.35 : 1.45, ease: [0.22, 1, 0.36, 1] }}>
-          <CoinAvatar symbol={signalActive.symbol} size={13} />
-          <span>{priceText(number(signalActive.price) ?? focusPrice)}</span>
-          {signalActive.name_zh && <em>{signalActive.name_zh}</em>}
-        </motion.div>
-      )}
-
-      <div className={styles.core} style={pos(CORE)} role="img"
-        aria-label={overallScore == null ? "综合计算中" : `综合 ${Math.round(overallScore)}`}>
-        <span className={styles.coreGlow} />
-        <span className={styles.coreOrbit} />
-        <span className={styles.coreOrbitInner} />
-        <span className={styles.corePulse} />
-        <span className={styles.corePulseLate} />
-        <span className={styles.coreDisc}>
-          <b>{overallScore == null ? "·" : Math.round(overallScore)}</b>
-        </span>
+      <div className={styles.routerPanel}
+        style={{
+          left: `${(ROUTER.left / 400) * 100}%`,
+          top: `${(ROUTER.top / 350) * 100}%`,
+          width: `${((ROUTER.right - ROUTER.left) / 400) * 100}%`,
+          height: `${((ROUTER.bottom - ROUTER.top) / 350) * 100}%`,
+        }}>
+        {experts.map((expert, index) => (
+          <span key={expert.id} className={styles.routerRow}
+            style={{ top: `${((ROW_Y[index] - ROUTER.top) / (ROUTER.bottom - ROUTER.top)) * 100}%` }}>
+            <i data-tone={toneForScore(expert.score)}
+              style={{ width: `${expert.score == null ? 0 : clamp(expert.score)}%` }} />
+          </span>
+        ))}
       </div>
 
-      {expertNodes.map((node, index) => (
-        <div key={node.id} className={styles.expertNode} style={{
-          ...pos(node),
-          "--node-tone": node.tone,
-          "--node-ring": node.score == null ? "var(--border-strong)" : "var(--accent)",
-          "--node-score": `${node.score == null ? 0 : clamp(node.score)}%`,
-          "--node-delay": `${index * -0.52}s`,
-        }} data-tone={toneForScore(node.score)} role="img"
-        aria-label={`${node.label} ${node.score == null ? "计算中" : Math.round(node.score)}`}>
-          <span className={styles.nodeHalo} />
-          <span className={styles.nodeRing}>
-            <span className={styles.nodeDisc}><node.Icon size={13} strokeWidth={1.8} /></span>
+      {experts.map((expert, index) => (
+        <div key={expert.id} className={styles.expertRow}
+          data-tone={toneForScore(expert.score)}
+          style={{
+            left: `${(EXPERT_X / 400) * 100}%`,
+            top: `${(ROW_Y[index] / 350) * 100}%`,
+            "--expert-tone": expert.tone,
+          }}
+          role="img" aria-label={`${expert.label} ${expert.score == null ? "计算中" : Math.round(expert.score)}`}>
+          <span className={styles.expertIcon}><expert.Icon size={11} strokeWidth={1.8} /></span>
+          <span className={styles.expertMeter}>
+            <i style={{ width: `${expert.score == null ? 0 : clamp(expert.score)}%` }} />
           </span>
-          {node.score != null && <b className={styles.nodeScore}>{Math.round(node.score)}</b>}
+          <b>{expert.score == null ? "—" : Math.round(expert.score)}</b>
         </div>
       ))}
 
-      <span className={styles.collector} style={pos(COLLECTOR)} aria-hidden>
-        <i />
-      </span>
+      <span className={styles.collector} style={pos(COLLECTOR)} aria-hidden><i /></span>
 
       <div className={styles.outputNode} data-active={riskCount > 0 || undefined}
         style={{ ...pos(OUTPUT.risk), "--output-tone": "var(--color-rose-500)" }}
         role="img" aria-label="统一风控">
         <span className={styles.outputHalo} />
-        <span className={styles.outputDisc}><ShieldCheck size={13} strokeWidth={1.8} /></span>
+        <span className={styles.outputDisc}><ShieldCheck size={11} strokeWidth={1.8} /></span>
       </div>
       <div className={styles.outputNode} data-active={executionCount > 0 || undefined}
         style={{ ...pos(OUTPUT.execution), "--output-tone": "var(--color-blue-500)" }}
         role="img" aria-label="执行">
         <span className={styles.outputHalo} />
-        <span className={styles.outputDisc}><Zap size={13} strokeWidth={1.8} /></span>
+        <span className={styles.outputDisc}><Zap size={11} strokeWidth={1.8} /></span>
       </div>
 
+      {signalActive && (
+        <motion.div key={signalActive.id || signalActive.ts} className={styles.signalPacket}
+          initial={reduced ? { left: "6.75%", top: "50%", opacity: 0 } : { left: "-2%", top: "50%", opacity: 0, scale: 0.78 }}
+          animate={{
+            left: "6.75%", top: "50%",
+            opacity: reduced ? 0 : [0, 1, 1, 0],
+            scale: reduced ? 1 : [0.78, 1, 1, 1],
+          }}
+          transition={{ duration: reduced ? 0.35 : 1.35, ease: [0.22, 1, 0.36, 1] }}>
+          <span>{priceText(number(signalActive.price) ?? focusPrice)}</span>
+          {signalActive.name_zh && <em>{signalActive.name_zh}</em>}
+        </motion.div>
+      )}
+
       <span className={styles.srOnly} role="status" aria-live="polite">
-        {`${ordered.length} 个币种共享一套计算链，已完成 ${scoredCount} 个币种评分。`}
+        {`${ordered.length} 个币种进入同一套计算网络，已完成 ${scoredCount} 个币种评分。`}
       </span>
     </motion.section>
   )

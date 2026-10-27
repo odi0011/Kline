@@ -17,7 +17,7 @@
                比例尺化，因此不做条形。
 
    所有数值来自 snapshot.analysis.symbols，前端只做映射与着色。 */
-import { useEffect, useMemo, useRef } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import CoinAvatar from "@/components/ui/coin-avatar"
 import { Progress } from "@/components/arc/progress/progress"
@@ -159,6 +159,76 @@ export default function StrategyPanel({ analysis, symbols, chartColors, onMetric
 
   const previousMetricsRef = useRef(new Map())
   const lastPulseRef = useRef(new Map())
+  const [flowVisible, setFlowVisible] = useState(false)
+
+  // 指标飞线只在第二行和接收节点都完整可见时发射；被裁切、缩放或滚出视口时
+  // 自动关闭，避免从用户看不到的位置凭空出现一条线。
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return
+    const host = document.querySelector(".orchestrator-slot")
+    if (!host) return
+    let observer = null
+    let rowEl = null
+    let targetEl = null
+    let frame = 0
+    const entryState = new Map()
+
+    const applyVisibility = () => {
+      if (!rowEl?.isConnected || !targetEl?.isConnected) {
+        setFlowVisible(false)
+        return
+      }
+      const rowEntry = entryState.get(rowEl)
+      const targetEntry = entryState.get(targetEl)
+      const rowRect = rowEl.getBoundingClientRect()
+      const targetRect = targetEl.getBoundingClientRect()
+      const rowVisible = rowEntry?.isIntersecting && rowEntry.intersectionRatio >= 0.99
+      const targetVisible = targetEntry?.isIntersecting && targetEntry.intersectionRatio >= 0.99
+      const rowUsable = rowRect.height >= 240 && rowRect.width >= 260
+        && rowRect.top >= 0 && rowRect.bottom <= window.innerHeight
+      const targetUsable = targetRect.height >= 80
+        && targetRect.top >= rowRect.top && targetRect.bottom <= rowRect.bottom
+      setFlowVisible(Boolean(rowVisible && targetVisible && rowUsable && targetUsable))
+    }
+
+    const bind = () => {
+      const nextRow = document.querySelector(".row2")
+      const nextTarget = document.querySelector("[data-metric-intake]")
+      if (!nextRow || !nextTarget) {
+        setFlowVisible(false)
+        return
+      }
+      if (nextRow === rowEl && nextTarget === targetEl) return
+      rowEl = nextRow
+      targetEl = nextTarget
+      observer?.disconnect()
+      entryState.clear()
+      observer = new IntersectionObserver((entries) => {
+        for (const entry of entries) entryState.set(entry.target, entry)
+        applyVisibility()
+      }, { threshold: [0, 0.25, 0.5, 0.75, 0.99, 1] })
+      observer.observe(rowEl)
+      observer.observe(targetEl)
+    }
+    const scheduleBind = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        bind()
+        applyVisibility()
+      })
+    }
+
+    bind()
+    const mutations = new MutationObserver(scheduleBind)
+    mutations.observe(host, { childList: true, subtree: true })
+    window.addEventListener("resize", scheduleBind)
+    return () => {
+      cancelAnimationFrame(frame)
+      observer?.disconnect()
+      mutations.disconnect()
+      window.removeEventListener("resize", scheduleBind)
+    }
+  }, [])
 
   // 指标只在发生足够明显的增量时发射一次数据脉冲。进度条先收缩回弹，
   // 随后由全局细线层从当前填充位置飞向右侧计算网络的接收节点。
@@ -198,6 +268,7 @@ export default function StrategyPanel({ analysis, symbols, chartColors, onMetric
         const last = lastPulseRef.current.get(key) || 0
         if (now - last < 700) continue
         lastPulseRef.current.set(key, now)
+        if (!flowVisible) continue
 
         const bar = document.querySelector(`[data-metric="${key}"]`)
         if (!bar) continue
@@ -239,7 +310,7 @@ export default function StrategyPanel({ analysis, symbols, chartColors, onMetric
         })
       }
     }
-  }, [analysis, cards, onMetricPulse])
+  }, [analysis, cards, flowVisible, onMetricPulse])
 
   /** 与后端 adaptive_sl_tp 同一口径 */
   const band = (st) => {
@@ -258,7 +329,8 @@ export default function StrategyPanel({ analysis, symbols, chartColors, onMetric
   }
 
   return (
-    <section className={styles.wrap} aria-label="决策依据">
+    <section className={styles.wrap} aria-label="决策依据"
+      data-flow-visible={flowVisible || undefined}>
       {cards.length === 0 ? (
         <div className={styles.empty}>等待指标计算（需至少 30 根K线）…</div>
       ) : (
