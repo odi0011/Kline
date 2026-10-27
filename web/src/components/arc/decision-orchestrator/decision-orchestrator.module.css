@@ -1,582 +1,487 @@
-/* 第二行右半：实时决策编排。
-   参考多代理编排、模型评测和混合专家的信息层级，但使用本项目的币种/工具图标。 */
+/* 全局量化计算流：一条共享数据链穿过币种、因子、风控和执行。 */
+
 .root {
   position: relative;
-  display: flex;
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
-  flex-direction: column;
-  gap: 4px;
   overflow: hidden;
-  padding: 8px 10px 7px;
+  isolation: isolate;
   border: 1px solid var(--border);
   border-radius: var(--radius-panel, 12px);
-  background: var(--surface);
+  background:
+    radial-gradient(circle at 46% 50%,
+      color-mix(in srgb, var(--accent) 7%, transparent) 0,
+      transparent 36%),
+    var(--surface);
   color: var(--foreground);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--foreground) 4%, transparent);
   container-type: inline-size;
 }
 
-.head {
-  display: flex;
-  height: 22px;
-  flex: none;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+.root::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--foreground) 14%, transparent) 0.55px,
+    transparent 0.7px
+  );
+  background-size: 17px 17px;
+  opacity: 0.26;
+  pointer-events: none;
 }
 
-.title {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-}
-
-.titleIcon {
-  display: grid;
-  width: 20px;
-  height: 20px;
-  flex: none;
-  place-items: center;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--accent) 15%, var(--surface));
-  color: var(--accent-deep);
-}
-
-.title b {
-  font-size: 12.5px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-.liveLabel {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 5px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--success) 9%, var(--surface));
-  color: var(--success);
-  font-size: 8px;
-  font-weight: 600;
-}
-
-.liveLabel i,
-.liveDot {
-  display: block;
-  width: 5px;
-  height: 5px;
-  flex: none;
+.root::after {
+  content: "";
+  position: absolute;
+  inset: 10% 18%;
+  z-index: 0;
   border-radius: 50%;
-  background: currentColor;
-  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent);
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--accent) 8%, transparent) 0,
+    transparent 68%
+  );
+  pointer-events: none;
 }
 
-.liveLabel i {
-  animation: livePulse 2s ease-in-out infinite;
+.network {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
 }
 
-@keyframes livePulse {
-  0%, 100% { opacity: .45; transform: scale(.8); }
-  50% { opacity: 1; transform: scale(1); }
+.network path {
+  fill: none;
+  vector-effect: non-scaling-stroke;
 }
 
-.headMeta {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 4px;
-  color: var(--text-muted);
-  font-size: 8.5px;
-  font-variant-numeric: tabular-nums;
+.outerOrbit {
+  stroke: color-mix(in srgb, var(--accent) 32%, var(--border));
+  stroke-width: 0.9;
+  stroke-dasharray: 2 9;
+  opacity: 0.78;
+  animation: orbitDrift 16s linear infinite;
 }
 
-.loopStrip {
-  display: flex;
-  height: 24px;
-  flex: none;
-  align-items: center;
-  gap: 7px;
+.hexOrbit {
+  stroke: color-mix(in srgb, var(--foreground) 16%, transparent);
+  stroke-width: 0.8;
+  stroke-dasharray: 1 7;
+  stroke-linejoin: round;
+  opacity: 0.7;
 }
 
-.loopLead {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 4px;
-  color: var(--text-muted);
-  font-size: 8px;
-  white-space: nowrap;
+.sourceBeam {
+  stroke-width: 0.75;
+  stroke-dasharray: 2 7;
+  animation: beamFlow 7s linear infinite;
 }
 
-.loopLead svg {
-  color: var(--accent-deep);
-  animation: loopSpin 8s linear infinite;
+.computeBeam {
+  stroke: color-mix(in srgb, var(--beam-tone) 52%, var(--border));
+  stroke-width: 0.78;
+  stroke-dasharray: 1.5 6;
+  opacity: 0.58;
+  animation: beamFlow 6.2s linear infinite;
 }
 
-@keyframes loopSpin {
-  to { transform: rotate(360deg); }
+.collectBeam {
+  stroke-width: 0.82;
+  stroke-dasharray: 2 5;
+  animation: beamFlow 5.4s linear infinite reverse;
+}
+
+.outputBeam {
+  stroke: color-mix(in srgb, var(--accent) 58%, var(--border));
+  stroke-width: 0.9;
+  stroke-dasharray: 2 5;
+  animation: beamFlow 4.8s linear infinite;
+}
+
+.loopBeam {
+  stroke: color-mix(in srgb, var(--accent) 46%, var(--border));
+  stroke-width: 1;
+  stroke-dasharray: 3 9;
+  opacity: 0.75;
+  animation: orbitDrift 10s linear infinite reverse;
+}
+
+@keyframes beamFlow {
+  to { stroke-dashoffset: -27; }
+}
+
+@keyframes orbitDrift {
+  to { stroke-dashoffset: -66; }
+}
+
+.particle {
+  color: var(--accent);
+  pointer-events: none;
+}
+
+.particle[data-tone="node"] { color: var(--color-emerald-500); }
+.particle[data-tone="collect"] { color: var(--color-teal-500); }
+.particle[data-tone="output"] { color: var(--color-blue-500); }
+.particle[data-tone="loop"] { color: color-mix(in srgb, var(--accent) 74%, var(--foreground)); }
+
+.particleHalo {
+  fill: currentColor;
+  opacity: 0.16;
+}
+
+.particleCore {
+  fill: currentColor;
+  opacity: 0.94;
 }
 
 .coinRail {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  align-items: center;
-  gap: 4px;
-  overflow: hidden;
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
 }
 
-.coinPulse {
-  position: relative;
+.coinToken {
+  position: absolute;
+  left: 4.5%;
   display: grid;
-  width: 16px;
-  height: 16px;
-  flex: none;
+  width: 18px;
+  height: 18px;
   place-items: center;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--foreground) 9%, transparent);
+  animation: coinFloat 4.5s ease-in-out infinite;
+  animation-delay: var(--coin-delay);
 }
 
-.coinPulse i {
+.coinToken::before {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  border-radius: 50%;
+  animation: coinHalo 3.6s ease-out infinite;
+  animation-delay: var(--coin-delay);
+}
+
+.coinToken > img {
+  position: relative;
+  z-index: 1;
+}
+
+.coinToken i {
   position: absolute;
   right: -1px;
   bottom: -1px;
+  z-index: 2;
   width: 5px;
   height: 5px;
   border: 1px solid var(--surface);
   border-radius: 50%;
   background: var(--border-strong);
-  animation: coinBlink 2.8s ease-in-out infinite;
-  animation-delay: calc(var(--coin-i, 0) * -0.27s);
 }
 
-.coinPulse i[data-tone="good"] { background: var(--success); }
-.coinPulse i[data-tone="mid"] { background: var(--warning); }
-.coinPulse i[data-tone="weak"] { background: var(--danger); }
+.coinToken i[data-tone="good"] { background: var(--success); }
+.coinToken i[data-tone="mid"] { background: var(--warning); }
+.coinToken i[data-tone="weak"] { background: var(--danger); }
 
-@keyframes coinBlink {
-  0%, 100% { opacity: .45; transform: scale(.82); }
+@keyframes coinFloat {
+  0%, 100% { transform: translate(-50%, -50%) scale(0.96); }
+  50% { transform: translate(-50%, -50%) scale(1.04); }
+}
+
+@keyframes coinHalo {
+  0% { opacity: 0.28; transform: scale(0.72); }
+  70%, 100% { opacity: 0; transform: scale(1.28); }
+}
+
+.core {
+  position: absolute;
+  z-index: 4;
+  display: grid;
+  width: clamp(68px, 22cqw, 88px);
+  height: clamp(68px, 22cqw, 88px);
+  place-items: center;
+  transform: translate(-50%, -50%);
+}
+
+.coreGlow {
+  position: absolute;
+  inset: -32%;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--accent) 20%, transparent) 0,
+    color-mix(in srgb, var(--accent) 5%, transparent) 48%,
+    transparent 71%
+  );
+  animation: coreGlow 4.8s ease-in-out infinite;
+}
+
+.coreOrbit,
+.coreOrbitInner {
+  position: absolute;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0 64%,
+    color-mix(in srgb, var(--accent) 18%, transparent) 72%,
+    var(--accent) 88%,
+    transparent 100%
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 1.2px), #000 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 1.2px), #000 0);
+  animation: orbitSpin 10s linear infinite;
+}
+
+.coreOrbit { inset: 0; }
+
+.coreOrbitInner {
+  inset: 13%;
+  opacity: 0.58;
+  animation-duration: 7s;
+  animation-direction: reverse;
+}
+
+.corePulse,
+.corePulseLate {
+  position: absolute;
+  inset: 20%;
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, transparent);
+  border-radius: 50%;
+  animation: corePulse 3.6s ease-out infinite;
+}
+
+.corePulseLate {
+  animation-delay: -1.8s;
+}
+
+.coreDisc {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  width: 69%;
+  height: 69%;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 37%, var(--border));
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 38% 31%,
+      color-mix(in srgb, var(--surface) 97%, white) 0,
+      color-mix(in srgb, var(--accent) 7%, var(--surface)) 68%);
+  box-shadow:
+    0 0 0 5px color-mix(in srgb, var(--accent) 4%, transparent),
+    0 8px 20px color-mix(in srgb, var(--foreground) 9%, transparent);
+}
+
+.coreDisc b {
+  color: var(--foreground);
+  font-size: clamp(17px, 5cqw, 21px);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.root[data-ready] .coreDisc b {
+  color: color-mix(in srgb, var(--accent) 62%, var(--foreground));
+}
+
+@keyframes coreGlow {
+  0%, 100% { opacity: 0.56; transform: scale(0.94); }
   50% { opacity: 1; transform: scale(1.08); }
 }
 
-.loopStrip > b {
-  flex: none;
-  color: var(--text-secondary);
-  font-size: 8px;
-  font-weight: 500;
-  white-space: nowrap;
+@keyframes orbitSpin {
+  to { transform: rotate(360deg); }
 }
 
-.pipeline {
-  position: relative;
+@keyframes corePulse {
+  0% { opacity: 0.42; transform: scale(0.82); }
+  76%, 100% { opacity: 0; transform: scale(1.66); }
+}
+
+.expertNode {
+  --node-ring: var(--border-strong);
+  position: absolute;
+  z-index: 3;
   display: grid;
-  height: 37px;
-  flex: none;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  align-items: start;
-  padding-top: 2px;
+  width: clamp(38px, 11.6cqw, 46px);
+  height: clamp(38px, 11.6cqw, 46px);
+  place-items: center;
+  transform: translate(-50%, -50%);
 }
 
-.rail {
+.nodeHalo {
   position: absolute;
-  top: 11px;
-  right: 8%;
-  left: 8%;
-  height: 1px;
-  overflow: visible;
-  background: var(--border);
-}
-
-.railFill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  height: 1px;
-  background: color-mix(in srgb, var(--accent) 80%, var(--border));
-}
-
-.scan {
-  position: absolute;
-  top: -2px;
-  width: 5px;
-  height: 5px;
+  inset: -6%;
   border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 70%, transparent);
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--node-tone) 20%, transparent) 0,
+    transparent 68%
+  );
+  animation: nodeBreath 4.2s ease-in-out infinite;
+  animation-delay: var(--node-delay);
 }
 
-.stage {
+.nodeRing {
   position: relative;
   z-index: 1;
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  flex-direction: column;
-  gap: 2px;
+  display: grid;
+  width: 86%;
+  height: 86%;
+  place-items: center;
+  padding: 2px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--node-ring) var(--node-score),
+    color-mix(in srgb, var(--foreground) 8%, transparent) 0
+  );
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--foreground) 7%, transparent);
 }
 
-.stageOrb {
-  position: relative;
+.nodeDisc {
   display: grid;
-  width: 20px;
-  height: 20px;
+  width: 100%;
+  height: 100%;
   place-items: center;
-  border: 1px solid var(--border);
   border-radius: 50%;
   background: var(--surface);
-  color: var(--text-muted);
-  transition:
-    border-color 150ms var(--ease-standard),
-    background-color 150ms var(--ease-standard),
-    color 150ms var(--ease-standard);
+  color: var(--node-tone);
 }
 
-.stageMark {
+.expertNode[data-tone="good"] { --node-ring: var(--success); }
+.expertNode[data-tone="mid"] { --node-ring: var(--warning); }
+.expertNode[data-tone="weak"] { --node-ring: var(--danger); }
+
+.expertNode[data-tone="good"] .nodeDisc {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--success) 18%, transparent);
+}
+
+.nodeScore {
   position: absolute;
-  right: -3px;
-  bottom: -2px;
-  display: grid;
-  width: 10px;
-  height: 10px;
-  place-items: center;
-  border: 1px solid var(--surface);
-  border-radius: 50%;
-  background: var(--surface-muted);
-  color: var(--text-muted);
-}
-
-.stageMark:empty {
-  display: none;
-}
-
-.stageMark .liveDot {
-  width: 4px;
-  height: 4px;
-  box-shadow: none;
-}
-
-.stageLabel {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 2px;
-  overflow: hidden;
-  max-width: 100%;
-  color: var(--text-muted);
-  font-size: 7.5px;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.stageLabel em {
-  color: color-mix(in srgb, currentColor 72%, transparent);
-  font-size: 6.5px;
-  font-style: normal;
-  font-variant-numeric: tabular-nums;
-}
-
-.stage[data-status="done"] .stageOrb {
-  border-color: color-mix(in srgb, var(--stage-tone) 52%, var(--border));
-  background: color-mix(in srgb, var(--stage-tone) 10%, var(--surface));
-  color: var(--stage-tone);
-}
-
-.stage[data-status="done"] .stageMark {
-  background: var(--stage-tone);
-  color: var(--surface);
-}
-
-.stage[data-status="done"] .stageLabel {
-  color: var(--text-secondary);
-}
-
-.stage[data-status="blocked"] .stageOrb {
-  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
-  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
-  color: var(--danger);
-}
-
-.stage[data-status="blocked"] .stageMark {
-  background: var(--danger);
-  color: var(--surface);
-}
-
-.stage[data-status="blocked"] .stageLabel {
-  color: var(--danger);
-}
-
-.stage[data-status="live"] .stageOrb {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 13%, var(--surface));
-  color: var(--accent-deep);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent);
-}
-
-.stage[data-status="live"] .stageLabel {
-  color: var(--text-secondary);
-}
-
-.branch {
-  position: relative;
-  height: 6px;
-  flex: none;
-  margin: 0 8%;
-}
-
-.branch::before {
-  content: "";
-  position: absolute;
-  top: 0;
   right: 0;
-  left: 0;
-  border-top: 1px solid var(--border);
-}
-
-.branch span {
-  position: absolute;
-  top: -1px;
-  left: 50%;
-  width: 1px;
-  height: 6px;
-  background: var(--border);
-}
-
-.experts {
+  bottom: 0;
+  z-index: 2;
   display: grid;
-  min-height: 0;
-  flex: 1;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-rows: repeat(3, minmax(0, 1fr));
-  gap: 4px;
-}
-
-.expert {
-  position: relative;
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-  align-items: center;
-  gap: 6px;
-  overflow: hidden;
-  padding: 4px 6px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--surface-muted) 32%, var(--surface));
-}
-
-.expert::before {
-  content: "";
-  position: absolute;
-  top: -6px;
-  left: 16px;
-  width: 1px;
-  height: 6px;
-  background: color-mix(in srgb, var(--expert-tone) 35%, var(--border));
-}
-
-.expertIcon {
-  display: grid;
-  width: 21px;
-  height: 21px;
-  flex: none;
+  min-width: 17px;
+  height: 17px;
   place-items: center;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--expert-tone) 10%, var(--surface));
-  color: var(--expert-tone);
-}
-
-.expertBody {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.expertTop {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 5px;
+  padding: 0 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
   color: var(--text-secondary);
-  font-size: 9px;
-}
-
-.expertTop b {
-  color: var(--foreground);
-  font-size: 10px;
+  font-size: 7.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-}
-
-.expertBar {
-  position: relative;
-  display: block;
-  width: 100%;
-  height: 3px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--foreground) 7%, transparent);
-}
-
-.expertBar i {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: inherit;
-  background: var(--expert-tone);
-  transition: width 320ms var(--ease-standard);
-}
-
-.expertBar u {
-  position: absolute;
-  top: -1px;
-  bottom: -1px;
-  left: 55%;
-  width: 1px;
-  background: color-mix(in srgb, var(--foreground) 23%, transparent);
-}
-
-.expert[data-state="weak"] .expertBar i { background: var(--danger); }
-.expert[data-state="mid"] .expertBar i { background: var(--warning); }
-.expert[data-state="idle"] .expertBar i { width: 0 !important; }
-.expert[data-state="idle"] .expertIcon { color: var(--text-muted); }
-
-.expert small {
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: 7.5px;
-  line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.footer {
-  display: grid;
-  height: 47px;
-  flex: none;
-  grid-template-columns: 72px minmax(0, 1fr) 154px;
-  align-items: center;
-  gap: 7px;
-  padding-top: 3px;
-  border-top: 1px solid var(--border);
-}
-
-.scoreBlock {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: baseline;
-  column-gap: 4px;
-  color: var(--text-muted);
-  font-size: 8px;
-}
-
-.scoreBlock > span {
-  grid-column: 1;
-}
-
-.scoreBlock b {
-  grid-column: 2;
-  color: var(--foreground);
-  font-size: 17px;
-  font-weight: 600;
   line-height: 1;
-  font-variant-numeric: tabular-nums;
 }
 
-.scoreBlock em {
-  grid-column: 1 / -1;
-  color: var(--text-muted);
-  font-size: 7.5px;
-  font-style: normal;
-}
-
-.scoreBlock[data-tone="good"] b { color: var(--success); }
-.scoreBlock[data-tone="weak"] b { color: var(--danger); }
-.scoreBlock[data-tone="mid"] b { color: var(--warning); }
-
-.trendBlock {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 1px;
-  color: var(--text-muted);
-  font-size: 7.5px;
-}
-
-.spark {
-  display: block;
-  width: 116px;
-  max-width: 100%;
-  height: 24px;
-  overflow: visible;
-}
-
-.sparkThreshold {
-  stroke: color-mix(in srgb, var(--foreground) 16%, transparent);
-  stroke-width: .7;
-  stroke-dasharray: 2 2;
-}
-
-.sparkPath {
-  fill: none;
-  stroke: color-mix(in srgb, var(--accent) 72%, var(--text-secondary));
-  stroke-width: 1.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.sparkDot {
-  fill: var(--surface);
-  stroke: color-mix(in srgb, var(--accent) 72%, var(--text-secondary));
-  stroke-width: 1;
-}
-
-.riskBlock {
-  display: flex;
-  min-width: 0;
-  align-items: flex-end;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.resultChip {
-  display: inline-flex;
-  max-width: 100%;
-  align-items: center;
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: var(--surface-muted);
-  color: var(--text-secondary);
-  font-size: 8.5px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.resultChip[data-tone="good"] {
-  background: color-mix(in srgb, var(--success) 11%, var(--surface));
+.expertNode[data-tone="good"] .nodeScore {
+  border-color: color-mix(in srgb, var(--success) 30%, var(--border));
   color: color-mix(in srgb, var(--success) 72%, var(--foreground));
 }
 
-.resultChip[data-tone="blocked"] {
-  background: color-mix(in srgb, var(--warning) 12%, var(--surface));
-  color: color-mix(in srgb, var(--warning) 68%, var(--foreground));
-}
-
-.resultChip[data-tone="error"] {
-  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+.expertNode[data-tone="weak"] .nodeScore {
+  border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
   color: var(--danger);
 }
 
-.riskBlock small {
-  overflow: hidden;
-  max-width: 100%;
-  color: var(--text-muted);
-  font-size: 7.5px;
-  line-height: 1.25;
-  text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+@keyframes nodeBreath {
+  0%, 100% { opacity: 0.38; transform: scale(0.88); }
+  50% { opacity: 0.9; transform: scale(1.14); }
+}
+
+.collector {
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  width: 12px;
+  height: 12px;
+  place-items: center;
+  transform: translate(-50%, -50%);
+  border: 1px solid color-mix(in srgb, var(--accent) 46%, var(--border));
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.collector i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: collectorPulse 2.6s ease-in-out infinite;
+}
+
+@keyframes collectorPulse {
+  0%, 100% { opacity: 0.45; transform: scale(0.76); }
+  50% { opacity: 1; transform: scale(1.16); }
+}
+
+.outputNode {
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  width: clamp(30px, 9.2cqw, 36px);
+  height: clamp(30px, 9.2cqw, 36px);
+  place-items: center;
+  transform: translate(-50%, -50%);
+}
+
+.outputHalo {
+  position: absolute;
+  inset: -8%;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--output-tone) 20%, transparent) 0,
+    transparent 68%
+  );
+  opacity: 0.54;
+}
+
+.outputDisc {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 84%;
+  height: 84%;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--output-tone) 34%, var(--border));
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--output-tone);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+
+.outputNode[data-active] .outputHalo {
+  animation: outputPulse 2.8s ease-in-out infinite;
+}
+
+.outputNode[data-active] .outputDisc {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--output-tone) 28%, transparent),
+    0 0 12px color-mix(in srgb, var(--output-tone) 14%, transparent);
+}
+
+@keyframes outputPulse {
+  0%, 100% { opacity: 0.46; transform: scale(0.92); }
+  50% { opacity: 1; transform: scale(1.18); }
 }
 
 .srOnly {
@@ -588,23 +493,36 @@
   white-space: nowrap;
 }
 
-@container (max-width: 390px) {
-  .root { padding-inline: 8px; }
-  .headMeta span { display: none; }
-  .loopLead span { display: none; }
-  .footer { grid-template-columns: 68px minmax(0, 1fr) 146px; gap: 5px; }
+@container (max-width: 340px) {
+  .coinToken {
+    width: 16px;
+    height: 16px;
+  }
+
+  .nodeScore {
+    min-width: 15px;
+    height: 15px;
+    font-size: 6.5px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .liveLabel i,
-  .loopLead svg,
-  .coinPulse i,
-  .scan {
+  .outerOrbit,
+  .sourceBeam,
+  .computeBeam,
+  .collectBeam,
+  .outputBeam,
+  .loopBeam,
+  .coinToken,
+  .coinToken::before,
+  .coreGlow,
+  .coreOrbit,
+  .coreOrbitInner,
+  .corePulse,
+  .corePulseLate,
+  .nodeHalo,
+  .collector i,
+  .outputNode[data-active] .outputHalo {
     animation: none;
-  }
-
-  .stageOrb,
-  .expertBar i {
-    transition: none;
   }
 }

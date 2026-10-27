@@ -714,8 +714,7 @@ export default function App() {
         </div>
         <div className="orchestrator-slot">
           <DecisionOrchestrator analysis={quantSnap && quantSnap.analysis}
-            symbols={orderedSymbols} patternStats={patternStats}
-            chartColors={chartColors} />
+            symbols={orderedSymbols} />
         </div>
         <div className="row2-reserved" aria-hidden />
       </div>

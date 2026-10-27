@@ -1,162 +1,90 @@
-/* 全局决策编排：同一套量化引擎常驻运行，所有币种共享同一条决策链路。
-   这里只做实时观察，不写流水；最终交易结果仍由既有决策流水承担。 */
-import { useMemo } from "react"
+/* 同一套量化引擎的全局计算流：币种汇入核心，六个因子节点协同计算，
+   最后进入统一风控与执行，再回流下一轮巡检。画面不承载交易结果。 */
+import { useId, useMemo } from "react"
 import { motion, useReducedMotion } from "motion/react"
 import {
   Activity,
-  Check,
-  Clock3,
-  Database,
-  GitBranch,
-  Layers3,
   Network,
   Newspaper,
-  Radar,
-  RefreshCw,
   Scale,
   ShieldCheck,
   TrendingUp,
   Waves,
-  X,
   Zap,
 } from "lucide-react"
 import CoinAvatar from "@/components/ui/coin-avatar"
 import styles from "./decision-orchestrator.module.css"
 
-const SYM = (symbol) => String(symbol || "").replace(/usdt$/i, "").toUpperCase()
 const clamp = (value, low = 0, high = 100) => Math.min(high, Math.max(low, value))
 const number = (value, fallback = null) => {
   const n = Number(value)
   return Number.isFinite(n) ? n : fallback
 }
-const pct = (value, digits = 1) => {
-  const n = number(value)
-  return n == null ? "--" : `${n >= 0 ? "+" : ""}${n.toFixed(digits)}%`
-}
-const round = (value) => {
-  const n = number(value)
-  return n == null ? "--" : String(Math.round(n))
-}
 const avg = (values) => {
   const valid = values.map((value) => number(value)).filter((value) => value != null)
   return valid.length ? valid.reduce((sum, value) => sum + value, 0) / valid.length : null
 }
-const timeText = (ts) => {
-  if (!ts) return "--:--"
-  const date = new Date(ts + 8 * 3600_000)
-  return `${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}:${String(date.getUTCSeconds()).padStart(2, "0")}`
-}
-
-const STAGES = [
-  { id: "intake", label: "信号", Icon: Radar, tone: "var(--color-sky-500)" },
-  { id: "features", label: "数据", Icon: Database, tone: "var(--color-emerald-500)" },
-  { id: "score", label: "路由", Icon: GitBranch, tone: "var(--color-violet-500)" },
-  { id: "watch", label: "周期", Icon: Layers3, tone: "var(--color-amber-500)" },
-  { id: "risk", label: "风控", Icon: ShieldCheck, tone: "var(--color-rose-500)" },
-  { id: "execution", label: "执行", Icon: Zap, tone: "var(--color-blue-500)" },
-]
-
-const REGIME_LABEL = {
-  trend: "趋势",
-  range: "震荡",
-  mixed: "过渡",
-  unknown: "未知",
-}
-const DIRECTION_LABEL = {
-  bullish: "多",
-  bearish: "空",
-}
-const HMM_LABEL = {
-  bull: "趋势偏多",
-  bear: "趋势偏空",
-  range: "震荡",
-}
-
-function toneForScore(score) {
+const toneForScore = (score) => {
   if (score == null) return "idle"
   if (score >= 55) return "good"
   if (score >= 45) return "mid"
   return "weak"
 }
 
-function StatusMark({ status }) {
-  if (status === "done") return <Check size={9} strokeWidth={2.4} />
-  if (status === "blocked") return <X size={9} strokeWidth={2.4} />
-  if (status === "running" || status === "live") return <span className={styles.liveDot} />
-  return null
+const CORE = { x: 185, y: 175 }
+const COLLECTOR = { x: 329, y: 175 }
+const OUTPUT = {
+  risk: { x: 356, y: 137 },
+  execution: { x: 356, y: 213 },
 }
+const EXPERT_LAYOUT = [
+  { id: "trend", label: "趋势", x: 88, y: 119, Icon: TrendingUp, tone: "var(--color-sky-500)" },
+  { id: "momentum", label: "动量", x: 185, y: 58, Icon: Activity, tone: "var(--color-violet-500)" },
+  { id: "flow", label: "量价", x: 282, y: 119, Icon: Waves, tone: "var(--color-teal-500)" },
+  { id: "structure", label: "结构", x: 282, y: 231, Icon: Network, tone: "var(--color-amber-500)" },
+  { id: "derivatives", label: "衍生", x: 185, y: 292, Icon: Scale, tone: "var(--color-blue-500)" },
+  { id: "information", label: "信息", x: 88, y: 231, Icon: Newspaper, tone: "var(--color-pink-500)" },
+]
 
-function ExpertCard({ expert, index, reduced }) {
-  const score = expert.score
-  const available = score != null
+const pos = (point) => ({
+  left: `${(point.x / 400) * 100}%`,
+  top: `${(point.y / 350) * 100}%`,
+})
+
+const computePath = (target) =>
+  `M ${CORE.x} ${CORE.y} C ${CORE.x + (target.x - CORE.x) * 0.34} ${CORE.y} ` +
+  `${CORE.x + (target.x - CORE.x) * 0.72} ${target.y} ${target.x} ${target.y}`
+
+const collectPath = (source) =>
+  `M ${source.x} ${source.y} C ${source.x + (COLLECTOR.x - source.x) * 0.36} ${source.y} ` +
+  `${COLLECTOR.x} ${COLLECTOR.y + (source.y - COLLECTOR.y) * 0.24} ${COLLECTOR.x} ${COLLECTOR.y}`
+
+function FlowParticle({ path, delay, duration, tone = "accent" }) {
   return (
-    <motion.div
-      className={styles.expert}
-      data-state={available ? toneForScore(score) : "idle"}
-      style={{ "--expert-tone": expert.tone }}
-      initial={reduced ? false : { opacity: 0, y: 5 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: reduced ? 0 : 0.2, delay: reduced ? 0 : index * 0.025 }}
-      title={expert.detail}
-    >
-      <span className={styles.expertIcon}><expert.Icon size={13} strokeWidth={1.8} /></span>
-      <div className={styles.expertBody}>
-        <div className={styles.expertTop}>
-          <span>{expert.label}</span>
-          <b>{available ? Math.round(score) : "—"}</b>
-        </div>
-        <div className={styles.expertBar} aria-hidden>
-          <i style={{ width: `${available ? score : 0}%` }} />
-          <u />
-        </div>
-        <small>{expert.detail}</small>
-      </div>
-    </motion.div>
+    <g className={styles.particle} data-tone={tone}>
+      <circle r="3.2" className={styles.particleHalo} />
+      <circle r="1.25" className={styles.particleCore} />
+      <animateMotion path={path} dur={`${duration}s`} begin={`${delay}s`} repeatCount="indefinite" />
+    </g>
   )
 }
 
-function Sparkline({ values }) {
-  const width = 116
-  const height = 28
-  const points = values.length
-    ? values.map((value, index) => {
-        const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width
-        const y = height - 3 - (clamp(value) / 100) * (height - 6)
-        return [x, y]
-      })
-    : []
-  const path = points.map(([x, y], index) => `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ")
-  return (
-    <svg className={styles.spark} viewBox={`0 0 ${width} ${height}`} aria-hidden>
-      <line x1="0" y1={height - 3 - 0.55 * (height - 6)}
-        x2={width} y2={height - 3 - 0.55 * (height - 6)}
-        className={styles.sparkThreshold} />
-      {path && <path d={path} className={styles.sparkPath} />}
-      {points.map(([x, y], index) => (
-        <circle key={index} cx={x} cy={y} r={index === points.length - 1 ? 2.2 : 1.4}
-          className={styles.sparkDot} />
-      ))}
-    </svg>
-  )
-}
-
-export default function DecisionOrchestrator({ analysis, symbols, patternStats }) {
+export default function DecisionOrchestrator({ analysis, symbols }) {
   const traces = analysis?.decisionTraces || []
   const latestBySymbol = analysis?.latestTraces || {}
   const liveFeatures = analysis?.liveFeatures || {}
   const liveEvaluations = analysis?.liveEvaluations || {}
-  const liveScoreHistory = analysis?.liveScoreHistory || {}
   const symbolStates = analysis?.symbols || {}
   const gateLog = analysis?.gateLog || []
   const plans = analysis?.positionPlans || []
   const reduced = useReducedMotion()
+  const rawId = useId()
+  const uid = rawId.replace(/[^a-zA-Z0-9_-]/g, "")
   const ordered = useMemo(
     () => (Array.isArray(symbols) ? symbols.map((symbol) => String(symbol).toLowerCase()) : []),
     [symbols],
   )
 
-  /* 所有币种进入同一张巡检表。这里按币种读取数据，只是为了汇总展示；
-     决策仍由后端同一套引擎、同一组门控和同一份账户风控运行。 */
   const lanes = useMemo(() => {
     const lastTrace = new Map()
     const lastGate = new Map()
@@ -170,7 +98,6 @@ export default function DecisionOrchestrator({ analysis, symbols, patternStats }
       const trace = latestBySymbol[symbol] || lastTrace.get(symbol) || null
       const gate = lastGate.get(symbol) || null
       const liveEval = liveEvaluations[symbol] || null
-      const state = symbolStates[symbol] || null
       const features = trace?.factors || liveFeatures[symbol] || {}
       const scoreData = trace?.score || gate || liveEval || {}
       const direction = trace?.direction || gate?.direction || liveEval?.direction || null
@@ -190,261 +117,177 @@ export default function DecisionOrchestrator({ analysis, symbols, patternStats }
       return {
         symbol,
         trace,
-        gate,
-        liveEval,
-        state,
         features,
         breakdown,
-        direction,
         score: number(scoreData?.score),
-        gap: number(scoreData?.gap),
+        state: symbolStates[symbol] || null,
         derivativeScore,
         sentimentScore,
       }
     })
-  }, [ordered, traces, gateLog, latestBySymbol, liveEvaluations, symbolStates, liveFeatures])
+  }, [ordered, traces, gateLog, latestBySymbol, liveEvaluations, liveFeatures, symbolStates])
 
-  const total = ordered.length
-  const scored = lanes.filter((lane) => lane.score != null)
-  const featureCount = lanes.filter((lane) => Object.keys(lane.features || {}).length > 0).length
-  const htfCount = lanes.filter((lane) => lane.features?.htf?.direction).length
-  const planSymbols = new Set(plans.map((plan) => String(plan.symbol || "").toLowerCase()))
-  const riskCount = lanes.filter((lane) => lane.trace?.risk || planSymbols.has(lane.symbol)).length
-  const executionCount = lanes.filter((lane) => lane.trace?.status === "opened").length
-  const errorCount = lanes.filter((lane) => lane.trace?.status === "error").length
-  const avgScore = avg(scored.map((lane) => lane.score))
-  const avgGap = avg(scored.map((lane) => lane.gap))
-  const breakdown = {
+  const nodeScores = {
     trend: avg(lanes.map((lane) => lane.breakdown.trend)),
     momentum: avg(lanes.map((lane) => lane.breakdown.momentum)),
-    volume: avg(lanes.map((lane) => lane.breakdown.volume)),
+    flow: avg(lanes.map((lane) => lane.breakdown.volume)),
     structure: avg(lanes.map((lane) => lane.breakdown.structure)),
+    derivatives: avg(lanes.map((lane) => lane.derivativeScore)),
+    information: avg(lanes.map((lane) => lane.sentimentScore)),
   }
-  const avgAdx = avg(lanes.map((lane) => lane.state?.adx))
-  const avgRsi = avg(lanes.map((lane) => lane.state?.rsi))
-  const avgRoc = avg(lanes.map((lane) => number(lane.state?.roc) == null ? null : number(lane.state.roc) * 100))
-  const avgObi = avg(lanes.map((lane) => number(lane.features?.obi?.bias)))
-  const avgOiChange = avg(lanes.map((lane) => number(lane.features?.oi?.changePct) == null
-    ? null : number(lane.features.oi.changePct) * 100))
-  const avgFunding = avg(lanes.map((lane) => number(lane.features?.funding?.rate) == null
-    ? null : number(lane.features.funding.rate) * 100))
-  const avgSentiment = avg(lanes.map((lane) => number(lane.features?.sentiment?.score)))
-  const cvdBull = lanes.filter((lane) => lane.features?.cvd?.signal === "bullish").length
-  const cvdBear = lanes.filter((lane) => lane.features?.cvd?.signal === "bearish").length
-  const squeezeCount = lanes.filter((lane) => lane.features?.squeeze?.on).length
-  const oiAligned = lanes.filter((lane) => lane.features?.oi?.bias === lane.direction).length
-  const hmmBull = lanes.filter((lane) => lane.features?.hmm?.label === "bull").length
-  const hmmBear = lanes.filter((lane) => lane.features?.hmm?.label === "bear").length
-  const rsiValue = round(avgRsi)
-  const winStats = lanes
-    .map((lane) => patternStats?.[lane.trace?.pattern])
-    .filter(Boolean)
-  const wins = winStats.reduce((sum, item) => sum + Number(item.wins || 0), 0)
-  const losses = winStats.reduce((sum, item) => sum + Number(item.losses || 0), 0)
-  const winrate = wins + losses > 0 ? (wins / (wins + losses)) * 100 : null
-  const derivativeScore = avg(lanes.map((lane) => lane.derivativeScore))
-  const sentimentScore = avg(lanes.map((lane) => lane.sentimentScore))
+  const expertNodes = EXPERT_LAYOUT.map((node) => ({ ...node, score: nodeScores[node.id] }))
+  const overallScore = avg(lanes.map((lane) => lane.score))
+  const scoredCount = lanes.filter((lane) => lane.score != null).length
+  const riskCount = lanes.filter((lane) => lane.trace?.risk).length + plans.length
+  const executionCount = lanes.filter((lane) => lane.trace?.status === "opened").length
 
-  const experiments = [
-    {
-      id: "trend",
-      label: "趋势面",
-      Icon: TrendingUp,
-      tone: "var(--color-sky-500)",
-      score: breakdown.trend,
-      detail: `${htfCount}/${total} 币同向 · ADX ${round(avgAdx)} · ${REGIME_LABEL[lanes[0]?.state?.regime] || "扫描中"}`,
-    },
-    {
-      id: "momentum",
-      label: "动量面",
-      Icon: Activity,
-      tone: "var(--color-violet-500)",
-      score: breakdown.momentum,
-      detail: `RSI ${rsiValue} · ROC ${pct(avgRoc, 2)} · ${scored.length}/${total} 币评分`,
-    },
-    {
-      id: "flow",
-      label: "量价面",
-      Icon: Waves,
-      tone: "var(--color-teal-500)",
-      score: breakdown.volume,
-      detail: `CVD 多${cvdBull}/空${cvdBear} · OBI ${pct(avgObi == null ? null : avgObi * 100, 1)} · 挤压 ${squeezeCount}`,
-    },
-    {
-      id: "structure",
-      label: "结构面",
-      Icon: Network,
-      tone: "var(--color-amber-500)",
-      score: breakdown.structure,
-      detail: `近期信号 ${traces.length} · 计划 ${plans.length} · ${winrate == null ? "胜率累计中" : `胜率 ${Math.round(winrate)}%`}`,
-    },
-    {
-      id: "derivatives",
-      label: "衍生面",
-      Icon: Scale,
-      tone: "var(--color-blue-500)",
-      score: derivativeScore,
-      detail: `OI ${pct(avgOiChange, 2)} · 费率 ${pct(avgFunding, 3)} · ${oiAligned}/${total} 同向`,
-    },
-    {
-      id: "information",
-      label: "信息面",
-      Icon: Newspaper,
-      tone: "var(--color-pink-500)",
-      score: sentimentScore,
-      detail: `情绪 ${avgSentiment == null ? "--" : avgSentiment.toFixed(2)} · HMM 多${hmmBull}/空${hmmBear}`,
-    },
+  const coinPoints = ordered.map((symbol, index, all) => {
+    const y = all.length <= 1 ? CORE.y : 62 + (index / (all.length - 1)) * 226
+    return {
+      symbol,
+      y,
+      score: lanes.find((lane) => lane.symbol === symbol)?.score,
+      path: `M 18 ${y} C 58 ${y} 116 ${CORE.y + (y - CORE.y) * 0.18} 162 ${CORE.y}`,
+    }
+  })
+  const expertPaths = expertNodes.map((node) => ({ node, path: computePath(node) }))
+  const collectorPaths = expertNodes.map((node) => ({ node, path: collectPath(node) }))
+  const outputPaths = [
+    { key: "risk", path: `M ${COLLECTOR.x} ${COLLECTOR.y} C 338 ${COLLECTOR.y} 342 156 ${OUTPUT.risk.x} ${OUTPUT.risk.y}` },
+    { key: "execution", path: `M ${COLLECTOR.x} ${COLLECTOR.y} C 338 ${COLLECTOR.y} 342 194 ${OUTPUT.execution.x} ${OUTPUT.execution.y}` },
   ]
-
-  const stageData = {
-    intake: {
-      count: total, status: total ? "live" : "idle",
-      summary: `共享引擎常驻运行，正在循环巡检 ${total} 个币种`,
-    },
-    features: {
-      count: featureCount, status: featureCount ? "done" : "live",
-      summary: `${featureCount} 个币种的技术、量价、衍生品和信息数据已归并`,
-    },
-    score: {
-      count: scored.length, status: scored.length ? "done" : "live",
-      summary: `${scored.length} 个币种完成多空评分`,
-    },
-    watch: {
-      count: htfCount, status: htfCount ? "done" : "live",
-      summary: `${htfCount} 个币种具备多周期方向`,
-    },
-    risk: {
-      count: riskCount, status: riskCount ? "done" : "live",
-      summary: `${riskCount} 个币种进入统一风控或已有仓位计划`,
-    },
-    execution: {
-      count: executionCount, status: executionCount ? "done" : "live",
-      summary: executionCount ? `${executionCount} 个币种有开仓记录` : "等待满足全部条件的信号",
-    },
-  }
-  const stages = STAGES.map((stage) => ({ ...stage, ...stageData[stage.id] }))
-
-  const scorePoints = []
-  for (const history of Object.values(liveScoreHistory)) {
-    for (const item of history || []) {
-      if (number(item?.score) != null) scorePoints.push({ ts: number(item.ts, 0), score: number(item.score) })
-    }
-  }
-  for (const trace of traces) {
-    if (number(trace?.score?.score) != null) {
-      scorePoints.push({ ts: number(trace.updatedAt || trace.ts, 0), score: number(trace.score.score) })
-    }
-  }
-  const recentScores = scorePoints
-    .sort((a, b) => a.ts - b.ts)
-    .slice(-18)
-    .map((point) => point.score)
-  const lastUpdated = Math.max(
-    0,
-    ...traces.map((trace) => number(trace.updatedAt || trace.ts, 0)),
-    ...Object.values(liveEvaluations).map((item) => number(item?.ts, 0)),
-    ...gateLog.map((item) => number(item?.ts, 0)),
-  )
-  const resultText = errorCount
-    ? `巡检中 · ${errorCount} 异常`
-    : executionCount ? `巡检中 · ${executionCount} 开仓` : `全线巡检 · ${total} 币`
-  const resultTone = errorCount ? "error" : executionCount ? "good" : "idle"
-  const summary = `覆盖 ${featureCount}/${total} · 评分 ${scored.length} · 拦截 ${gateLog.length}`
+  const loopPath = "M 356 230 C 356 296 312 330 185 330 C 58 330 14 294 14 253 C 14 211 15 180 18 150"
 
   return (
-    <section className={styles.root} aria-label="全局决策编排">
-      <header className={styles.head}>
-        <div className={styles.title}>
-          <span className={styles.titleIcon}><GitBranch size={14} /></span>
-          <b>决策编排</b>
-          <span className={styles.liveLabel}><i />常驻</span>
-        </div>
-        <div className={styles.headMeta}>
-          <Clock3 size={11} />
-          <span>{timeText(lastUpdated)}</span>
-        </div>
-      </header>
+    <motion.section
+      className={styles.root}
+      aria-label="量化计算流动"
+      data-ready={scoredCount > 0 || undefined}
+      initial={reduced ? false : { opacity: 0, scale: 0.985 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: reduced ? 0 : 0.35, ease: [0.22, 1, 0.36, 1] }}
+    >
+      <svg className={styles.network} viewBox="0 0 400 350" preserveAspectRatio="none" aria-hidden>
+        <defs>
+          <linearGradient id={`source-${uid}`} x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stopColor="var(--accent)" stopOpacity="0.04" />
+            <stop offset="0.75" stopColor="var(--accent)" stopOpacity="0.3" />
+            <stop offset="1" stopColor="var(--accent)" stopOpacity="0.7" />
+          </linearGradient>
+          <linearGradient id={`collect-${uid}`} x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stopColor="var(--color-emerald-500)" stopOpacity="0.08" />
+            <stop offset="1" stopColor="var(--color-emerald-500)" stopOpacity="0.55" />
+          </linearGradient>
+        </defs>
 
-      <div className={styles.loopStrip} aria-label={`共享巡检 ${total} 个币种`}>
-        <span className={styles.loopLead}>
-          <RefreshCw size={10} strokeWidth={1.9} />
-          <span>共享巡检</span>
+        <path className={styles.outerOrbit}
+          d="M 356 230 C 356 296 312 330 185 330 C 58 330 14 294 14 253 C 14 211 15 180 18 150" />
+        <path className={styles.hexOrbit}
+          d="M 88 119 L 185 58 L 282 119 L 282 231 L 185 292 L 88 231 Z" />
+
+        <g className={styles.beams}>
+          {coinPoints.map((coin) => (
+            <path key={`source-line-${coin.symbol}`} className={styles.sourceBeam}
+              d={coin.path} stroke={`url(#source-${uid})`} />
+          ))}
+          {expertPaths.map(({ node, path }) => (
+            <path key={`compute-line-${node.id}`} className={styles.computeBeam} d={path}
+              style={{ "--beam-tone": node.tone }} />
+          ))}
+          {collectorPaths.map(({ node, path }) => (
+            <path key={`collect-line-${node.id}`} className={styles.collectBeam} d={path}
+              stroke={`url(#collect-${uid})`} />
+          ))}
+          {outputPaths.map(({ key, path }) => (
+            <path key={`output-line-${key}`} className={styles.outputBeam} d={path} />
+          ))}
+          <path className={styles.loopBeam} d={loopPath} />
+        </g>
+
+        {!reduced && (
+          <g>
+            {coinPoints.map((coin, index) => (
+              <FlowParticle key={`source-flow-${coin.symbol}`} path={coin.path}
+                delay={0.1 + index * 0.21} duration={2.8 + (index % 3) * 0.34} />
+            ))}
+            {expertPaths.map(({ node, path }, index) => (
+              <FlowParticle key={`compute-flow-${node.id}`} path={path}
+                delay={index * 0.34} duration={3.1 + (index % 2) * 0.4} tone="node" />
+            ))}
+            {collectorPaths.map(({ node, path }, index) => (
+              <FlowParticle key={`collect-flow-${node.id}`} path={path}
+                delay={0.45 + index * 0.29} duration={2.6 + (index % 3) * 0.28} tone="collect" />
+            ))}
+            {outputPaths.map(({ key, path }, index) => (
+              <FlowParticle key={`output-flow-${key}`} path={path}
+                delay={0.2 + index * 0.7} duration={2.2} tone="output" />
+            ))}
+            <FlowParticle path={loopPath} delay={0.35} duration={6.4} tone="loop" />
+            <FlowParticle path={loopPath} delay={3.55} duration={6.4} tone="loop" />
+          </g>
+        )}
+      </svg>
+
+      <div className={styles.coinRail} aria-hidden>
+        {coinPoints.map((coin, index) => (
+          <span key={coin.symbol} className={styles.coinToken}
+            style={{ top: `${(coin.y / 350) * 100}%`, "--coin-delay": `${index * -0.37}s` }}
+            aria-label={coin.symbol}>
+            <CoinAvatar symbol={coin.symbol} size={15} />
+            <i data-tone={toneForScore(coin.score)} />
+          </span>
+        ))}
+      </div>
+
+      <div className={styles.core} style={pos(CORE)} role="img"
+        aria-label={overallScore == null ? "综合计算中" : `综合 ${Math.round(overallScore)}`}>
+        <span className={styles.coreGlow} />
+        <span className={styles.coreOrbit} />
+        <span className={styles.coreOrbitInner} />
+        <span className={styles.corePulse} />
+        <span className={styles.corePulseLate} />
+        <span className={styles.coreDisc}>
+          <b>{overallScore == null ? "·" : Math.round(overallScore)}</b>
         </span>
-        <div className={styles.coinRail} aria-hidden>
-          {lanes.map((lane, index) => (
-            <span key={lane.symbol} className={styles.coinPulse}
-              style={{ "--coin-i": index }}
-              title={`${SYM(lane.symbol)} · ${lane.score == null ? "等待评分" : `${Math.round(lane.score)} 分`}`}>
-              <CoinAvatar symbol={lane.symbol} size={14} />
-              <i data-tone={toneForScore(lane.score)} />
-            </span>
-          ))}
-        </div>
-        <b>{total} 币循环</b>
       </div>
 
-      <div className={styles.pipeline}>
-        <div className={styles.rail} aria-hidden>
-          <motion.span className={styles.railFill}
-            initial={reduced ? { width: "100%" } : { width: 0 }}
-            animate={{ width: "100%" }}
-            transition={{ duration: reduced ? 0 : 0.6, ease: [0.22, 1, 0.36, 1] }} />
-          {!reduced && [0, 1].map((index) => (
-            <motion.span key={index} className={styles.scan}
-              initial={{ left: "-8%", opacity: 0 }}
-              animate={{ left: "104%", opacity: [0, 0.9, 0] }}
-              transition={{
-                duration: 3.8, repeat: Infinity, repeatDelay: 1.4,
-                delay: index * 2.6, ease: "linear",
-              }} />
-          ))}
+      {expertNodes.map((node, index) => (
+        <div key={node.id} className={styles.expertNode} style={{
+          ...pos(node),
+          "--node-tone": node.tone,
+          "--node-ring": node.score == null ? "var(--border-strong)" : "var(--accent)",
+          "--node-score": `${node.score == null ? 0 : clamp(node.score)}%`,
+          "--node-delay": `${index * -0.52}s`,
+        }} data-tone={toneForScore(node.score)} role="img"
+        aria-label={`${node.label} ${node.score == null ? "计算中" : Math.round(node.score)}`}>
+          <span className={styles.nodeHalo} />
+          <span className={styles.nodeRing}>
+            <span className={styles.nodeDisc}><node.Icon size={13} strokeWidth={1.8} /></span>
+          </span>
+          {node.score != null && <b className={styles.nodeScore}>{Math.round(node.score)}</b>}
         </div>
-        {stages.map((stage) => (
-          <div key={stage.id} className={styles.stage} data-status={stage.status}
-            style={{ "--stage-tone": stage.tone }} title={stage.summary}>
-            <span className={styles.stageOrb}>
-              <stage.Icon size={10} strokeWidth={1.9} />
-              <span className={styles.stageMark}><StatusMark status={stage.status} /></span>
-            </span>
-            <span className={styles.stageLabel}>
-              <span>{stage.label}</span>
-              <em>{stage.count}</em>
-            </span>
-            <span className={styles.srOnly}>
-              {stage.status === "done" ? "已处理" : stage.status === "blocked" ? "未通过" : "运行中"}
-            </span>
-          </div>
-        ))}
-      </div>
+      ))}
 
-      <div className={styles.branch} aria-hidden>
-        <span />
-      </div>
-
-      <div className={styles.experts}>
-        {experiments.map((expert, index) => (
-          <ExpertCard key={expert.id} expert={expert} index={index} reduced={reduced} />
-        ))}
-      </div>
-
-      <footer className={styles.footer}>
-        <div className={styles.scoreBlock} data-tone={toneForScore(avgScore)}>
-          <span>全线分</span>
-          <b>{avgScore == null ? "—" : Math.round(avgScore)}</b>
-          <em>{avgGap == null ? "等待评分" : `均Gap ${avgGap >= 0 ? "+" : ""}${Math.round(avgGap)}`}</em>
-        </div>
-        <div className={styles.trendBlock}>
-          <span>跨币势能</span>
-          <Sparkline values={recentScores} />
-        </div>
-        <div className={styles.riskBlock}>
-          <span className={styles.resultChip} data-tone={resultTone}>{resultText}</span>
-          <small>{summary}</small>
-        </div>
-      </footer>
-      <span className={styles.srOnly} role="status" aria-live="polite">
-        {`${total} 个币种共享一套决策引擎，持续循环巡检。${summary}`}
+      <span className={styles.collector} style={pos(COLLECTOR)} aria-hidden>
+        <i />
       </span>
-    </section>
+
+      <div className={styles.outputNode} data-active={riskCount > 0 || undefined}
+        style={{ ...pos(OUTPUT.risk), "--output-tone": "var(--color-rose-500)" }}
+        role="img" aria-label="统一风控">
+        <span className={styles.outputHalo} />
+        <span className={styles.outputDisc}><ShieldCheck size={13} strokeWidth={1.8} /></span>
+      </div>
+      <div className={styles.outputNode} data-active={executionCount > 0 || undefined}
+        style={{ ...pos(OUTPUT.execution), "--output-tone": "var(--color-blue-500)" }}
+        role="img" aria-label="执行">
+        <span className={styles.outputHalo} />
+        <span className={styles.outputDisc}><Zap size={13} strokeWidth={1.8} /></span>
+      </div>
+
+      <span className={styles.srOnly} role="status" aria-live="polite">
+        {`${ordered.length} 个币种共享一套计算链，已完成 ${scoredCount} 个币种评分。`}
+      </span>
+    </motion.section>
   )
 }
