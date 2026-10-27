@@ -16,9 +16,9 @@ import styles from "./quant-panel.module.css"
 const ROW_H = 22          // 固定行高（虚拟滚动依赖固定高度）
 const OVERSCAN = 10       // 视口上下额外渲染行数
 const NEW_MS = 900        // 新行高亮/动画时长
-// 逐条入场间隔：同一批到达的多条记录（如「收到信号」+「不下单」同毫秒产生）
-// 必须拉开明显距离，视觉上才是"第一条先展开、第二条随后出现"。
-const ENTER_GAP = 420
+// 普通事件逐条入场；信号先展示，同一信号的最终结果等计算动画完成后再出现。
+const ENTER_GAP = 260
+const RESULT_REVEAL_MS = 1650
 
 const KIND_META = {
   signal: { Icon: Search, tone: "signal" },
@@ -150,6 +150,8 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
   const addedAtRef = useRef(new Map())
   const pendingRef = useRef([])          // 待入场的事件队列
   const drainTimerRef = useRef(null)
+  const initializedRef = useRef(false)
+  const signalGateRef = useRef(new Map())
 
   // 视口高度（虚拟窗口大小）+ 容器宽度（决定是否精简内容）
   useLayoutEffect(() => {
@@ -168,44 +170,81 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
     return () => ro.disconnect()
   }, [])
 
-  // 服务端下发的持久化历史
-  useEffect(() => {
-    if (!pushedEvents) return
-    setEvents(pushedEvents)
-    seenRef.current = new Set(pushedEvents.map((e) => e.id ?? `${e.ts}-${e.reason}`))
-    pendingRef.current = []          // 历史一次性铺好，不做逐条动画
-  }, [pushedEvents])
-
-  // 新事件先入队；由下面的定时器逐条展示（避免同批多条一起冒出来）
-  useEffect(() => {
-    if (pushedEvents) return
-    for (const ev of (snap.events || [])) {
-      const key = ev.id ?? `${ev.ts}-${ev.kind}-${ev.reason}`
-      if (seenRef.current.has(key)) continue
-      seenRef.current.add(key)
-      pendingRef.current.push({ ...ev, id: key })
-    }
-  }, [snap.events, pushedEvents])
-
-  // 逐条入场：每 ENTER_GAP 毫秒放一条，每条各自触发入场动画
-  useEffect(() => {
+  const pumpPending = useCallback(() => {
     if (drainTimerRef.current) return
     const drain = () => {
-      const next = pendingRef.current.shift()
-      if (!next) { drainTimerRef.current = null; return }
+      drainTimerRef.current = null
+      const item = pendingRef.current[0]
+      if (!item) return
+      const wait = Math.max(0, item.notBefore - Date.now())
+      if (wait > 0) {
+        drainTimerRef.current = setTimeout(drain, wait)
+        return
+      }
+      pendingRef.current.shift()
+      const next = item.ev
       addedAtRef.current.set(next.id, Date.now())
       setEvents((cur) => {
         const merged = cur.concat(next)
         merged.sort((a, b) => (a.ts || 0) - (b.ts || 0))
         return merged.slice(-3000)
       })
-      drainTimerRef.current = setTimeout(drain, ENTER_GAP)
+      const following = pendingRef.current[0]
+      if (following) {
+        following.notBefore = Math.max(following.notBefore, Date.now() + ENTER_GAP)
+        drainTimerRef.current = setTimeout(drain, Math.max(0, following.notBefore - Date.now()))
+      }
     }
-    if (pendingRef.current.length) drain()
-    return () => {
-      if (drainTimerRef.current) { clearTimeout(drainTimerRef.current); drainTimerRef.current = null }
+    drain()
+  }, [])
+
+  // 首次读到持久化历史时一次性铺好；后续只追加未见事件，不再整批重置列表。
+  useEffect(() => {
+    const source = pushedEvents || snap.events
+    if (!source) return
+    if (!initializedRef.current) {
+      const initial = [...source].sort((a, b) => (a.ts || 0) - (b.ts || 0))
+      setEvents(initial)
+      seenRef.current = new Set(initial.map((e) => e.id ?? `${e.ts}-${e.kind}-${e.reason}`))
+      initializedRef.current = true
+      return
     }
-  }, [snap.events, pushedEvents])
+
+    const now = Date.now()
+    for (const [key, gate] of signalGateRef.current) {
+      if (now - gate.signalAt > 5000) signalGateRef.current.delete(key)
+    }
+    const fresh = []
+    for (const ev of source) {
+      const key = ev.id ?? `${ev.ts}-${ev.kind}-${ev.reason}`
+      if (seenRef.current.has(key)) continue
+      seenRef.current.add(key)
+      fresh.push({ ...ev, id: key })
+    }
+    if (seenRef.current.size > 5000) {
+      seenRef.current = new Set([...seenRef.current].slice(-3000))
+    }
+    if (!fresh.length) return
+
+    for (const ev of fresh) {
+      const gateKey = `${ev.symbol || ""}|${ev.pattern || ""}`
+      let notBefore = now
+      if (ev.kind === "signal") {
+        const gate = { signalAt: now, due: now + RESULT_REVEAL_MS }
+        if (gateKey !== "|") signalGateRef.current.set(gateKey, gate)
+        notBefore = now
+      } else {
+        const gate = signalGateRef.current.get(gateKey)
+        if (gate && now - gate.signalAt <= 4000) notBefore = gate.due
+      }
+      pendingRef.current.push({ ev, notBefore })
+    }
+    pumpPending()
+  }, [pushedEvents, snap.events, pumpPending])
+
+  useEffect(() => () => {
+    if (drainTimerRef.current) clearTimeout(drainTimerRef.current)
+  }, [])
 
   // 动画到期后刷新一次，让 data-new 失效（避免一直高亮）
   useEffect(() => {

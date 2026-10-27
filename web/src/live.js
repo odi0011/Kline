@@ -86,6 +86,7 @@ export class LiveClient {
       }
       this._emitKey(`structure|${sym}|${iv}`, this.structures[sym][iv])
       this._emitKey(`structure|${sym}`, this.structures[sym][iv])
+      this._emitKey('structure', { symbol: sym, interval: iv, structure: this.structures[sym][iv] })
     } else if (m.type === 'candle') {
       const cell = (this.store[m.symbol] ||= {})[m.interval] ||= { bars: [] }
       const bars = cell.bars

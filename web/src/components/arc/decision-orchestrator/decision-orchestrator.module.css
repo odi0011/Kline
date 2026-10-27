@@ -116,6 +116,13 @@
   animation: orbitDrift 10s linear infinite reverse;
 }
 
+.intakeBeam {
+  stroke: color-mix(in srgb, var(--accent) 48%, var(--border));
+  stroke-width: 0.9;
+  stroke-dasharray: 2 6;
+  animation: beamFlow 4.6s linear infinite;
+}
+
 @keyframes beamFlow {
   to { stroke-dashoffset: -27; }
 }
@@ -142,6 +149,33 @@
 .particleCore {
   fill: currentColor;
   opacity: 0.94;
+}
+
+.dataPacket {
+  pointer-events: none;
+}
+
+.packetBg {
+  fill: color-mix(in srgb, var(--surface) 92%, transparent);
+  stroke: color-mix(in srgb, var(--accent) 20%, var(--border));
+  stroke-width: 0.55;
+}
+
+.packetText {
+  fill: var(--text-secondary);
+  font-size: 7px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.dataPacket[data-tone="price"] .packetBg {
+  fill: color-mix(in srgb, var(--accent) 9%, var(--surface));
+  stroke: color-mix(in srgb, var(--accent) 38%, var(--border));
+}
+
+.dataPacket[data-tone="price"] .packetText {
+  fill: color-mix(in srgb, var(--accent) 76%, var(--foreground));
 }
 
 .coinRail {
@@ -197,6 +231,25 @@
 .coinToken i[data-tone="mid"] { background: var(--warning); }
 .coinToken i[data-tone="weak"] { background: var(--danger); }
 
+.coinToken[data-focus] {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 48%, transparent),
+    0 0 10px color-mix(in srgb, var(--accent) 17%, transparent);
+}
+
+.coinToken::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 68%, transparent);
+  border-radius: 50%;
+  opacity: 0;
+}
+
+.coinToken[data-signal]::after {
+  animation: signalBurst 1.2s ease-out both;
+}
+
 @keyframes coinFloat {
   0%, 100% { transform: translate(-50%, -50%) scale(0.96); }
   50% { transform: translate(-50%, -50%) scale(1.04); }
@@ -205,6 +258,122 @@
 @keyframes coinHalo {
   0% { opacity: 0.28; transform: scale(0.72); }
   70%, 100% { opacity: 0; transform: scale(1.28); }
+}
+
+@keyframes signalBurst {
+  0% { opacity: 0.9; transform: scale(0.7); }
+  100% { opacity: 0; transform: scale(2.1); }
+}
+
+.intakeNode {
+  position: absolute;
+  z-index: 4;
+  display: grid;
+  width: clamp(27px, 7.4cqw, 31px);
+  height: clamp(27px, 7.4cqw, 31px);
+  place-items: center;
+  transform: translate(-50%, -50%);
+}
+
+.intakeHalo {
+  position: absolute;
+  inset: -18%;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--accent) 20%, transparent) 0,
+    transparent 69%
+  );
+  animation: intakeBreathe 3.4s ease-in-out infinite;
+}
+
+.intakeRing {
+  position: absolute;
+  inset: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0 68%,
+    color-mix(in srgb, var(--accent) 58%, transparent) 88%,
+    transparent 100%
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 1px), #000 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 1px), #000 0);
+  animation: orbitSpin 7.6s linear infinite;
+}
+
+.intakeDisc {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 78%;
+  height: 78%;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 50%;
+  background: var(--surface);
+  color: color-mix(in srgb, var(--accent) 76%, var(--foreground));
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+
+.intakeNode[data-active] .intakeDisc {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent),
+    0 0 13px color-mix(in srgb, var(--accent) 13%, transparent);
+}
+
+.intakeImpact {
+  position: absolute;
+  inset: -3px;
+  border: 1px solid var(--impact-color, var(--accent));
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+  animation: intakeImpact 560ms cubic-bezier(0.2, 1.35, 0.36, 1) both;
+}
+
+@keyframes intakeBreathe {
+  0%, 100% { opacity: 0.38; transform: scale(0.88); }
+  50% { opacity: 0.92; transform: scale(1.12); }
+}
+
+@keyframes intakeImpact {
+  0% { opacity: 0.9; transform: scale(0.72); }
+  52% { opacity: 0.55; transform: scale(1.56); }
+  100% { opacity: 0; transform: scale(1.18); }
+}
+
+.signalPacket {
+  position: absolute;
+  z-index: 6;
+  display: inline-flex;
+  height: 18px;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  translate: -50% -50%;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 5%, transparent),
+    0 5px 14px color-mix(in srgb, var(--foreground) 10%, transparent);
+  color: color-mix(in srgb, var(--accent) 78%, var(--foreground));
+  font-size: 7px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.signalPacket em {
+  padding-left: 4px;
+  border-left: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  color: var(--text-muted);
+  font-size: 6.5px;
+  font-style: normal;
+  font-weight: 500;
 }
 
 .core {
@@ -297,6 +466,16 @@
 
 .root[data-ready] .coreDisc b {
   color: color-mix(in srgb, var(--accent) 62%, var(--foreground));
+}
+
+.root[data-signal] .coreGlow {
+  animation-duration: 1.4s;
+}
+
+.root[data-signal] .coreDisc {
+  box-shadow:
+    0 0 0 6px color-mix(in srgb, var(--accent) 8%, transparent),
+    0 0 24px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 @keyframes coreGlow {
@@ -515,6 +694,10 @@
   .loopBeam,
   .coinToken,
   .coinToken::before,
+  .coinToken::after,
+  .intakeHalo,
+  .intakeRing,
+  .intakeImpact,
   .coreGlow,
   .coreOrbit,
   .coreOrbitInner,

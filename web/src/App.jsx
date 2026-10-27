@@ -17,6 +17,7 @@ import PositionHistory from '@/components/arc/position-history/position-history'
 import NewsFeed from '@/components/arc/news-feed/news-feed'
 import StrategyPanel from '@/components/arc/strategy-panel/strategy-panel' 
 import DecisionOrchestrator from '@/components/arc/decision-orchestrator/decision-orchestrator'
+import MetricFlights from '@/components/arc/decision-orchestrator/metric-flights'
 import HitFlight from './HitFlight.jsx'
 import { hexHue } from './lib/account-theme'
 import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins, Settings } from 'lucide-react'
@@ -89,7 +90,16 @@ export default function App() {
   const [quantEvents, setQuantEvents] = useState(null)          // 持久化决策流水（MySQL）
   const [quantTrades, setQuantTrades] = useState([])            // 仓位历史（MySQL，7 天）
   const [newsItems, setNewsItems] = useState([])                // 交易所公告
+  const [structureVersion, setStructureVersion] = useState(0)   // 结构位更新触发决策流刷新
+  const [metricPulses, setMetricPulses] = useState([])          // 指标条 → 计算网络的实时数据波
   const liveRef = useRef(null)
+  const pushMetricPulse = useCallback((pulse) => {
+    if (!pulse?.id) return
+    setMetricPulses((current) => [...current, pulse].slice(-48))
+  }, [])
+  const finishMetricPulse = useCallback((id) => {
+    setMetricPulses((current) => current.filter((pulse) => pulse.id !== id))
+  }, [])
   const cardsViewportRef = useRef(null)
   const settingsRef = useRef(settings)
   settingsRef.current = settings
@@ -156,6 +166,15 @@ export default function App() {
     return [...inList, ...autoAdd, ...rest]
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownSymbols.join(","), posSyms.join(","), pool.join(",")])
+  const marketStructures = useMemo(() => {
+    const out = {}
+    for (const symbol of orderedSymbols) {
+      const byInterval = liveRef.current?.structures?.[symbol]
+      const structure = byInterval?.[defaultIv] || Object.values(byInterval || {})[0]
+      out[symbol] = { levels: (structure?.levels || []).slice(0, 8) }
+    }
+    return out
+  }, [structureVersion, defaultIv, orderedSymbols.join(",")])
 
   // 账户权益曲线：服务端每次广播都带最近 8 小时的采样（持久化在 MySQL），
   // 前端不再本地采样——刷新页面也能立刻看到真实历史，而不是从一条平线开始。
@@ -193,6 +212,8 @@ export default function App() {
     const offAiTest = live.on('ai_test', (m) => setAiTestResult({ ...(m.result || {}), at: Date.now() }))
     const offQuant = live.on('quant', (m) => setQuantSnap(m.snapshot))
     const offQEvents = live.on('quant_events', (m) => setQuantEvents(m.events || []))
+    const offStructureInit = live.on('init', () => setStructureVersion((v) => v + 1))
+    const offStructure = live.on('structure', () => setStructureVersion((v) => v + 1))
     const offTrades = live.on('quant_trades', (m) => setQuantTrades(m.trades || []))
     const offTrade = live.on('quant_trade', (t) => {
       if (!t) return
@@ -210,7 +231,7 @@ export default function App() {
       })
     })
     live.connect()
-    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offQEvent(); offTrades(); offTrade(); offNews(); offAiModels(); offAiTest(); live.close() }
+    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offStructureInit(); offStructure(); offQEvent(); offTrades(); offTrade(); offNews(); offAiModels(); offAiTest(); live.close() }
   }, [])
 
   // ==================== 命中动画：串行队列 ====================
@@ -710,11 +731,12 @@ export default function App() {
       <div className="row2">
         <div className="strategy-slot">
           <StrategyPanel analysis={quantSnap && quantSnap.analysis} symbols={orderedSymbols}
-            chartColors={chartColors} />
+            chartColors={chartColors} onMetricPulse={pushMetricPulse} />
         </div>
         <div className="orchestrator-slot">
           <DecisionOrchestrator analysis={quantSnap && quantSnap.analysis}
-            symbols={orderedSymbols} />
+            symbols={orderedSymbols} events={visibleEvents}
+            structures={marketStructures} metricPulses={metricPulses} />
         </div>
         <div className="row2-reserved" aria-hidden />
       </div>
@@ -740,6 +762,7 @@ export default function App() {
 
       {/* 命中飞线：K线卡片 → 形态卡片，落地后触发卡片背景扩散 */}
       <HitFlight flight={flight} onLand={onFlightLand} onDone={onFlightDone} />
+      <MetricFlights pulses={metricPulses} onDone={finishMetricPulse} />
 
       {/* 形态信号通知：左上角 */}
       <NotificationViewport position="top-left">

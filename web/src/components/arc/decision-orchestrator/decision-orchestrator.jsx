@@ -1,9 +1,10 @@
 /* 同一套量化引擎的全局计算流：币种汇入核心，六个因子节点协同计算，
    最后进入统一风控与执行，再回流下一轮巡检。画面不承载交易结果。 */
-import { useId, useMemo } from "react"
+import { useEffect, useId, useMemo, useState } from "react"
 import { motion, useReducedMotion } from "motion/react"
 import {
   Activity,
+  Database,
   Network,
   Newspaper,
   Scale,
@@ -15,6 +16,7 @@ import {
 import CoinAvatar from "@/components/ui/coin-avatar"
 import styles from "./decision-orchestrator.module.css"
 
+const SYM = (symbol) => String(symbol || "").replace(/usdt$/i, "").toUpperCase()
 const clamp = (value, low = 0, high = 100) => Math.min(high, Math.max(low, value))
 const number = (value, fallback = null) => {
   const n = Number(value)
@@ -24,6 +26,27 @@ const avg = (values) => {
   const valid = values.map((value) => number(value)).filter((value) => value != null)
   return valid.length ? valid.reduce((sum, value) => sum + value, 0) / valid.length : null
 }
+const fixed = (value, digits = 1) => number(value) == null ? "--" : number(value).toFixed(digits)
+const signedPct = (value, digits = 2) => {
+  const n = number(value)
+  return n == null ? "--" : `${n >= 0 ? "+" : ""}${n.toFixed(digits)}%`
+}
+const priceText = (value) => {
+  const n = number(value)
+  if (n == null) return "--"
+  return n >= 1000
+    ? n.toLocaleString("en-US", { maximumFractionDigits: 1 })
+    : n >= 1 ? n.toFixed(3) : n.toPrecision(4)
+}
+const compactPrice = (value) => {
+  const n = number(value)
+  if (n == null) return "--"
+  const abs = Math.abs(n)
+  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`
+  if (abs >= 1000) return `${(n / 1000).toFixed(1)}k`
+  if (abs >= 1) return n.toFixed(2)
+  return n.toPrecision(3)
+}
 const toneForScore = (score) => {
   if (score == null) return "idle"
   if (score >= 55) return "good"
@@ -32,6 +55,7 @@ const toneForScore = (score) => {
 }
 
 const CORE = { x: 185, y: 175 }
+const INTAKE = { x: 62, y: 175 }
 const COLLECTOR = { x: 329, y: 175 }
 const OUTPUT = {
   risk: { x: 356, y: 137 },
@@ -59,17 +83,66 @@ const collectPath = (source) =>
   `M ${source.x} ${source.y} C ${source.x + (COLLECTOR.x - source.x) * 0.36} ${source.y} ` +
   `${COLLECTOR.x} ${COLLECTOR.y + (source.y - COLLECTOR.y) * 0.24} ${COLLECTOR.x} ${COLLECTOR.y}`
 
+function nearestLevels(structure, price, boll) {
+  const current = number(price)
+  let support = null
+  let resistance = null
+  for (const level of structure?.levels || []) {
+    const value = number(level?.price)
+    if (value == null) continue
+    if (level.kind === "support" && (current == null || value <= current)) {
+      if (support == null || value > support) support = value
+    }
+    if (level.kind === "resistance" && (current == null || value >= current)) {
+      if (resistance == null || value < resistance) resistance = value
+    }
+  }
+  return {
+    support: support ?? number(boll?.lower),
+    resistance: resistance ?? number(boll?.upper),
+  }
+}
+
 function FlowParticle({ path, delay, duration, tone = "accent" }) {
   return (
-    <g className={styles.particle} data-tone={tone}>
+    <g className={styles.particle} data-tone={tone} opacity="0">
       <circle r="3.2" className={styles.particleHalo} />
       <circle r="1.25" className={styles.particleCore} />
       <animateMotion path={path} dur={`${duration}s`} begin={`${delay}s`} repeatCount="indefinite" />
+      <animate attributeName="opacity" values="0;0.92;0.92;0" keyTimes="0;0.12;0.8;1"
+        dur={`${duration}s`} begin={`${delay}s`} repeatCount="indefinite" />
     </g>
   )
 }
 
-export default function DecisionOrchestrator({ analysis, symbols }) {
+function DataPacket({ path, text, delay, duration, midpoint, tone = "metric", reduced }) {
+  const chars = [...text]
+  const width = Math.max(20, 8 + chars.reduce(
+    (sum, char) => sum + (/[\u3400-\u9fff]/.test(char) ? 6.1 : 3.45),
+    0,
+  ))
+  const shape = (
+    <>
+      <rect x={-width / 2} y="-6" width={width} height="12" rx="6" className={styles.packetBg} />
+      <text x="0" y="0.5" textAnchor="middle" dominantBaseline="middle"
+        className={styles.packetText}>{text}</text>
+    </>
+  )
+  if (reduced) {
+    return <g className={styles.dataPacket} data-tone={tone}
+      transform={`translate(${midpoint.x} ${midpoint.y})`}>{shape}</g>
+  }
+  return (
+    <g className={styles.dataPacket} data-tone={tone} opacity="0">
+      {shape}
+      <animateMotion path={path} dur={`${duration}s`} begin={`${delay}s`} repeatCount="indefinite" />
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.82;1"
+        dur={`${duration}s`} begin={`${delay}s`} repeatCount="indefinite" />
+    </g>
+  )
+}
+
+export default function DecisionOrchestrator({ analysis, symbols, events, structures, metricPulses = [] }) {
   const traces = analysis?.decisionTraces || []
   const latestBySymbol = analysis?.latestTraces || {}
   const liveFeatures = analysis?.liveFeatures || {}
@@ -78,12 +151,26 @@ export default function DecisionOrchestrator({ analysis, symbols }) {
   const gateLog = analysis?.gateLog || []
   const plans = analysis?.positionPlans || []
   const reduced = useReducedMotion()
+  const [scanIndex, setScanIndex] = useState(0)
   const rawId = useId()
   const uid = rawId.replace(/[^a-zA-Z0-9_-]/g, "")
   const ordered = useMemo(
     () => (Array.isArray(symbols) ? symbols.map((symbol) => String(symbol).toLowerCase()) : []),
     [symbols],
   )
+  const latestSignal = useMemo(() => {
+    if (!Array.isArray(events)) return null
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      if (events[index]?.kind === "signal") return events[index]
+    }
+    return null
+  }, [events])
+
+  useEffect(() => {
+    if (ordered.length < 2) return
+    const timer = setInterval(() => setScanIndex((value) => value + 1), 4200)
+    return () => clearInterval(timer)
+  }, [ordered.length])
 
   const lanes = useMemo(() => {
     const lastTrace = new Map()
@@ -140,6 +227,48 @@ export default function DecisionOrchestrator({ analysis, symbols }) {
   const scoredCount = lanes.filter((lane) => lane.score != null).length
   const riskCount = lanes.filter((lane) => lane.trace?.risk).length + plans.length
   const executionCount = lanes.filter((lane) => lane.trace?.status === "opened").length
+  const signalAge = latestSignal ? Date.now() - (number(latestSignal.ts, 0) || 0) : Infinity
+  const recentSignal = signalAge < 12000 ? latestSignal : null
+  const signalActive = signalAge < 5000 ? latestSignal : null
+  const focusSymbol = recentSignal && ordered.includes(recentSignal.symbol)
+    ? recentSignal.symbol
+    : ordered[scanIndex % Math.max(1, ordered.length)] || ""
+  const focusLane = lanes.find((lane) => lane.symbol === focusSymbol) || lanes[0] || null
+  const focusState = focusLane?.state || {}
+  const focusFeatures = focusLane?.features || {}
+  const focusBoll = focusState.boll || {}
+  const focusOI = focusFeatures.oi || {}
+  const focusFunding = focusFeatures.funding || {}
+  const focusSentiment = focusFeatures.sentiment || {}
+  const focusHMM = focusFeatures.hmm || {}
+  const focusPrice = number(focusLane?.trace?.price) ?? number(focusState.price)
+  const levels = nearestLevels(structures?.[focusSymbol], focusPrice, focusBoll)
+  const metricChoices = {
+    trend: [
+      `ADX ${fixed(focusState.adx, 0)}`,
+      `ATR ${fixed(focusState.atrPct, 0)}`,
+    ],
+    momentum: [
+      `RSI ${fixed(focusState.rsi, 0)}`,
+      `ROC ${signedPct(number(focusState.roc) == null ? null : number(focusState.roc) * 100, 2)}`,
+    ],
+    flow: [
+      `%B ${fixed(focusBoll.pctB, 2)}`,
+      `Z ${fixed(focusState.z, 1)}`,
+    ],
+    structure: [
+      `压 ${compactPrice(levels.resistance)}`,
+      `撑 ${compactPrice(levels.support)}`,
+    ],
+    derivatives: [
+      `OI ${signedPct(number(focusOI.changePct) == null ? null : number(focusOI.changePct) * 100, 2)}`,
+      `费率 ${signedPct(number(focusFunding.rate) == null ? null : number(focusFunding.rate) * 100, 3)}`,
+    ],
+    information: [
+      `情绪 ${fixed(focusSentiment.score, 2)}`,
+      `HMM ${focusHMM.label || "--"}`,
+    ],
+  }
 
   const coinPoints = ordered.map((symbol, index, all) => {
     const y = all.length <= 1 ? CORE.y : 62 + (index / (all.length - 1)) * 226
@@ -147,11 +276,25 @@ export default function DecisionOrchestrator({ analysis, symbols }) {
       symbol,
       y,
       score: lanes.find((lane) => lane.symbol === symbol)?.score,
-      path: `M 18 ${y} C 58 ${y} 116 ${CORE.y + (y - CORE.y) * 0.18} 162 ${CORE.y}`,
+      path: `M 18 ${y} C 39 ${y} 52 ${INTAKE.y + (y - INTAKE.y) * 0.1} ${INTAKE.x} ${INTAKE.y}`,
     }
   })
   const expertPaths = expertNodes.map((node) => ({ node, path: computePath(node) }))
+  const metricPackets = expertPaths.map((entry, index) => {
+    const choices = metricChoices[entry.node.id] || []
+    return {
+      ...entry,
+      text: choices[(scanIndex + index) % Math.max(1, choices.length)] || "--",
+      midpoint: {
+        x: (CORE.x + entry.node.x) / 2,
+        y: (CORE.y + entry.node.y) / 2,
+      },
+    }
+  })
+  const focusPoint = coinPoints.find((coin) => coin.symbol === focusSymbol) || null
+  const signalPoint = coinPoints.find((coin) => coin.symbol === recentSignal?.symbol) || focusPoint
   const collectorPaths = expertNodes.map((node) => ({ node, path: collectPath(node) }))
+  const intakePath = `M ${INTAKE.x} ${INTAKE.y} C 94 175 130 175 154 175`
   const outputPaths = [
     { key: "risk", path: `M ${COLLECTOR.x} ${COLLECTOR.y} C 338 ${COLLECTOR.y} 342 156 ${OUTPUT.risk.x} ${OUTPUT.risk.y}` },
     { key: "execution", path: `M ${COLLECTOR.x} ${COLLECTOR.y} C 338 ${COLLECTOR.y} 342 194 ${OUTPUT.execution.x} ${OUTPUT.execution.y}` },
@@ -163,6 +306,7 @@ export default function DecisionOrchestrator({ analysis, symbols }) {
       className={styles.root}
       aria-label="量化计算流动"
       data-ready={scoredCount > 0 || undefined}
+      data-signal={signalActive ? "y" : undefined}
       initial={reduced ? false : { opacity: 0, scale: 0.985 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: reduced ? 0 : 0.35, ease: [0.22, 1, 0.36, 1] }}
@@ -184,6 +328,7 @@ export default function DecisionOrchestrator({ analysis, symbols }) {
           d="M 356 230 C 356 296 312 330 185 330 C 58 330 14 294 14 253 C 14 211 15 180 18 150" />
         <path className={styles.hexOrbit}
           d="M 88 119 L 185 58 L 282 119 L 282 231 L 185 292 L 88 231 Z" />
+        <path className={styles.intakeBeam} d={intakePath} />
 
         <g className={styles.beams}>
           {coinPoints.map((coin) => (
@@ -210,6 +355,7 @@ export default function DecisionOrchestrator({ analysis, symbols }) {
               <FlowParticle key={`source-flow-${coin.symbol}`} path={coin.path}
                 delay={0.1 + index * 0.21} duration={2.8 + (index % 3) * 0.34} />
             ))}
+            <FlowParticle path={intakePath} delay={0.08} duration={2.1} tone="collect" />
             {expertPaths.map(({ node, path }, index) => (
               <FlowParticle key={`compute-flow-${node.id}`} path={path}
                 delay={index * 0.34} duration={3.1 + (index % 2) * 0.4} tone="node" />
@@ -226,18 +372,64 @@ export default function DecisionOrchestrator({ analysis, symbols }) {
             <FlowParticle path={loopPath} delay={3.55} duration={6.4} tone="loop" />
           </g>
         )}
+
+        {focusPoint && focusPrice != null && (
+          <DataPacket key={`price-${focusSymbol}-${focusPrice}`}
+            path={focusPoint.path} text={`${SYM(focusSymbol)} ${priceText(focusPrice)}`}
+            delay={0.2} duration={5.6} tone="price" reduced={reduced}
+            midpoint={{ x: 93, y: (CORE.y + focusPoint.y) / 2 }} />
+        )}
+        {metricPackets.map(({ node, path, text, midpoint }, index) => (
+          <DataPacket key={`metric-${node.id}-${text}`}
+            path={path} text={text} midpoint={midpoint} reduced={reduced}
+            delay={0.35 + index * 0.23} duration={6.2 + (index % 3) * 0.55} />
+        ))}
       </svg>
 
       <div className={styles.coinRail} aria-hidden>
         {coinPoints.map((coin, index) => (
           <span key={coin.symbol} className={styles.coinToken}
             style={{ top: `${(coin.y / 350) * 100}%`, "--coin-delay": `${index * -0.37}s` }}
+            data-focus={focusSymbol === coin.symbol || undefined}
+            data-signal={signalActive?.symbol === coin.symbol || undefined}
             aria-label={coin.symbol}>
             <CoinAvatar symbol={coin.symbol} size={15} />
             <i data-tone={toneForScore(coin.score)} />
           </span>
         ))}
       </div>
+
+      <div className={styles.intakeNode} data-metric-intake="" style={pos(INTAKE)}
+        data-active={metricPulses.length ? "y" : undefined}
+        role="img" aria-label="数据接收">
+        <span className={styles.intakeHalo} />
+        <span className={styles.intakeRing} />
+        <span className={styles.intakeDisc}><Database size={12} strokeWidth={1.8} /></span>
+        {metricPulses.slice(-10).map((pulse) => (
+          <span key={pulse.id} className={styles.intakeImpact}
+            style={{
+              "--impact-color": pulse.color,
+              animationDelay: `${(pulse.delay || 0) + (pulse.spawn ?? 170) + (pulse.duration || 1400)}ms`,
+            }} />
+        ))}
+      </div>
+
+      {signalActive && signalPoint && (
+        <motion.div key={signalActive.id || signalActive.ts} className={styles.signalPacket}
+          initial={reduced
+            ? { left: `${(INTAKE.x / 400) * 100}%`, top: "50%", opacity: 0 }
+            : { left: "4.5%", top: `${(signalPoint.y / 350) * 100}%`, opacity: 0, scale: 0.72 }}
+          animate={{
+            left: `${(INTAKE.x / 400) * 100}%`, top: "50%",
+            opacity: reduced ? 0 : [0, 1, 1, 0],
+            scale: reduced ? 1 : [0.72, 1, 1, 1],
+          }}
+          transition={{ duration: reduced ? 0.35 : 1.45, ease: [0.22, 1, 0.36, 1] }}>
+          <CoinAvatar symbol={signalActive.symbol} size={13} />
+          <span>{priceText(number(signalActive.price) ?? focusPrice)}</span>
+          {signalActive.name_zh && <em>{signalActive.name_zh}</em>}
+        </motion.div>
+      )}
 
       <div className={styles.core} style={pos(CORE)} role="img"
         aria-label={overallScore == null ? "综合计算中" : `综合 ${Math.round(overallScore)}`}>

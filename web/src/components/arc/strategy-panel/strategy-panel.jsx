@@ -17,7 +17,7 @@
                比例尺化，因此不做条形。
 
    所有数值来自 snapshot.analysis.symbols，前端只做映射与着色。 */
-import { useMemo } from "react"
+import { useEffect, useMemo, useRef } from "react"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import CoinAvatar from "@/components/ui/coin-avatar"
 import { Progress } from "@/components/arc/progress/progress"
@@ -63,12 +63,12 @@ function BarText({ label, value, status, pos, tone }) {
 
 /** 带安全带的区间滑块：官方 Progress 填充条 + 安全带浅色窗口 + 内嵌文字。
  *  不画圆点——文字本身就标出了当前值所在比例。 */
-function RangeSlider({ v, min, max, safe, label, value, status, tone }) {
+function RangeSlider({ v, min, max, safe, label, value, status, tone, metricKey }) {
   const pos = clamp(((v - min) / (max - min)) * 100, 0, 100)
   const s0 = clamp(((safe[0] - min) / (max - min)) * 100, 0, 100)
   const s1 = clamp(((safe[1] - min) / (max - min)) * 100, 0, 100)
   return (
-    <span className={styles.slider} data-tone={tone}>
+    <span className={styles.slider} data-tone={tone} data-metric={metricKey}>
       <Progress value={pos} max={100} className={styles.arcBar} />
       <span className={styles.sliderSafe} style={{ left: `${s0}%`, width: `${s1 - s0}%` }} />
       <BarText label={label} value={value} status={status} pos={pos} tone={tone} />
@@ -77,12 +77,12 @@ function RangeSlider({ v, min, max, safe, label, value, status, tone }) {
 }
 
 /** 单向阈值能量条：官方 Progress + 阈值刻线 + 内嵌文字 */
-function Gauge({ v, min, max, threshold, label, value, status }) {
+function Gauge({ v, min, max, threshold, label, value, status, metricKey }) {
   const pos = clamp(((v - min) / (max - min)) * 100, 0, 100)
   const tpos = clamp(((threshold - min) / (max - min)) * 100, 0, 100)
   const tone = v >= threshold ? "hot" : v >= threshold - 5 ? "warm" : "cool"
   return (
-    <span className={styles.gauge} data-tone={tone}>
+    <span className={styles.gauge} data-tone={tone} data-metric={metricKey}>
       <Progress value={pos} max={100} className={styles.arcBar} />
       <span className={styles.gaugeTick} style={{ left: `${tpos}%` }} />
       <BarText label={label} value={value} status={status} pos={pos} tone={tone} />
@@ -92,13 +92,13 @@ function Gauge({ v, min, max, threshold, label, value, status }) {
 
 /** 0 轴对称双向偏转条：中轴 + 官方 Progress（值转成半幅宽度）+ 内嵌文字。
  *  反色按「离中轴的距离」判断：正值看右半幅覆盖率，负值看左半幅。 */
-function BiBar({ v, scale, up, down, label, value, status }) {
+function BiBar({ v, scale, up, down, label, value, status, metricKey }) {
   const half = clamp(Math.abs(v) / scale, 0, 1) * 50
   const positive = v >= 0
   const leftLight = overFill(19, positive ? 0 : half * 2)   // 负值才填充左半
   const rightLight = overFill(81, positive ? half * 2 : 0)
   return (
-    <span className={styles.bibar} data-dir={positive ? "up" : "down"}
+    <span className={styles.bibar} data-dir={positive ? "up" : "down"} data-metric={metricKey}
       style={{ "--bibar-color": positive ? up : down, "--arc-fill": positive ? up : down }}>
       <span className={styles.bibarHalf} data-side="l">
         {!positive && <Progress value={(half / 50) * 100} max={100} className={styles.arcBar} />}
@@ -121,18 +121,18 @@ function BiBar({ v, scale, up, down, label, value, status }) {
 }
 
 /** 布林挤压监测：官方 Progress + 内嵌文字；挤压时整条收窄并换琥珀色 */
-function SqueezeBar({ v, label, value, status }) {
+function SqueezeBar({ v, label, value, status, metricKey }) {
   const squeezed = v != null && v < 15
   const pos = clamp(v ?? 0, 0, 100)
   return (
-    <span className={styles.squeeze} data-squeeze={squeezed || undefined}>
+    <span className={styles.squeeze} data-squeeze={squeezed || undefined} data-metric={metricKey}>
       <Progress value={pos} max={100} className={styles.arcBar} />
       <BarText label={label} value={value} status={status} pos={squeezed ? 0 : pos} tone={squeezed ? "warn" : "normal"} />
     </span>
   )
 }
 
-export default function StrategyPanel({ analysis, symbols, chartColors }) {
+export default function StrategyPanel({ analysis, symbols, chartColors, onMetricPulse }) {
   const syms = analysis?.symbols || {}
   const params = analysis?.params
   const plans = analysis?.positionPlans || []
@@ -156,6 +156,90 @@ export default function StrategyPanel({ analysis, symbols, chartColors }) {
     for (const p of plans) if (p?.symbol) m.set(String(p.symbol).toLowerCase(), p)
     return m
   }, [plans])
+
+  const previousMetricsRef = useRef(new Map())
+  const lastPulseRef = useRef(new Map())
+
+  // 指标只在发生足够明显的增量时发射一次数据脉冲。进度条先收缩回弹，
+  // 随后由全局细线层从当前填充位置飞向右侧计算网络的接收节点。
+  useEffect(() => {
+    if (!onMetricPulse) return
+    const now = Date.now()
+    const reduced = typeof window !== "undefined"
+      && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+    const panelRect = document.querySelector(".strategy-slot")?.getBoundingClientRect()
+    for (const [sym, st] of cards) {
+      const metrics = [
+        { id: "rsi", label: "RSI", value: st?.rsi, threshold: 2, ratio: (v) => clamp(v, 0, 100) / 100 },
+        { id: "pctB", label: "%B", value: st?.boll?.pctB, threshold: 0.04, ratio: (v) => clamp((v + 0.2) / 1.4, 0, 1) },
+        { id: "z", label: "Z", value: st?.z, threshold: 0.12, ratio: (v) => clamp((v + 3) / 6, 0, 1) },
+        { id: "adx", label: "ADX", value: st?.adx, threshold: 1.2, ratio: (v) => clamp(v / 50, 0, 1) },
+        { id: "roc", label: "ROC", value: st?.roc, threshold: 0.0008, ratio: (v) => 0.5 + clamp(v / 0.015, -1, 1) * 0.5 },
+        { id: "bw", label: "BW", value: st?.bwPct, threshold: 3, ratio: (v) => clamp(v / 100, 0, 1) },
+      ]
+      for (const metric of metrics) {
+        const key = `${sym}:${metric.id}`
+        if (metric.value == null) {
+          previousMetricsRef.current.delete(key)
+          continue
+        }
+        const current = Number(metric.value)
+        if (!Number.isFinite(current)) {
+          previousMetricsRef.current.delete(key)
+          continue
+        }
+        if (!previousMetricsRef.current.has(key)) {
+          previousMetricsRef.current.set(key, current)
+          continue
+        }
+        const previous = previousMetricsRef.current.get(key)
+        previousMetricsRef.current.set(key, current)
+        if (!Number.isFinite(previous) || Math.abs(current - previous) < metric.threshold) continue
+        const last = lastPulseRef.current.get(key) || 0
+        if (now - last < 700) continue
+        lastPulseRef.current.set(key, now)
+
+        const bar = document.querySelector(`[data-metric="${key}"]`)
+        if (!bar) continue
+        const rect = bar.getBoundingClientRect()
+        if (rect.width <= 0 || !panelRect || rect.bottom <= panelRect.top || rect.top >= panelRect.bottom) continue
+        const fill = bar.querySelector('[class*="fill"]')
+        const fillColor = fill ? getComputedStyle(fill).backgroundColor : ""
+        const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim()
+        const safeFillColor = fillColor && fillColor !== "rgba(0, 0, 0, 0)"
+          ? fillColor
+          : (accent || "rgb(100, 116, 139)")
+        if (!reduced) {
+          bar.animate([
+            { transform: "scale(1, 1)" },
+            { transform: "scale(0.965, 0.76)", offset: 0.2 },
+            { transform: "scale(1.018, 1.08)", offset: 0.48 },
+            { transform: "scale(0.994, 0.96)", offset: 0.72 },
+            { transform: "scale(1, 1)" },
+          ], {
+            duration: 430,
+            easing: "cubic-bezier(.22,1.35,.36,1)",
+          })
+        }
+        onMetricPulse({
+          id: `${key}-${now}`,
+          symbol: sym,
+          metric: metric.id,
+          label: metric.label,
+          value: current,
+          delta: current - previous,
+          color: safeFillColor,
+          source: {
+            x: rect.left + rect.width * metric.ratio(current),
+            y: rect.top + rect.height / 2,
+          },
+          delay: reduced ? 0 : 115,
+          duration: reduced ? 300 : 1180 + Math.random() * 620,
+          ts: now,
+        })
+      }
+    }
+  }, [analysis, cards, onMetricPulse])
 
   /** 与后端 adaptive_sl_tp 同一口径 */
   const band = (st) => {
@@ -268,32 +352,38 @@ export default function StrategyPanel({ analysis, symbols, chartColors }) {
                   <div className={styles.groupLabel}>动量 · 极值</div>
                   {rsi == null ? <div className={styles.mNa}>RSI --</div> : (
                     <RangeSlider v={rsi} min={0} max={100} safe={[30, 70]} tone={rsiTone}
-                      label="RSI" value={String(Math.round(rsi))} status={rsiStatus} />
+                      label="RSI" value={String(Math.round(rsi))} status={rsiStatus}
+                      metricKey={`${sym}:rsi`} />
                   )}
                   {pctB == null ? <div className={styles.mNa}>%B --</div> : (
                     <RangeSlider v={pctB} min={-0.2} max={1.2} safe={[0, 1]} tone={bTone}
-                      label="%B" value={pctB.toFixed(2)} status={bStatus} />
+                      label="%B" value={pctB.toFixed(2)} status={bStatus}
+                      metricKey={`${sym}:pctB`} />
                   )}
                   {z == null ? <div className={styles.mNa}>Z值 --</div> : (
                     <RangeSlider v={z} min={-3} max={3} safe={[-2, 2]} tone={zTone}
-                      label="Z值" value={z.toFixed(1)} status={zStatus} />
+                      label="Z值" value={z.toFixed(1)} status={zStatus}
+                      metricKey={`${sym}:z`} />
                   )}
 
                   {/* ---------- 趋势 · 动能 ---------- */}
                   <div className={styles.groupLabel}>趋势 · 动能</div>
                   {adx == null ? <div className={styles.mNa}>ADX --</div> : (
                     <Gauge v={adx} min={0} max={50} threshold={25}
-                      label="ADX" value={String(Math.round(adx))} status={adxStatus} />
+                      label="ADX" value={String(Math.round(adx))} status={adxStatus}
+                      metricKey={`${sym}:adx`} />
                   )}
                   {roc == null ? <div className={styles.mNa}>ROC --</div> : (
                     <BiBar v={roc} scale={0.015} up={up} down={down}
-                      label="ROC" value={(roc * 100).toFixed(2)} status={rocStatus} />
+                      label="ROC" value={(roc * 100).toFixed(2)} status={rocStatus}
+                      metricKey={`${sym}:roc`} />
                   )}
 
                   {/* ---------- 波动 · 振幅 ---------- */}
                   <div className={styles.groupLabel}>波动 · 振幅</div>
                   {bw == null ? <div className={styles.mNa}>BW --</div> : (
-                    <SqueezeBar v={bw} label="BW" value={String(Math.round(bw))} status={bwStatus} />
+                    <SqueezeBar v={bw} label="BW" value={String(Math.round(bw))} status={bwStatus}
+                      metricKey={`${sym}:bw`} />
                   )}
                   <div className={styles.dual}>
                     <span className={styles.dualItem} data-hot={atrHot || undefined}
