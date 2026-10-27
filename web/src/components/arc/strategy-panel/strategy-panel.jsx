@@ -1,305 +1,325 @@
-/* 策略分析面板：量化决策的完整依据与过程可视化（第三行剩余空间）。
-   不显示"结果"（结果在左边流水里），这里展示"为什么这样决策"：
+/* 决策依据面板：不分页签，一屏呈现三层信息。数据全部来自
+   quant.snapshot().analysis，前端只做呈现与趋势累积，不臆造任何数值。
 
-   1. 市场状态  —— 每个监控币的 regime / 波动档位 / 挤压状态（颜色标签）
-   2. 技术指标  —— RSI 刻度条、Z-score 偏离度、布林带 %B、ADX 趋势强度、
-                    ATR 历史分位、实测波动率
-   3. 账户风控  —— 回撤进度条 + 熔断状态
-   4. 过滤器    —— 最近被拦下的信号及具体原因
-   5. 策略参数  —— 当前生效的全部阈值（可追溯到具体数值）
+   主视图 · 指标矩阵热力图
+     行 = 币种，列 = 关键指标，色阶 = 该指标偏离"平静态"的程度
+     （青绿＝温和 → 琥珀 → 红＝极端）。视觉参考 uiarc activity-terrain
+     的 2D 热力视图：用同一把色阶把"哪里紧张"一眼标出来。
 
-   数据全部来自后端 quant.snapshot().analysis，无前端臆造。 */
-import { useMemo, useState } from "react"
-import { Activity, Gauge, ShieldAlert, SlidersHorizontal, Filter } from "lucide-react"
+   辅助视图 · ATR 风险区间
+     每个币一条 split-bar：左段＝止损距离，右段＝止盈距离，宽度按
+     1.5×ATR / 2.5×ATR 夹紧后的实际百分比分配（拆条语义参考 uiarc
+     split-bar）。这样能直接看出风控给这笔交易留了多大空间、盈亏比多少。
+
+   底部 · 趋势条
+     前端按快照累积的 ADX / ATR 分位 走势（streamgraph 观感），右侧接
+     当前回撤与过滤器拦截计数。
+
+   uiarc 的 customer-galaxy / slope-chart 未采用：前者需要上千个带分组
+   的散点（本项目只有 ≤10 个币，散点退化成几个点，信息量不如热力矩阵），
+   后者需要两个时点的同指标对比（后端只提供最新快照，历史指标未落库）。 */
+import { useEffect, useId, useMemo, useRef, useState } from "react"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import styles from "./strategy-panel.module.css"
 
-const REGIME_LABEL = {
-  trend: { text: "趋势", tone: "trend" },
-  range: { text: "震荡", tone: "range" },
-  mixed: { text: "过渡", tone: "mixed" },
-  unknown: { text: "数据不足", tone: "muted" },
-}
-const VOL_LABEL = {
-  high: { text: "高波动", tone: "danger" },
-  normal: { text: "常波", tone: "ok" },
-  low: { text: "低波动", tone: "muted" },
-  unknown: { text: "—", tone: "muted" },
-}
+const SYM = (s) => String(s || "").replace(/usdt$/i, "").toUpperCase()
 
 const fmt = (v, d = 2) => {
   if (v == null || Number.isNaN(Number(v))) return "--"
   const n = Number(v)
-  const a = Math.abs(n)
-  if (a >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: d })
-  return n.toFixed(d)
+  return Math.abs(n) >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: d }) : n.toFixed(d)
 }
 
-/** 水平刻度条：value 在 [min,max] 内的位置，可标出危险区间 */
-function Meter({ value, min, max, tone = "neutral", label, marks = [] }) {
-  const pct = value == null ? 0 : Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100))
-  return (
-    <div className={styles.meterRow}>
-      <span className={styles.meterLabel}>{label}</span>
-      <div className={styles.meterTrack}>
-        {marks.map((m) => (
-          <span key={m.at} className={styles.meterMark}
-            style={{ left: `${((m.at - min) / (max - min)) * 100}%` }} title={m.label} />
-        ))}
-        <span className={styles.meterFill} data-tone={tone} style={{ width: `${pct}%` }} />
-        <span className={styles.meterKnob} data-tone={tone} style={{ left: `${pct}%` }} />
-      </div>
-      <span className={styles.meterVal}>{value == null ? "--" : fmt(value, 1)}</span>
-    </div>
-  )
+/** 热度 0..1 → 底色：青绿（温和）→ 琥珀 → 红（极端） */
+const heatBg = (t) => {
+  const x = Math.max(0, Math.min(1, t))
+  return `hsl(${(162 - 158 * x).toFixed(0)} ${(56 + 24 * x).toFixed(0)}% ${(93 - 47 * x).toFixed(0)}%)`
+}
+const heatFg = (t) => (t > 0.58 ? "#fff" : t > 0.32 ? "#2b3445" : "#66707f")
+
+/** 指标列定义：heat 返回 0..1（null = 数据不足），text 是格内显示值 */
+const COLS = [
+  {
+    key: "rsi", label: "RSI", hint: "相对强弱：越靠近 70/30 两端越热",
+    heat: (s) => (s.rsi == null ? null : Math.min(1, (Math.abs(s.rsi - 50) / 50) * 1.12)),
+    text: (s) => (s.rsi == null ? "--" : Math.round(s.rsi)),
+  },
+  {
+    key: "z", label: "Z值", hint: "价格偏离均值的标准差倍数，|z|≥2 视为极端",
+    heat: (s) => (s.z == null ? null : Math.min(1, Math.abs(s.z) / 3)),
+    text: (s) => (s.z == null ? "--" : s.z.toFixed(1)),
+  },
+  {
+    key: "boll", label: "%B", hint: "布林带位置：0=下轨、1=上轨，越出轨道会变热",
+    heat: (s) => {
+      const v = s.boll?.pctB
+      if (v == null) return null
+      if (v > 1) return Math.min(1, 0.72 + (v - 1) * 0.7)
+      if (v < 0) return Math.min(1, 0.72 - v * 0.7)
+      return Math.min(0.5, Math.abs(v - 0.5) * 1.0)
+    },
+    text: (s) => (s.boll?.pctB == null ? "--" : s.boll.pctB.toFixed(2)),
+  },
+  {
+    key: "adx", label: "ADX", hint: "趋势强度：≥25 顺势，≤20 震荡",
+    heat: (s) => (s.adx == null ? null : Math.min(1, s.adx / 60)),
+    text: (s) => (s.adx == null ? "--" : Math.round(s.adx)),
+  },
+  {
+    key: "atrPct", label: "ATR分位", hint: "当前 ATR 在近 100 根中的分位，越高波动越大",
+    heat: (s) => (s.atrPct == null ? null : Math.min(1, s.atrPct / 100)),
+    text: (s) => (s.atrPct == null ? "--" : Math.round(s.atrPct)),
+  },
+  {
+    key: "bwPct", label: "带宽分位", hint: "布林带宽分位：越低越接近挤压",
+    heat: (s) => (s.bwPct == null ? null : Math.min(1, s.bwPct / 100)),
+    text: (s) => (s.bwPct == null ? "--" : Math.round(s.bwPct)),
+  },
+  {
+    key: "realizedVol", label: "实测波动", hint: "近期收益率标准差（%），反映实际振幅",
+    heat: (s) => (s.realizedVol == null ? null : Math.min(1, s.realizedVol / 0.02)),
+    text: (s) => (s.realizedVol == null ? "--" : (s.realizedVol * 100).toFixed(2)),
+  },
+  {
+    key: "roc", label: "ROC", hint: "区间涨跌幅（%），绝对值越大越热",
+    heat: (s) => (s.roc == null ? null : Math.min(1, Math.abs(s.roc) / 0.02)),
+    text: (s) => (s.roc == null ? "--" : (s.roc * 100).toFixed(2)),
+  },
+]
+
+/** 按 adaptive_sl_tp 的同一套口径算止损/止盈距离（夹紧后），供风险区间条使用 */
+function riskBand(sym, st, p) {
+  const price = Number(st?.price) || 0
+  const atr = Number(st?.atr) || 0
+  const slMult = p?.atrSlMult ?? 1.5
+  const tpMult = p?.atrTpMult ?? 2.5
+  const slMin = (p?.slMinPct ?? 0.4) / 100
+  const slMax = (p?.slMaxPct ?? 2.0) / 100
+  const tpMin = (p?.tpMinPct ?? 0.18) / 100
+  const tpMax = (p?.tpMaxPct ?? 3.0) / 100
+  let slPct = slMin
+  let tpPct = tpMin
+  if (price > 0 && atr > 0) {
+    slPct = Math.min(slMax, Math.max(slMin, (atr * slMult) / price))
+    tpPct = Math.min(tpMax, Math.max(tpMin, (atr * tpMult) / price))
+  }
+  return { sym, slPct: slPct * 100, tpPct: tpPct * 100, valid: price > 0 && atr > 0 }
 }
 
-/** 单个币种的指标卡 */
-function SymbolCard({ sym, st }) {
-  const regime = REGIME_LABEL[st.regime] || REGIME_LABEL.unknown
-  const vol = VOL_LABEL[st.volState] || VOL_LABEL.unknown
-  const rsi = st.rsi
-  const z = st.z
-  const pctB = st.boll?.pctB
-  const adx = st.adx
-  const atrPct = st.atrPct
-
-  const rsiTone = rsi == null ? "neutral" : rsi >= 70 ? "danger" : rsi <= 30 ? "warn" : "ok"
-  const zTone = z == null ? "neutral" : Math.abs(z) >= 2 ? "danger" : Math.abs(z) >= 1.2 ? "warn" : "ok"
-  const adxTone = adx == null ? "neutral" : adx >= 25 ? "ok" : adx <= 20 ? "muted" : "warn"
-
+/** 底部趋势：ADX 与 ATR 分位两条归一化面积（streamgraph 观感） */
+function TrendStrip({ data, chartColors }) {
+  const gid = useId().replace(/:/g, "")
+  const W = 100
+  const H = 26
+  if (data.length < 2) {
+    return <div className={styles.trendEmpty}>趋势积累中…</div>
+  }
+  const n = data.length
+  const line = (key, base) => {
+    const pts = data.map((d, i) => {
+      const x = (i / (n - 1)) * W
+      const v = Math.max(0, Math.min(1, (d[key] || 0) / base))
+      return [x, H - v * (H - 2) - 1]
+    })
+    const d0 = `M${pts.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join("L")}`
+    return { line: d0, area: `${d0}L${W},${H}L0,${H}Z` }
+  }
+  const adx = line("adx", 1)      // 已归一化
+  const atr = line("atr", 1)
   return (
-    <div className={styles.symCard}>
-      <div className={styles.symHead}>
-        <span className={styles.symName}>{sym.replace(/usdt$/i, "").toUpperCase()}</span>
-        <span className={styles.tag} data-tone={regime.tone}>{regime.text}</span>
-        <span className={styles.tag} data-tone={vol.tone}>{vol.text}</span>
-        {st.squeeze && <span className={styles.tag} data-tone="warn">挤压</span>}
-        <span className={styles.symPrice}>{fmt(st.price, st.price >= 1000 ? 1 : 4)}</span>
-      </div>
-
-      {/* RSI：30/70 两个阈值刻度 */}
-      <Meter value={rsi} min={0} max={100} tone={rsiTone}
-        label="RSI"
-        marks={[{ at: 30, label: "超卖 30" }, { at: 50, label: "中轴 50" }, { at: 70, label: "超买 70" }]} />
-
-      {/* Z-score：-2~+2 之外是极端偏离 */}
-      <Meter value={z} min={-3} max={3} tone={zTone}
-        label="Z值"
-        marks={[{ at: -2, label: "-2σ" }, { at: 0, label: "均值" }, { at: 2, label: "+2σ" }]} />
-
-      {/* 布林 %B：0=下轨 1=上轨 */}
-      <Meter value={pctB} min={0} max={1.2} tone={pctB == null ? "neutral" : pctB > 1 ? "danger" : pctB < 0 ? "danger" : "ok"}
-        label="%B"
-        marks={[{ at: 0, label: "下轨" }, { at: 0.5, label: "中轨" }, { at: 1, label: "上轨" }]} />
-
-      {/* ADX：20/25 分界 */}
-      <Meter value={adx} min={0} max={60} tone={adxTone}
-        label="ADX"
-        marks={[{ at: 20, label: "震荡 20" }, { at: 25, label: "趋势 25" }]} />
-
-      {/* ATR 历史分位 */}
-      <Meter value={atrPct} min={0} max={100} tone={atrPct == null ? "neutral" : atrPct >= 85 ? "danger" : atrPct <= 15 ? "muted" : "ok"}
-        label="ATR分位"
-        marks={[{ at: 15, label: "低" }, { at: 85, label: "高" }]} />
-
-      <div className={styles.symFoot}>
-        <span>ATR {fmt(st.atr, st.atr >= 100 ? 2 : 6)}</span>
-        <span>带宽 {st.boll?.bandwidth != null ? (st.boll.bandwidth * 100).toFixed(2) + "%" : "--"}</span>
-        <span>实测波动 {st.realizedVol != null ? (st.realizedVol * 100).toFixed(3) + "%" : "--"}</span>
-        <span>+DI {fmt(st.plusDI, 0)} / -DI {fmt(st.minusDI, 0)}</span>
-      </div>
-    </div>
-  )
-}
-
-/** 风控区：回撤进度 + 熔断 */
-function RiskBlock({ dd, chartColors }) {
-  if (!dd) return null
-  const cur = Number(dd.current) || 0
-  const limit = Number(dd.limit) || -5
-  // 用"回撤深度 / 熔断线"作为进度（0 → 未回撤，1 → 触及熔断）
-  const ratio = limit !== 0 ? Math.min(1, Math.abs(cur) / Math.abs(limit)) : 0
-  const tone = dd.paused ? "danger" : ratio > 0.6 ? "warn" : "ok"
-  return (
-    <div className={styles.block}>
-      <div className={styles.blockHead}>
-        <ShieldAlert size={11} />
-        账户风控
-        {dd.paused && <span className={styles.tag} data-tone="danger">熔断中</span>}
-      </div>
-      <div className={styles.ddRow}>
-        <span className={styles.ddLabel}>当前回撤</span>
-        <span className={styles.ddVal} style={{ color: cur < -0.01 ? chartColors.down : "inherit" }}>
-          {cur.toFixed(2)}%
-        </span>
-        <span className={styles.ddSep}>/</span>
-        <span className={styles.ddLabel}>熔断线</span>
-        <span className={styles.ddVal}>{limit.toFixed(1)}%</span>
-        <span className={styles.ddSpacer} />
-        <span className={styles.ddLabel}>历史最大</span>
-        <span className={styles.ddVal} style={{ color: (dd.max || 0) < -0.01 ? chartColors.down : "inherit" }}>
-          {Number(dd.max || 0).toFixed(2)}%
-        </span>
-        <span className={styles.ddLabel}>峰值</span>
-        <span className={styles.ddVal}>{fmt(dd.peak, 2)}</span>
-      </div>
-      <div className={styles.ddTrack}>
-        <span className={styles.ddFill} data-tone={tone} style={{ width: `${ratio * 100}%` }} />
-      </div>
-    </div>
-  )
-}
-
-/** 过滤器拦截记录 */
-function GateBlock({ log }) {
-  return (
-    <div className={styles.block}>
-      <div className={styles.blockHead}>
-        <Filter size={11} />
-        信号过滤器
-        <span className={styles.blockHint}>最近 {log.length} 条拦截</span>
-      </div>
-      <div className={styles.gateList}>
-        {log.length === 0 && <span className={styles.muted}>暂无拦截记录</span>}
-        {log.slice().reverse().map((g, i) => (
-          <div key={`${g.ts}-${i}`} className={styles.gateRow}>
-            <span className={styles.gateTime}>
-              {new Date(g.ts + 8 * 3600e3).toISOString().slice(11, 19)}
-            </span>
-            <span className={styles.gateSym}>{String(g.symbol || "").replace(/usdt$/i, "").toUpperCase()}</span>
-            <span className={styles.gateDir} data-dir={g.direction}>
-              {g.direction === "bullish" ? "多" : "空"}
-            </span>
-            <span className={styles.gateWhy} title={g.reason}>{g.reason}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-/** 策略参数表 */
-function ParamsBlock({ p }) {
-  if (!p) return null
-  const rows = [
-    ["止损 = ATR ×", `${p.atrSlMult}（夹在 ${p.slMinPct}% ~ ${p.slMaxPct}%）`],
-    ["止盈 = ATR ×", `${p.atrTpMult}（夹在 ${p.tpMinPct}% ~ ${p.tpMaxPct}%）`],
-    ["回撤熔断", `${p.ddLimitPct}% / 暂停 ${p.ddPauseMin} 分钟`],
-    ["持仓上限", `${p.maxPositions} 仓（同向 ${p.maxSameDir}）`],
-    ["冷却 / 超时", `${p.cooldownSec}s / ${p.maxHoldMin}min`],
-    ["移动止盈", `浮盈 ≥ ${p.trailArm}% 后回撤 ${p.trailGap}% 平`],
-    ["单仓保证金", `可用余额 ${p.marginPct}%`],
-    ["RSI 阈值", `超买 ${p.rsiOverbought} / 超卖 ${p.rsiOversold}`],
-    ["Z 值极端", `|z| ≥ ${p.zExtreme} 不顺势`],
-    ["ADX 分界", `趋势 ≥ ${p.adxTrend} / 震荡 ≤ ${p.adxRange}`],
-    ["布林挤压", `带宽分位 ≤ ${p.squeezePct}%`],
-  ]
-  return (
-    <div className={styles.block}>
-      <div className={styles.blockHead}>
-        <SlidersHorizontal size={11} />
-        当前策略参数
-      </div>
-      <div className={styles.paramGrid}>
-        {rows.map(([k, v]) => (
-          <div key={k} className={styles.paramRow}>
-            <span className={styles.paramKey}>{k}</span>
-            <span className={styles.paramVal}>{v}</span>
-          </div>
-        ))}
-      </div>
-    </div>
+    <svg className={styles.trendSvg} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden>
+      <defs>
+        <linearGradient id={`${gid}a`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="hsl(215 70% 55% / 0.34)" />
+          <stop offset="100%" stopColor="hsl(215 70% 55% / 0.02)" />
+        </linearGradient>
+        <linearGradient id={`${gid}b`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="hsl(20 85% 55% / 0.30)" />
+          <stop offset="100%" stopColor="hsl(20 85% 55% / 0.02)" />
+        </linearGradient>
+      </defs>
+      <path d={atr.area} fill={`url(#${gid}b)`} />
+      <path d={adx.area} fill={`url(#${gid}a)`} />
+      <path d={adx.line} fill="none" stroke={chartColors?.up || "#2563eb"} strokeWidth="0.7"
+        strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      <path d={atr.line} fill="none" stroke="#ea580c" strokeWidth="0.7"
+        strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+    </svg>
   )
 }
 
 export default function StrategyPanel({ analysis, chartColors }) {
-  const [tab, setTab] = useState("symbols")
   const syms = analysis?.symbols || {}
-  const ents = useMemo(() => Object.entries(syms), [syms])
+  const params = analysis?.params
   const dd = analysis?.drawdown
   const gateLog = analysis?.gateLog || []
-  const params = analysis?.params
   const plans = analysis?.positionPlans || []
 
+  const rows = useMemo(() => Object.entries(syms), [syms])
+
+  // 趋势历史：每次快照到达时把「全市场均值」压成一个点（约 5s 一点，保留 7 分钟）
+  const histRef = useRef([])
+  const [, bumpHist] = useState(0)
+  useEffect(() => {
+    if (!rows.length) return
+    const avg = (fn) => {
+      let sum = 0, n = 0
+      for (const [, s] of rows) { const v = Number(fn(s)); if (Number.isFinite(v)) { sum += v; n++ } }
+      return n ? sum / n : 0
+    }
+    const h = histRef.current
+    h.push({
+      t: Date.now(),
+      adx: avg((s) => (s.adx ?? 0) / 60),
+      atr: avg((s) => (s.atrPct ?? 0) / 100),
+    })
+    if (h.length > 90) h.shift()
+    bumpHist((v) => v + 1)
+  }, [rows])
+
+  const planBySym = useMemo(() => {
+    const m = new Map()
+    for (const p of plans) if (p?.symbol) m.set(String(p.symbol).toLowerCase(), p)
+    return m
+  }, [plans])
+
+  const ddCur = Number(dd?.current) || 0
+  const ddLimit = Number(dd?.limit) || -5
+  const ddRatio = ddLimit !== 0 ? Math.min(1, Math.abs(ddCur) / Math.abs(ddLimit)) : 0
+
+  const gridCols = `48px repeat(${COLS.length}, minmax(0, 1fr))`
+
   return (
-    <section className={styles.wrap} aria-label="策略分析">
-      <header className={styles.head}>
-        <span className={styles.title}>
-          <Activity size={11} /> 策略分析
-        </span>
-        <div className={styles.tabs}>
-          <button type="button" className={styles.tab} data-on={tab === "symbols" || undefined}
-            onClick={() => setTab("symbols")}>
-            <Gauge size={10} /> 指标 {ents.length}
-          </button>
-          <button type="button" className={styles.tab} data-on={tab === "risk" || undefined}
-            onClick={() => setTab("risk")}>
-            <ShieldAlert size={10} /> 风控
-          </button>
-          <button type="button" className={styles.tab} data-on={tab === "params" || undefined}
-            onClick={() => setTab("params")}>
-            <SlidersHorizontal size={10} /> 参数
-          </button>
-        </div>
-      </header>
-
-      <ScrollArea orientation="vertical" fade={16} scrollbars="auto"
-        className={styles.body} label="策略分析内容">
-        {tab === "symbols" && (
-          <>
-            {plans.length > 0 && (
-              <div className={styles.block}>
-                <div className={styles.blockHead}>
-                  <Activity size={11} />
-                  当前持仓的开仓依据
-                </div>
-                <div className={styles.planList}>
-                  {plans.map((p, i) => (
-                    <div key={`${p.symbol}-${i}`} className={styles.planRow}>
-                      <span className={styles.planSym}>
-                        {String(p.symbol || "").replace(/usdt$/i, "").toUpperCase()}
-                      </span>
-                      <span className={styles.planSide} data-side={p.side === "BUY" ? "long" : "short"}>
-                        {p.side === "BUY" ? "多" : "空"}
-                      </span>
-                      <span className={styles.planKV}>入场 {fmt(p.entry, p.entry >= 1000 ? 1 : 4)}</span>
-                      <span className={styles.planKV} data-tone="down">止损 {p.slPct}%</span>
-                      <span className={styles.planKV} data-tone="up">止盈 {p.tpPct}%</span>
-                      <span className={styles.planKV}>
-                        ATR {fmt(p.atrAtEntry, p.atrAtEntry >= 100 ? 2 : 6)}
-                      </span>
-                      <span className={styles.planKV}>
-                        开仓时 {REGIME_LABEL[p.regimeAtEntry]?.text || "—"}
-                        {p.rsiAtEntry != null ? ` / RSI ${Math.round(p.rsiAtEntry)}` : ""}
-                      </span>
-                      <span className={styles.planPattern}>{p.name_zh || p.pattern || ""}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {ents.length === 0 && (
-              <div className={styles.muted}>等待指标计算（需至少 30 根K线）…</div>
-            )}
-            <div className={styles.symGrid}>
-              {ents.map(([sym, st]) => (
-                <SymbolCard key={sym} sym={sym} st={st} />
-              ))}
+    <section className={styles.wrap} aria-label="决策依据">
+      <div className={styles.main}>
+        {/* ---------- 主视图：指标矩阵热力图 ---------- */}
+        <div className={styles.matrixWrap}>
+          <div className={styles.legendRow}>
+            <span className={styles.legendLabel}>指标矩阵</span>
+            <span className={styles.legend}>
+              温和
+              <span className={styles.legendBar} />
+              极端
+            </span>
+            <span className={styles.legendHint}>颜色 = 该指标偏离平静态的程度</span>
+          </div>
+          <div className={styles.colHead} style={{ gridTemplateColumns: gridCols }}>
+            <span />
+            {COLS.map((c) => (
+              <span key={c.key} className={styles.colLabel} title={c.hint}>{c.label}</span>
+            ))}
+          </div>
+          <ScrollArea orientation="vertical" fade={10} scrollbars="auto"
+            className={styles.matrixScroll} label="指标矩阵">
+            <div className={styles.matrixBody} style={{ gridTemplateColumns: gridCols }}>
+              {rows.map(([sym, st]) => {
+                const plan = planBySym.get(String(sym).toLowerCase())
+                const side = plan ? (plan.side === "BUY" ? "多" : "空") : ""
+                return (
+                  <FragmentRow key={sym} sym={sym} st={st} side={side} />
+                )
+              })}
+              {rows.length === 0 && (
+                <div className={styles.empty}>等待指标计算（需至少 30 根K线）…</div>
+              )}
             </div>
-          </>
-        )}
+          </ScrollArea>
+        </div>
 
-        {tab === "risk" && (
-          <>
-            <RiskBlock dd={dd} chartColors={chartColors} />
-            <GateBlock log={gateLog} />
-          </>
-        )}
+        {/* ---------- 辅助视图：ATR 风险区间 ---------- */}
+        <div className={styles.riskWrap}>
+          <div className={styles.legendRow}>
+            <span className={styles.legendLabel}>ATR 风险区间</span>
+            <span className={styles.riskLegend}>
+              <i data-tone="sl" />止损
+              <i data-tone="tp" />止盈
+            </span>
+          </div>
+          <div className={styles.riskList}>
+            {rows.map(([sym, st]) => {
+              const b = riskBand(sym, st, params)
+              const total = b.slPct + b.tpPct
+              const slW = total > 0 ? (b.slPct / total) * 100 : 50
+              const rr = b.slPct > 0 ? b.tpPct / b.slPct : 0
+              const plan = planBySym.get(String(sym).toLowerCase())
+              return (
+                <div key={sym} className={styles.riskRow}>
+                  <span className={styles.riskSym}>{SYM(sym)}</span>
+                  <span className={styles.riskBar} title={`止损 ${b.slPct.toFixed(2)}% / 止盈 ${b.tpPct.toFixed(2)}%（ATR ${fmt(st?.atr, st?.atr >= 100 ? 2 : 6)}）`}>
+                    <span className={styles.riskSl} style={{ width: `${slW}%` }} />
+                    <span className={styles.riskTp} style={{ width: `${100 - slW}%` }} />
+                    {plan && <span className={styles.riskEntry} />}
+                  </span>
+                  <span className={styles.riskPct}>
+                    <i data-tone="sl">-{b.slPct.toFixed(2)}</i>
+                    <i data-tone="tp">+{b.tpPct.toFixed(2)}</i>
+                  </span>
+                  <span className={styles.riskRr} title="盈亏比（止盈距离 ÷ 止损距离）">{rr.toFixed(2)}</span>
+                </div>
+              )
+            })}
+            {rows.length === 0 && <div className={styles.empty}>—</div>}
+          </div>
+        </div>
+      </div>
 
-        {tab === "params" && <ParamsBlock p={params} />}
-      </ScrollArea>
+      {/* ---------- 底部：趋势 + 回撤 + 拦截计数 ---------- */}
+      <div className={styles.bottom}>
+        <div className={styles.trendBox}>
+          <span className={styles.trendLegend}>
+            <i data-tone="adx" />ADX
+            <i data-tone="atr" />ATR分位
+          </span>
+          <TrendStrip data={histRef.current} chartColors={chartColors} />
+        </div>
+        <div className={styles.ddBox}>
+          <span className={styles.ddLabel}>回撤</span>
+          <span className={styles.ddVal} style={{ color: ddCur < -0.01 ? (chartColors?.down || "#e11d48") : "inherit" }}>
+            {ddCur.toFixed(2)}%
+          </span>
+          <span className={styles.ddBar}>
+            <span className={styles.ddFill} data-tone={dd?.paused ? "danger" : ddRatio > 0.6 ? "warn" : "ok"}
+              style={{ width: `${ddRatio * 100}%` }} />
+          </span>
+          <span className={styles.ddLimit}>{ddLimit.toFixed(1)}%</span>
+          {dd?.paused && <span className={styles.badgeDanger}>熔断中</span>}
+        </div>
+        <div className={styles.gateBox} title={gateLog.length ? "最近被过滤器拦下的信号" : "暂无拦截"}>
+          <span className={styles.gateNum}>{gateLog.length}</span>
+          <span className={styles.gateLabel}>拦截</span>
+        </div>
+      </div>
     </section>
+  )
+}
+
+/** 热力图的一行：币种名 + 各指标格 */
+function FragmentRow({ sym, st, side }) {
+  const regime = st?.regime
+  return (
+    <>
+      <span className={styles.symCell} title={`${SYM(sym)} ${st?.price != null ? fmt(st.price, st.price >= 1000 ? 1 : 4) : ""}`}>
+        <b>{SYM(sym)}</b>
+        {side && <i data-side={side === "多" ? "long" : "short"}>{side}</i>}
+        {regime === "range" && <u title="震荡市">震</u>}
+        {st?.squeeze && <u data-tone="squeeze" title="布林挤压">挤</u>}
+      </span>
+      {COLS.map((c) => {
+        const t = c.heat(st || {})
+        const txt = c.text(st || {})
+        const isNA = t == null
+        return (
+          <span
+            key={c.key}
+            className={styles.cell}
+            style={isNA ? undefined : { background: heatBg(t), color: heatFg(t) }}
+            data-na={isNA || undefined}
+            title={`${c.label}：${txt}（${c.hint}）`}
+          >
+            {txt}
+          </span>
+        )
+      })}
+    </>
   )
 }

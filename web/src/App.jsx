@@ -726,7 +726,7 @@ export default function App() {
               chartColors={chartColors} />
           </div>
         </div>
-      {/* 第二行：策略分析（决策依据全流程，独占并铺满剩余视窗高度） */}
+      {/* 第二行：决策依据可视化（热力矩阵 + ATR 风险区间 + 趋势条） */}
       <div className="row2">
         <StrategyPanel analysis={quantSnap && quantSnap.analysis} chartColors={chartColors} />
       </div>
