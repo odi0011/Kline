@@ -30,12 +30,13 @@ const fmt = (v, d = 2) => {
   return Math.abs(n) >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: d }) : n.toFixed(d)
 }
 
-/** 热度 0..1 → 底色：青绿（温和）→ 琥珀 → 红（极端） */
+/** 热度 0..1 → 底色：青绿（温和）→ 琥珀（偏离）→ 红（极端） */
 const heatBg = (t) => {
-  const x = Math.max(0, Math.min(1, t))
-  return `hsl(${(162 - 158 * x).toFixed(0)} ${(56 + 24 * x).toFixed(0)}% ${(93 - 47 * x).toFixed(0)}%)`
+  // 用平方根压缩中段：0.7 的"偏高"不该和 1.0 的"极端"一样刺眼
+  const x = Math.max(0, Math.min(1, Math.sqrt(Math.max(0, t - 0.25) / 0.75)))
+  return `hsl(${(162 - 158 * x).toFixed(0)} ${(52 + 26 * x).toFixed(0)}% ${(94 - 48 * x).toFixed(0)}%)`
 }
-const heatFg = (t) => (t > 0.58 ? "#fff" : t > 0.32 ? "#2b3445" : "#66707f")
+const heatFg = (t) => (t > 0.78 ? "#fff" : t > 0.55 ? "#2b3445" : "#66707f")
 
 /** 指标列定义：heat 返回 0..1（null = 数据不足），text 是格内显示值 */
 const COLS = [
