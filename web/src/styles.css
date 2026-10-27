@@ -151,25 +151,28 @@ body {
    不会按视窗分配，必须让 .right 本身不滚动、由内部各行精确分配。
    策略面板内部自带 ScrollArea，压缩后内容仍可滚动查看。 */
 .row2 {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 5fr) minmax(0, 2fr);
   gap: var(--gap);
   flex: 1 1 auto;
   min-height: 0;
 }
 
-/* 第二行等分：左侧币种分析，右侧实时决策编排。 */
+/* 第二行：原有币种分析 30%，实时决策编排 50%，右侧预留给后续板块 20%。 */
 .strategy-slot {
-  flex: 1 1 0;
   min-width: 0;
   display: flex;
   min-height: 0;
 }
 
 .orchestrator-slot {
-  flex: 1 1 0;
   min-width: 0;
   display: flex;
   min-height: 0;
+}
+
+.row2-reserved {
+  min-width: 0;
 }
 
 /* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3）。

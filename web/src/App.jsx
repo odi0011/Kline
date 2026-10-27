@@ -706,7 +706,7 @@ export default function App() {
               chartColors={chartColors} />
           </div>
         </div>
-      {/* 第二行：左侧币种分析 / 右侧实时决策编排，各占 50% */}
+      {/* 第二行：原有币种分析 30% / 实时决策编排 50% / 后续板块预留 20% */}
       <div className="row2">
         <div className="strategy-slot">
           <StrategyPanel analysis={quantSnap && quantSnap.analysis} symbols={orderedSymbols}
@@ -717,6 +717,7 @@ export default function App() {
             symbols={orderedSymbols} patternStats={patternStats}
             chartColors={chartColors} />
         </div>
+        <div className="row2-reserved" aria-hidden />
       </div>
       {/* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3） */}
       <div className="row3">
