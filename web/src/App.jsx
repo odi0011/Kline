@@ -22,6 +22,10 @@ import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins, S
 
 const WS_PORT = 8765
 const HIT_TTL_MS = 9_000
+// 命中动画队列：最多排队 2 条；排队超过 5 秒的放弃动画（交还流水显示）。
+// 多币同时收线时会一起触发，串行播完要好幾秒，动画必然落后于数据。
+const MAX_QUEUE = 2
+const MAX_WAIT_MS = 5_000
 const SETTINGS_KEY = 'kline.settings.v1'
 const MIN_SYMBOLS = 4
 const MAX_SYMBOLS = 10
@@ -83,6 +87,12 @@ export default function App() {
   const [newsItems, setNewsItems] = useState([])                // 交易所公告
   // 命中动画为 (币种,形态) 插入过流水行的时间戳：抑制引擎随后推送的重复信号
   const hitRowKeysRef = useRef(new Map())
+  // ref 变化本身不会触发重算；放弃动画时要 bump 这个版本号，
+  // 让 visibleEvents 立刻把那一行放回流水（否则该行会被一直压制）。
+  const [hitKeyVersion, setHitKeyVersion] = useState(0)
+  const dropHitKey = (key) => {
+    if (hitRowKeysRef.current.delete(key)) setHitKeyVersion((v) => v + 1)
+  }
   const liveRef = useRef(null)
   const cardsViewportRef = useRef(null)
   const settingsRef = useRef(settings)
@@ -144,7 +154,7 @@ export default function App() {
       }
       return true
     })
-  }, [quantEvents, shownSymbols.join(",")])
+  }, [quantEvents, shownSymbols.join(","), hitKeyVersion])
 
   // 唯一账户：持仓币种排前，池内持仓但未展示的自动添加到其后
   const account = accounts[0] || null
@@ -266,18 +276,34 @@ export default function App() {
     if (done) done(info)
   }
 
-  /** 跑一条命中动画（完整链路） */
+  /** 跑一条命中动画（完整链路）。返回 true 表示流水行已被动画揭示；
+   *  false 表示中途放弃（调用方需撤掉去重键，让流水正常显示该行）。 */
   const runOne = async (hit) => {
+    let revealed = false
+    try {
+      revealed = await runOneInner(hit)
+      return revealed
+    } finally {
+      // 弃播（找不到卡片/锚点等）时也要把高亮与填充清掉，
+      // 否则卡片会一直亮着、背景层卡在半展开状态。
+      if (!revealed) {
+        setCardFill(null)
+        setCardActive(null)
+      }
+    }
+  }
+
+  const runOneInner = async (hit) => {
     // 标记该形态卡为高亮态（滚动与背景扩散都用它）
     setCardActive({ pattern: hit.pattern, direction: hit.direction || "neutral", symbol: hit.symbol })
-    // 1) 形态卡滚动居中。滚动距离为 0 时不必等满 860ms，否则流水动画会明显滞后。
+    // 1) 形态卡滚动居中。滚动距离为 0 时不必等满，否则流水动画会明显滞后。
     const needScroll = scrollToPattern(hit.pattern)
     await sleep(needScroll ? 720 : 60)
 
     const cardEl = document.querySelector(`.pattern-card[data-key="${hit.pattern}"]`)
-    if (!cardEl) return
+    if (!cardEl) return false
     const d = cardEl.getBoundingClientRect()
-    if (!d.width) return
+    if (!d.width) return false
 
     // 2) 起点：源 K 线卡片中最后一根蜡烛的屏幕坐标（取不到退回卡片内偏右位置）
     const anchorFn = anchorsRef.current[hit.symbol]
@@ -285,7 +311,7 @@ export default function App() {
     const srcBox = document.querySelector(`.card[data-symbol="${hit.symbol}"]`)
     const sb = srcBox ? srcBox.getBoundingClientRect() : null
     const from1 = src || (sb ? { x: sb.left + sb.width * 0.62, y: sb.top + sb.height * 0.3 } : null)
-    if (!from1) return
+    if (!from1) return false
 
     // 3) 第一段：蜡烛 → 形态卡中心
     const land1 = await fly({
@@ -384,20 +410,37 @@ export default function App() {
     setCardFill(null)
     if (!jobQueueRef.current.length) setCardActive(null)
     await sleep(120)
+    return true
   }
 
-  /** 队列驱动：一次只跑一条 */
+  /** 队列驱动：一次只跑一条。
+   *
+   * 一致性优先于动画完整：多币同收线时会有多条命中同时到达，串行播完要好幾秒，
+   * 那时数据早已过时、流水里也已经有了新记录。所以：
+   *   · 排队超过 MAX_WAIT_MS 的任务直接放弃动画，交还给流水正常显示；
+   *   · runOne 中途失败（找不到卡片/锚点）同样放弃，让流水行立刻出现。
+   * 判断依据是「这一行最终有没有被揭示」——没揭示就必须撤掉去重键，
+   * 否则那条 signal 会被过滤掉，流水反而缺行。 */
   const pump = () => {
     if (runningRef.current) return
     runningRef.current = true
     ;(async () => {
       while (jobQueueRef.current.length) {
         const job = jobQueueRef.current.shift()
+        const hit = job.hit
+        const key = `${hit.symbol}|${hit.pattern}`
+        const waited = Date.now() - job.enqueuedAt
+        if (waited > MAX_WAIT_MS) {
+          dropHitKey(key)                     // 放弃动画 → 流水恢复显示这一行
+          continue
+        }
+        let revealed = false
         try {
-          await runOne(job)
+          revealed = await runOne(hit)
         } catch (e) {
           console.error("[flight] job failed", e)
         }
+        if (!revealed) dropHitKey(key)
       }
       runningRef.current = false
     })()
@@ -419,18 +462,27 @@ export default function App() {
       const key = h.id || `${h.ts}-${h.symbol}-${h.pattern}`
       if (queuedRef.current.has(key)) continue
       queuedRef.current.add(key)
-      // 立刻登记去重键：量化引擎推送的同一条 signal 流水（几乎与 hit 同时到达）
-      // 必须从这一刻起就被 visibleEvents 过滤掉，否则流水里会先出现一行、
-      // 而动画还在队列里等——那正是"流水先有、动画后跑"的滞后感来源。
-      hitRowKeysRef.current.set(`${h.symbol}|${h.pattern}`, Date.now())
       fresh.push(h)
     }
     if (!fresh.length) return
     // 去重集合只保留最近 500 条，防长时间运行无限增长
     if (queuedRef.current.size > 500) queuedRef.current.clear()
     // hits 最新在前 → 反转成时间正序；上限 8 条防止突发刷屏
-    jobQueueRef.current.push(...fresh.reverse())
-    if (jobQueueRef.current.length > 8) jobQueueRef.current.splice(0, jobQueueRef.current.length - 8)
+    const ordered = fresh.reverse()
+    // 队列容量：正在播的 1 条 + 排队 MAX_QUEUE 条。多币同时收线时超出容量的
+    // 命中不再排队（串行播完要好几秒，那时数据早已过时），直接让流水显示。
+    let room = MAX_QUEUE - jobQueueRef.current.length
+    for (const h of ordered) {
+      const rowKey = `${h.symbol}|${h.pattern}`
+      if (room <= 0) continue                      // 不播动画，也不登记去重键 → 流水照常显示
+      // 立刻登记去重键：量化引擎推送的同一条 signal 流水（几乎与 hit 同时到达）
+      // 必须从这一刻起就被 visibleEvents 过滤掉，否则流水里会先出现一行、
+      // 而动画还在队列里等——那正是"流水先有、动画后跑"的滞后感来源。
+      hitRowKeysRef.current.set(rowKey, Date.now())
+      jobQueueRef.current.push({ hit: h, enqueuedAt: Date.now() })
+      room--
+    }
+    if (!jobQueueRef.current.length) return
     pump()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hits])
