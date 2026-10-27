@@ -318,8 +318,18 @@ export default function App() {
     //    不再伪造占位行——伪造的行揭示完就被删，用户会看到"闪一下就没了"，
     //    而真正该看的那一行反而被压掉。现在飞线指向的就是真实行，动画只是
     //    "把它指出来并高亮一下"，不承担承载数据的职责。
-    const sel = `[data-event-row][data-ev-symbol="${hit.symbol}"][data-ev-pattern="${hit.pattern}"]`
-    const findRow = () => (streamRef.current ? streamRef.current.querySelector(sel) : null)
+    //    选择器必须带 kind="signal"：同一币同形态还会有一条 skip/open 记录
+    //    （如「收到十字星中性信号」+「十字星没有方向，不下单」），
+    //    不带 kind 会把两行都选中，波点会同时展开在两行上。
+    const sel = `[data-event-row][data-ev-kind="signal"]`
+      + `[data-ev-symbol="${hit.symbol}"][data-ev-pattern="${hit.pattern}"]`
+    // 同一个 (币,形态) 可能有多条历史 signal 行：取时间最新的那一条（DOM 末尾）
+    const findRow = () => {
+      const vp = streamRef.current
+      if (!vp) return null
+      const all = vp.querySelectorAll(sel)
+      return all.length ? all[all.length - 1] : null
+    }
     let rowEl = findRow()
     for (let i = 0; i < 12 && !rowEl; i++) {
       await sleep(120)
@@ -361,8 +371,16 @@ export default function App() {
       fly: 620,
     })
 
-    // 7) 高亮这条已存在的行（波纹 + 底色脉冲），不新增/不删除任何内容
-    setFlashRow({ key: `${hit.symbol}|${hit.pattern}`, tone: hit.direction || "neutral" })
+    // 7) 高亮这条已存在的行（底色脉冲），只作用于这一条 signal 行。
+    //    用「币+形态+kind+时间下限」定位：同一币同形态的历史行有很多条，
+    //    只认动画开始之后新出现的那一条（ts >= 入队时刻）。
+    setFlashRow({
+      symbol: hit.symbol,
+      pattern: hit.pattern,
+      kind: "signal",
+      since: Number(hit.ts) || 0,
+      tone: hit.direction || "neutral",
+    })
     await sleep(1200)
     setFlashRow(null)
 

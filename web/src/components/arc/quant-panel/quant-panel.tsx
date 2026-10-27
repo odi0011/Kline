@@ -16,7 +16,9 @@ import styles from "./quant-panel.module.css"
 const ROW_H = 22          // 固定行高（虚拟滚动依赖固定高度）
 const OVERSCAN = 10       // 视口上下额外渲染行数
 const NEW_MS = 900        // 新行高亮/动画时长
-const ENTER_GAP = 150     // 逐条入场间隔（同批到多条时一条条冒出来）
+// 逐条入场间隔：同一批到达的多条记录（如「收到信号」+「不下单」同毫秒产生）
+// 必须拉开明显距离，视觉上才是"第一条先展开、第二条随后出现"。
+const ENTER_GAP = 420
 
 const KIND_META = {
   signal: { Icon: Search, tone: "signal" },
@@ -140,7 +142,6 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
   const [viewH, setViewH] = useState(0)
   const [compact, setCompact] = useState(false)   // 窄容器：省略次要信息
   // 飞线落点指向的是「真实事件行」，这里只负责把它高亮一下，不插入任何伪造行。
-  const flashKey = flashRow ? flashRow.key : null
   const [follow, setFollow] = useState(true)
   const [, setTick] = useState(0)
   const wrapRef = useRef(null)
@@ -257,12 +258,18 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
           <div className={styles.spacer} style={{ height: total * ROW_H }}>
             {slice.map((ev, i) => {
               const idx = start + i
+              // 高亮只命中最新的那一条 signal 行（同币同形态的历史行不参与）
+              const isFlash = !!flashRow
+                && ev.kind === flashRow.kind
+                && ev.symbol === flashRow.symbol
+                && ev.pattern === flashRow.pattern
+                && (ev.ts || 0) >= (flashRow.since || 0)
               return (
                 <div key={ev.id ?? idx} className={styles.rowSlot}
                   data-event-row="" data-ev-symbol={ev.symbol || ""} data-ev-pattern={ev.pattern || ""}
                   data-ev-kind={ev.kind || ""}
-                  data-flash={flashKey && `${ev.symbol}|${ev.pattern}` === flashKey ? "y" : undefined}
-                  data-flash-tone={flashKey && `${ev.symbol}|${ev.pattern}` === flashKey ? flashRow.tone : undefined}
+                  data-flash={isFlash ? "y" : undefined}
+                  data-flash-tone={isFlash ? flashRow.tone : undefined}
                   style={{ transform: `translateY(${idx * ROW_H}px)` }}>
                   <EventRow ev={ev} chartColors={chartColors} compact={compact}
                     prevTs={events[idx - 1]?.ts} isNew={isNew(ev.id)} />
