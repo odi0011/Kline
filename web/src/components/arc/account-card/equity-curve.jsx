@@ -32,13 +32,20 @@ function decimate(samples, max = MAX_POINTS) {
     const from = Math.floor((i * n) / max)
     const to = Math.max(from + 1, Math.floor(((i + 1) * n) / max))
     let bal = 0, upnl = 0, count = 0
+    let same = true
+    const first = samples[from]
     for (let j = from; j < to; j++) {
+      if (samples[j].bal !== first.bal || (samples[j].upnl ?? 0) !== (first.upnl ?? 0)) same = false
       bal += samples[j].bal
       upnl += samples[j].upnl ?? 0
       count++
     }
     const mid = samples[Math.min(n - 1, Math.floor((from + to) / 2))]
-    out.push({ t: mid.t, bal: bal / count, upnl: upnl / count })
+    // 桶内值全相同就直接用原值：走平均会引入 1e-13 级浮点误差，
+    // 那种误差一旦被 toY 按 span 归一化，就会放大成满量程假锯齿。
+    out.push(same
+      ? { t: mid.t, bal: first.bal, upnl: first.upnl ?? 0 }
+      : { t: mid.t, bal: bal / count, upnl: upnl / count })
   }
   return out
 }
@@ -109,7 +116,13 @@ export default function EquityCurve({ samples, hue, height = 46, onHover }) {
     const max = Math.max(...vals)
     const span = max - min
     const innerH = Math.max(1, box.h - INSET * 2)
-    const toY = (v) => INSET + (span > 0 ? (1 - (v - min) / span) * innerH : innerH / 2)
+    // 量程下限：权益的 0.02%（如 7000 USDT → 1.4 USDT）。
+    // 没有它时，极小的真实波动（甚至浮点噪声）会被归一化放大成满量程，
+    // 在图上看起来像剧烈震荡，而实际上账户几乎没动。
+    const mag = Math.max(Math.abs(max), Math.abs(min), 1)
+    const useSpan = Math.max(span, mag * 0.0002)
+    const mid = (max + min) / 2
+    const toY = (v) => INSET + (0.5 - (v - mid) / useSpan) * innerH
     const toX = (i) => (pts.length === 1 ? box.w : (i / (pts.length - 1)) * box.w)
     const coords = pts.map((s, i) => [toX(i), toY(s.bal)])
     const line = smoothPath(coords)
