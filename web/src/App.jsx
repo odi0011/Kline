@@ -403,40 +403,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hits])
 
-  /** 演示：模拟一次形态命中（只在前端注入，不落库、不触发真实交易）。
-      kind = "single" 单个形态 / "multi" 多个币同时触发 / "variety" 不同形态依次触发 */
-  const runDemo = (kind = "single") => {
-    const patterns = Object.keys(PATTERN_META)
-    const pool = shownSymbols.length ? shownSymbols : ["btcusdt"]
-    const pick = (arr) => arr[Math.floor(Math.random() * arr.length)]
-    const make = (sym, key) => {
-      const meta = PATTERN_META[key]
-      return {
-        id: `demo-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        symbol: sym, interval: defaultIv, pattern: key,
-        name_zh: meta.name, direction: meta.dir,
-        mode: "confirmed", price: 100 + Math.random() * 100,
-        ts: Date.now(),
-      }
-    }
-    // 动画链会在第二段飞线前自行插入占位行，这里只注入 hit。
-    // 多个同时注入，用来验证串行队列：应一条条完整播放而不是齐飞。
-    const fire = (h) => setHits((x) => [h, ...x].slice(0, 8))
-    if (kind === "multi") {
-      const n = Math.min(pool.length, 4)
-      const syms = [...pool].sort(() => Math.random() - 0.5).slice(0, n)
-      syms.forEach((sym) => fire(make(sym, pick(patterns))))
-      return
-    }
-    if (kind === "variety") {
-      const sym = pick(pool)
-      const keys = [...patterns].sort(() => Math.random() - 0.5).slice(0, 3)
-      keys.forEach((key) => fire(make(sym, key)))
-      return
-    }
-    fire(make(pick(pool), pick(patterns)))
-  }
-
   // 设置持久化
   useEffect(() => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
@@ -669,17 +635,6 @@ export default function App() {
           <div className="wallet-zone">
             <AccountCard account={account} series={accountSeries} accent={ui.themeColor}
               chartColors={chartColors} />
-            <div className="demo-actions">
-              <button type="button" className="demo-btn" onClick={() => runDemo("single")}>
-                模拟触发
-              </button>
-              <button type="button" className="demo-btn" onClick={() => runDemo("multi")}>
-                多币同时
-              </button>
-              <button type="button" className="demo-btn" onClick={() => runDemo("variety")}>
-                不同形态
-              </button>
-            </div>
           </div>
         </div>
       {/* 第二行：决策流水 / 仓位历史 / 交易所公告（各 1/3） */}
