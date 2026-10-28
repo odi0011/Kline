@@ -1,16 +1,30 @@
 import { useEffect, useRef, useState } from "react"
 import * as THREE from "three"
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js"
+import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js"
 import styles from "./decision-orchestrator.module.css"
 
+const RING_RADIUS = 3.2
+const RING_Y = 0.62
+const HUB_POSITION = [0, 1.3, 0]
+const stationAt = (angleDeg) => {
+  const angle = (angleDeg * Math.PI) / 180
+  return [Math.cos(angle) * RING_RADIUS, RING_Y, Math.sin(angle) * RING_RADIUS]
+}
+
 const NODE_DEFINITIONS = [
-  { id: "intake", position: [-3.35, 0.68, 2.05] },
-  { id: "features", position: [-2.65, 1.0, -1.7] },
-  { id: "decision", position: [0, 1.22, 0] },
-  { id: "risk", position: [2.35, 0.96, -1.85] },
-  { id: "execution", position: [3.2, 0.78, 1.0] },
-  { id: "feedback", position: [0.3, 0.62, 2.9] },
+  { id: "intake", position: stationAt(170) },
+  { id: "features", position: stationAt(242) },
+  { id: "decision", position: HUB_POSITION },
+  { id: "risk", position: stationAt(314) },
+  { id: "execution", position: stationAt(26) },
+  { id: "feedback", position: stationAt(98) },
 ]
+
+const ringPoint = (t, target) => {
+  const angle = t * Math.PI * 2
+  return target.set(Math.cos(angle) * RING_RADIUS, RING_Y, Math.sin(angle) * RING_RADIUS)
+}
 
 const makeGlowTexture = () => {
   const canvas = document.createElement("canvas")
@@ -59,6 +73,28 @@ const makeQuartzTexture = () => {
   const texture = new THREE.CanvasTexture(canvas)
   texture.colorSpace = THREE.SRGBColorSpace
   texture.anisotropy = 4
+  return texture
+}
+
+const makeBrushedTexture = () => {
+  const canvas = document.createElement("canvas")
+  canvas.width = 256
+  canvas.height = 256
+  const context = canvas.getContext("2d")
+  context.fillStyle = "#e9edf1"
+  context.fillRect(0, 0, 256, 256)
+  for (let line = 0; line < 256; line += 1) {
+    context.strokeStyle = `rgba(140,152,165,${0.04 + ((line * 37) % 10) * 0.008})`
+    context.lineWidth = 0.6
+    context.beginPath()
+    context.moveTo(0, line + 0.5)
+    context.lineTo(256, line + 0.5)
+    context.stroke()
+  }
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.wrapS = THREE.RepeatWrapping
+  texture.wrapT = THREE.RepeatWrapping
   return texture
 }
 
@@ -281,7 +317,7 @@ export default function QuantScene({
     for (let index = 0; index < 9; index += 1) {
       const angle = (index / 9) * Math.PI * 2 + 0.22
       const chip = new THREE.Group()
-      const body = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.035, 0.11), chipBody)
+      const body = new THREE.Mesh(new RoundedBoxGeometry(0.16, 0.035, 0.11, 2, 0.008), chipBody)
       const cap = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.014, 0.07), chipCap)
       cap.position.y = 0.024
       chip.add(body, cap)
@@ -340,40 +376,43 @@ export default function QuantScene({
     world.add(circuits)
 
     const scan = new THREE.Mesh(
-      new THREE.CircleGeometry(4.02, 48, 0, Math.PI / 7),
+      new THREE.TorusGeometry(4.06, 0.016, 6, 48, Math.PI / 4.5),
       new THREE.MeshBasicMaterial({
         color: teal,
         transparent: true,
-        opacity: 0.075,
-        side: THREE.DoubleSide,
+        opacity: 0.5,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       }),
     )
-    scan.rotation.x = -Math.PI / 2
-    scan.position.y = -0.016
-    world.add(scan)
+    scan.rotation.x = Math.PI / 2
+    scan.position.y = -0.02
+    const scanPivot = new THREE.Group()
+    scanPivot.add(scan)
+    world.add(scanPivot)
 
-    const points = NODE_DEFINITIONS.map((node) => new THREE.Vector3(...node.position))
-    const curve = new THREE.CatmullRomCurve3(points, true, "catmullrom", 0.32)
+    const ringPoints = []
+    for (let index = 0; index <= 240; index += 1) ringPoints.push(ringPoint(index / 240, new THREE.Vector3()))
     const track = new THREE.Mesh(
-      new THREE.TubeGeometry(curve, 360, 0.014, 6, true),
+      new THREE.TorusGeometry(RING_RADIUS, 0.018, 8, 200),
       new THREE.MeshBasicMaterial({
         color: accent,
         transparent: true,
-        opacity: 0.58,
+        opacity: 0.62,
         depthWrite: false,
       }),
     )
+    track.rotation.x = Math.PI / 2
+    track.position.y = RING_Y
     track.renderOrder = 2
     world.add(track)
 
     const trackLine = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints(curve.getPoints(360)),
+      new THREE.BufferGeometry().setFromPoints(ringPoints),
       new THREE.LineDashedMaterial({
         color: teal,
         transparent: true,
-        opacity: 0.5,
+        opacity: 0.55,
         dashSize: 0.08,
         gapSize: 0.12,
         depthWrite: false,
@@ -383,9 +422,29 @@ export default function QuantScene({
     trackLine.renderOrder = 3
     world.add(trackLine)
 
+    const hubTarget = new THREE.Vector3(0, 1.02, 0)
+    const spokes = []
+    for (const definition of NODE_DEFINITIONS) {
+      if (definition.id === "decision") continue
+      const station = new THREE.Vector3(...definition.position)
+      const spoke = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([station, hubTarget]),
+        new THREE.LineBasicMaterial({
+          color: teal,
+          transparent: true,
+          opacity: 0.28,
+          depthWrite: false,
+        }),
+      )
+      world.add(spoke)
+      spokes.push({ station, color: definition.id === "execution" || definition.id === "feedback" ? teal : accent })
+    }
+
     const nodes = new Map()
+    const brushedTexture = makeBrushedTexture()
     const neutralMaterial = new THREE.MeshStandardMaterial({
       color: pale,
+      map: brushedTexture,
       roughness: 0.42,
       metalness: 0.18,
     })
@@ -410,7 +469,7 @@ export default function QuantScene({
 
       const baseTop = new THREE.Mesh(
         new THREE.CylinderGeometry(0.36, 0.4, 0.05, 32),
-        new THREE.MeshStandardMaterial({ color: 0xc7cfd8, roughness: 0.26, metalness: 0.8 }),
+        new THREE.MeshStandardMaterial({ color: 0xc7cfd8, map: brushedTexture, roughness: 0.26, metalness: 0.8 }),
       )
       baseTop.position.y = -y + 0.1
       group.add(baseTop)
@@ -504,12 +563,12 @@ export default function QuantScene({
         for (let index = 0; index < 3; index += 1) {
           const layer = new THREE.Group()
           const box = new THREE.Mesh(
-            new THREE.BoxGeometry(0.58, 0.1, 0.58),
+            new RoundedBoxGeometry(0.58, 0.1, 0.58, 2, 0.02),
             makeGlowMaterial({ transparent: true, opacity: 0.9, emissiveIntensity: 0.12 }),
           )
           box.castShadow = true
           const edges = new THREE.LineSegments(
-            new THREE.EdgesGeometry(box.geometry),
+            new THREE.EdgesGeometry(new THREE.BoxGeometry(0.58, 0.1, 0.58)),
             new THREE.LineBasicMaterial({ color: nodeColor, transparent: true, opacity: 0.52 }),
           )
           layer.add(box, edges)
@@ -641,10 +700,25 @@ export default function QuantScene({
       }
 
       if (definition.id === "risk") {
-        const shield = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.4, 0.4, 0.18, 6),
-          makeGlowMaterial({ emissiveIntensity: 0.14 }),
-        )
+        const hexShape = new THREE.Shape()
+        for (let index = 0; index < 6; index += 1) {
+          const angle = (index / 6) * Math.PI * 2
+          const px = Math.cos(angle) * 0.4
+          const py = Math.sin(angle) * 0.4
+          if (index === 0) hexShape.moveTo(px, py)
+          else hexShape.lineTo(px, py)
+        }
+        hexShape.closePath()
+        const hexGeometry = new THREE.ExtrudeGeometry(hexShape, {
+          depth: 0.14,
+          bevelEnabled: true,
+          bevelThickness: 0.02,
+          bevelSize: 0.02,
+          bevelSegments: 2,
+        })
+        hexGeometry.center()
+        hexGeometry.rotateX(-Math.PI / 2)
+        const shield = new THREE.Mesh(hexGeometry, makeGlowMaterial({ emissiveIntensity: 0.14 }))
         shield.rotation.y = Math.PI / 6
         shield.castShadow = true
         visual.add(shield)
@@ -793,6 +867,12 @@ export default function QuantScene({
       offset: index / 10,
       speed: 0.052,
     }))
+    const spokePackets = spokes.map((spoke, index) => {
+      const mesh = new THREE.Mesh(packetGeometry, new THREE.MeshBasicMaterial({ color: spoke.color }))
+      mesh.scale.setScalar(0.72)
+      world.add(mesh)
+      return { mesh, station: spoke.station, offset: index / spokes.length }
+    })
     const injections = []
     const projected = new THREE.Vector3()
     const scaleTarget = new THREE.Vector3()
@@ -867,7 +947,7 @@ export default function QuantScene({
     const animate = (now) => {
       const time = reduced || enabledRef.current === false ? 0 : now / 1000
       const motionTime = time
-      scan.rotation.z = -motionTime * 0.22
+      scanPivot.rotation.y = -motionTime * 0.22
       circuits.children.forEach((line, index) => {
         line.material.opacity = 0.16 + (Math.sin(motionTime * 1.4 + index * 0.7) + 1) * 0.07
       })
@@ -931,11 +1011,17 @@ export default function QuantScene({
 
       for (const packet of packets) {
         const t = (packet.offset + motionTime * packet.speed) % 1
-        curve.getPointAt(t, packet.head.position)
+        ringPoint(t, packet.head.position)
         packet.trails.forEach((trail, index) => {
           const trailT = (t - (index + 1) * 0.0035 + 1) % 1
-          curve.getPointAt(trailT, trail.position)
+          ringPoint(trailT, trail.position)
         })
+      }
+
+      for (const packet of spokePackets) {
+        const cycle = (motionTime * 0.22 + packet.offset) % 1
+        const progress = cycle < 0.5 ? cycle * 2 : (1 - cycle) * 2
+        packet.mesh.position.lerpVectors(packet.station, hubTarget, progress)
       }
 
       for (const [id, schedule] of pulseScheduleRef.current) {
@@ -965,10 +1051,10 @@ export default function QuantScene({
           }
           continue
         }
-        curve.getPointAt(progress, packet.head.position)
+        ringPoint(progress, packet.head.position)
         packet.trails.forEach((trail, trailIndex) => {
           const trailT = (progress - (trailIndex + 1) * 0.005 + 1) % 1
-          curve.getPointAt(trailT, trail.position)
+          ringPoint(trailT, trail.position)
         })
       }
 
