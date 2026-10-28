@@ -161,8 +161,8 @@ export default function StrategyPanel({ analysis, symbols, chartColors, onMetric
   const lastPulseRef = useRef(new Map())
   const [flowVisible, setFlowVisible] = useState(false)
 
-  // 指标飞线只在第二行和接收节点都完整可见时发射；被裁切、缩放或滚出视口时
-  // 自动关闭，避免从用户看不到的位置凭空出现一条线。
+  // 指标飞线只在第二行可见，且星云软包围盒或任一小节点在视口内时发射。
+  // 被裁切、缩放或滚出视口时自动关闭，避免从用户看不到的位置凭空出现一条线。
   useEffect(() => {
     if (typeof IntersectionObserver === "undefined") return
     const host = document.querySelector(".orchestrator-slot")
@@ -184,12 +184,28 @@ export default function StrategyPanel({ analysis, symbols, chartColors, onMetric
       const targetRect = targetEl.getBoundingClientRect()
       // 0.99 太严：浏览器工具栏/滚动条轻微裁切就会永久关飞线。
       const rowVisible = rowEntry?.isIntersecting && rowEntry.intersectionRatio >= 0.72
-      const targetVisible = targetEntry?.isIntersecting && targetEntry.intersectionRatio >= 0.72
+      const targetVisible = targetEntry?.isIntersecting && targetEntry.intersectionRatio >= 0.55
       const rowUsable = rowRect.height >= 200 && rowRect.width >= 240
         && rowRect.top >= -24 && rowRect.bottom <= window.innerHeight + 24
       const targetUsable = targetRect.height >= 12 && targetRect.width >= 16
-        && targetRect.top >= rowRect.top - 8 && targetRect.bottom <= rowRect.bottom + 8
-      setFlowVisible(Boolean(rowVisible && targetVisible && rowUsable && targetUsable))
+        && targetRect.top >= rowRect.top - 16 && targetRect.bottom <= rowRect.bottom + 16
+        && targetRect.left >= rowRect.left - 16 && targetRect.right <= rowRect.right + 16
+      let nodeInside = false
+      if (!(targetVisible && targetUsable)) {
+        const nodes = document.querySelectorAll("[data-metric-node]")
+        for (const el of nodes) {
+          const rect = el.getBoundingClientRect()
+          const x = rect.left + rect.width / 2
+          const y = rect.top + rect.height / 2
+          if (x >= rowRect.left + 4 && x <= rowRect.right - 4
+            && y >= rowRect.top + 4 && y <= rowRect.bottom - 4
+            && x >= 0 && x <= window.innerWidth && y >= 0 && y <= window.innerHeight) {
+            nodeInside = true
+            break
+          }
+        }
+      }
+      setFlowVisible(Boolean(rowVisible && rowUsable && ((targetVisible && targetUsable) || nodeInside)))
     }
 
     const bind = () => {

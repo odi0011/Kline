@@ -27,6 +27,16 @@ function clamp(value, low, high) {
   return Math.min(high, Math.max(low, value))
 }
 
+function thinTargets(list, max) {
+  if (list.length <= max) return list.slice()
+  const out = []
+  const step = list.length / max
+  for (let i = 0; i < max; i += 1) {
+    out.push(list[Math.min(list.length - 1, Math.floor(i * step))])
+  }
+  return out
+}
+
 function mulberry32(seed) {
   let a = seed >>> 0
   return () => {
@@ -558,6 +568,7 @@ export function createNebulaScene(host, options = {}) {
       setNodes() {},
       setReduced() {},
       setOnFrame() {},
+      getIntakeTargets() { return [] },
       resize() {},
       dispose() {},
     }
@@ -711,10 +722,29 @@ export function createNebulaScene(host, options = {}) {
     paintCoins()
   }
 
+  const particleSamples = []
+  const addParticleSamples = (mesh, prefix, count) => {
+    const attr = mesh?.geometry?.getAttribute("position")
+    const total = attr?.count || 0
+    if (!total || count <= 0) return
+    const n = Math.min(count, total)
+    for (let i = 0; i < n; i += 1) {
+      const index = Math.floor(((i + 0.5) * total) / n) % total
+      particleSamples.push({ id: `${prefix}-${i}`, mesh, index })
+    }
+  }
+  addParticleSamples(dust.points, "dust", 8)
+  mist.forEach((layer, index) => addParticleSamples(layer.points, `mist-${index}`, 4))
+  addParticleSamples(network.dots.points, "net", 6)
+  rings.forEach((ring, index) => addParticleSamples(ring.dust.points, `rdust-${index}`, 3))
+
   const clock = new THREE.Clock()
   const projected = new THREE.Vector3()
   const worldPoint = new THREE.Vector3()
   const centerPoint = new THREE.Vector3()
+  const intakeLocal = new THREE.Vector3()
+  const intakeProjected = new THREE.Vector3()
+  let intakeTargets = []
   let raf = 0
   let stretchX = 1
   let stretchY = 1
@@ -802,7 +832,7 @@ export function createNebulaScene(host, options = {}) {
       const padY = clamp(state.height * 0.08, 42, 68)
       let rawX = (projected.x * 0.5 + 0.5) * state.width
       let rawY = (-projected.y * 0.5 + 0.5) * state.height
-      // 玻璃资金牌占住中心，评分牌沿径向让开，避免盖住总资金数字
+      // 亮核占住中心，评分牌沿径向让开
       const clearR = Math.min(state.width, state.height) * 0.3
       const rdx = rawX - state.width / 2
       const rdy = rawY - state.height / 2
@@ -870,12 +900,53 @@ export function createNebulaScene(host, options = {}) {
       y: (-centerPoint.y * 0.5 + 0.5) * state.height,
     }
 
+    const rawTargets = []
+    const projectIntake = (world) => {
+      intakeProjected.copy(world).project(camera)
+      if (intakeProjected.z >= 1 || intakeProjected.z <= -1) return null
+      const x = (intakeProjected.x * 0.5 + 0.5) * state.width
+      const y = (-intakeProjected.y * 0.5 + 0.5) * state.height
+      if (x < 10 || y < 10 || x > state.width - 10 || y > state.height - 10) return null
+      return { x, y }
+    }
+    const pushTarget = (id, world) => {
+      const hit = projectIntake(world)
+      if (!hit) return
+      rawTargets.push({ id, x: hit.x, y: hit.y })
+    }
+    particleSamples.forEach((sample) => {
+      const attr = sample.mesh.geometry.getAttribute("position")
+      if (!attr || sample.index >= attr.count) return
+      intakeLocal.set(attr.getX(sample.index), attr.getY(sample.index), attr.getZ(sample.index))
+      sample.mesh.localToWorld(intakeLocal)
+      pushTarget(sample.id, intakeLocal)
+    })
+    rings.forEach((ring, ringIndex) => {
+      ring.sparks.forEach((spark, sparkIndex) => {
+        spark.getWorldPosition(intakeLocal)
+        pushTarget(`spark-${ringIndex}-${sparkIndex}`, intakeLocal)
+      })
+    })
+    coinWorld.forEach((point, index) => {
+      const id = nodeMeshes[index]?.userData?.id
+      if (id) pushTarget(`node-${id}`, point)
+    })
+    const minR = Math.min(state.width, state.height) * 0.1
+    const clear = rawTargets.filter((point) => !(point.x < 180 && point.y < 124))
+    const pool = clear.length >= 4 ? clear : rawTargets
+    const spread = pool.filter((point) => Math.hypot(point.x - center.x, point.y - center.y) >= minR)
+    const picked = (spread.length >= 5 ? spread : pool)
+      .slice()
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    intakeTargets = thinTargets(picked, 24)
+
     renderer.setClearColor(bg, 1)
     renderer.render(scene, camera)
 
     if (state.onFrame) {
       state.onFrame({
         nodes: overlay,
+        intakeTargets,
         center,
         width: state.width,
         height: state.height,
@@ -928,6 +999,9 @@ export function createNebulaScene(host, options = {}) {
     },
     setOnFrame(fn) {
       state.onFrame = typeof fn === "function" ? fn : null
+    },
+    getIntakeTargets() {
+      return intakeTargets.map((item) => ({ ...item }))
     },
     resize,
     dispose() {
