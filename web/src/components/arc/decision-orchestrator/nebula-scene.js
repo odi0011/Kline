@@ -23,18 +23,68 @@ const SLOT = {
 
 const COIN_SLOTS = [SLOT.accent, SLOT.cyan, SLOT.magenta, SLOT.success, SLOT.sky, SLOT.deep]
 
-function clamp(value, low, high) {
-  return Math.min(high, Math.max(low, value))
+// 四条主环按币种固定：金 / 青 / 品红 / 绿，对应 btc eth bnb sol。多出来的环留给其余币。
+const COIN_BASES = ["btc", "eth", "bnb", "sol"]
+const IMPULSE_PEAK = { boost: 3.2, reverse: -3.4 }
+const liveScenes = new Set()
+
+export function baseSymbol(symbol) {
+  return String(symbol || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .replace(/usdt$/, "")
 }
 
-function thinTargets(list, max) {
-  if (list.length <= max) return list.slice()
-  const out = []
-  const step = list.length / max
-  for (let i = 0; i < max; i += 1) {
-    out.push(list[Math.min(list.length - 1, Math.floor(i * step))])
+function assignRingSymbols(rings, nodes) {
+  const list = Array.isArray(nodes) ? nodes : []
+  const ringOf = new Map()
+  const used = new Set()
+  for (const node of list) {
+    const preferred = COIN_BASES.indexOf(baseSymbol(node?.id))
+    if (preferred >= 0 && preferred < rings.length && !used.has(preferred)) {
+      used.add(preferred)
+      ringOf.set(node.id, preferred)
+    }
   }
-  return out
+  for (const node of list) {
+    if (ringOf.has(node.id)) continue
+    let index = rings.findIndex((_, i) => !used.has(i))
+    if (index < 0) index = ringOf.size % Math.max(1, rings.length)
+    used.add(index)
+    ringOf.set(node.id, index)
+  }
+  rings.forEach((ring, index) => {
+    const owner = list.find((node) => ringOf.get(node.id) === index)
+    ring.base = owner ? baseSymbol(owner.id) : (COIN_BASES[index] || null)
+    ring.symbol = owner ? String(owner.id).toLowerCase() : null
+    if (ring.tilt) {
+      ring.tilt.userData.symbol = ring.symbol || ""
+      ring.tilt.userData.base = ring.base || ""
+    }
+  })
+  return ringOf
+}
+
+function impulseOffset(impulse, now) {
+  if (!impulse) return 0
+  const duration = impulse.duration || 1000
+  const elapsed = now - impulse.start
+  if (elapsed < 0 || elapsed >= duration) return 0
+  const env = Math.sin(Math.PI * (elapsed / duration))
+  const peak = impulse.mode === "reverse" ? IMPULSE_PEAK.reverse : IMPULSE_PEAK.boost
+  return peak * env
+}
+
+export function nudgeRing(symbol, options = {}) {
+  let nudged = false
+  for (const scene of liveScenes) {
+    if (typeof scene.nudgeRing === "function" && scene.nudgeRing(symbol, options)) nudged = true
+  }
+  return nudged
+}
+
+function clamp(value, low, high) {
+  return Math.min(high, Math.max(low, value))
 }
 
 function mulberry32(seed) {
@@ -528,8 +578,21 @@ function buildRings(palette) {
       return spark
     })
 
+    const anchors = []
+    const anchorCount = 8
+    for (let i = 0; i < anchorCount; i += 1) {
+      const jitter = ((i * 47) % 11) / 11
+      const angle = ((i + jitter * 0.55) / anchorCount) * Math.PI * 2
+      const anchor = new THREE.Object3D()
+      anchor.position.set(Math.cos(angle) * spec.rx, Math.sin(angle) * spec.ry, 0)
+      anchor.userData.index = i
+      stretch.add(anchor)
+      anchors.push(anchor)
+    }
+
     return {
       spec, tilt, spin, stretch, tube, sparks, dust, tickSlots, tickColorAttr,
+      anchors, phase: 0, sparkPhase: 0, impulse: null, base: null, symbol: null,
     }
   })
 }
@@ -539,6 +602,7 @@ export function createNebulaScene(host, options = {}) {
     nodes: options.nodes || [],
     reduced: Boolean(options.reduced),
     onFrame: typeof options.onFrame === "function" ? options.onFrame : null,
+    intakeTargets: [],
     disposed: false,
     width: 1,
     height: 1,
@@ -569,6 +633,7 @@ export function createNebulaScene(host, options = {}) {
       setReduced() {},
       setOnFrame() {},
       getIntakeTargets() { return [] },
+      nudgeRing() { return false },
       resize() {},
       dispose() {},
     }
@@ -638,6 +703,8 @@ export function createNebulaScene(host, options = {}) {
   linkLine.renderOrder = 7
   scene.add(linkLine)
 
+  const syncRingSymbols = (nodes) => assignRingSymbols(rings, nodes)
+
   const paintCoins = () => {
     nodeMeshes.forEach((mesh, index) => {
       const slot = COIN_SLOTS[index % COIN_SLOTS.length]
@@ -659,6 +726,7 @@ export function createNebulaScene(host, options = {}) {
       })
     }
     nodeMeshes.length = 0
+    const ringOf = syncRingSymbols(nodes)
     nodes.forEach((node, index) => {
       const slot = COIN_SLOTS[index % COIN_SLOTS.length]
       const color = toneColor(palette, slot, "particle")
@@ -681,13 +749,15 @@ export function createNebulaScene(host, options = {}) {
       halo.renderOrder = 8
       pivot.add(halo)
       pivot.add(glowMesh)
+      const ringIndex = ringOf.get(node.id)
       pivot.userData = {
         id: node.id,
+        symbol: String(node.id || "").toLowerCase(),
         label: node.label,
         color: `#${color.getHexString()}`,
         pct: node.pct,
         score: node.score,
-        ring: (node.ring ?? index) % rings.length,
+        ring: Number.isInteger(ringIndex) ? ringIndex : (node.ring ?? index) % rings.length,
         baseAngle: node.baseAngle || 0,
         drift: node.drift || 0,
         bob: node.bob || 0,
@@ -722,29 +792,11 @@ export function createNebulaScene(host, options = {}) {
     paintCoins()
   }
 
-  const particleSamples = []
-  const addParticleSamples = (mesh, prefix, count) => {
-    const attr = mesh?.geometry?.getAttribute("position")
-    const total = attr?.count || 0
-    if (!total || count <= 0) return
-    const n = Math.min(count, total)
-    for (let i = 0; i < n; i += 1) {
-      const index = Math.floor(((i + 0.5) * total) / n) % total
-      particleSamples.push({ id: `${prefix}-${i}`, mesh, index })
-    }
-  }
-  addParticleSamples(dust.points, "dust", 8)
-  mist.forEach((layer, index) => addParticleSamples(layer.points, `mist-${index}`, 4))
-  addParticleSamples(network.dots.points, "net", 6)
-  rings.forEach((ring, index) => addParticleSamples(ring.dust.points, `rdust-${index}`, 3))
-
   const clock = new THREE.Clock()
+  let lastTime = null
   const projected = new THREE.Vector3()
   const worldPoint = new THREE.Vector3()
   const centerPoint = new THREE.Vector3()
-  const intakeLocal = new THREE.Vector3()
-  const intakeProjected = new THREE.Vector3()
-  let intakeTargets = []
   let raf = 0
   let stretchX = 1
   let stretchY = 1
@@ -777,12 +829,19 @@ export function createNebulaScene(host, options = {}) {
   const renderFrame = (time) => {
     const reduced = state.reduced
     const t = reduced ? 1.15 : time
+    const dt = lastTime == null ? 0 : clamp(time - lastTime, 0, 0.05)
+    lastTime = time
+    const nowMs = performance.now()
 
     cloudTilt.rotation.z = reduced ? 0.03 : Math.sin(t * 0.17) * 0.04
     cloudTilt.rotation.x = reduced ? 0.08 : 0.06 + Math.sin(t * 0.23) * 0.025
 
     rings.forEach((ring) => {
-      ring.spin.rotation.z = reduced ? ring.spec.hold : t * ring.spec.speed
+      if (ring.impulse && nowMs >= ring.impulse.start + ring.impulse.duration) ring.impulse = null
+      const burst = reduced ? 0 : impulseOffset(ring.impulse, nowMs)
+      // phase 只累计冲动角。常速仍用绝对时间，避免帧间隔把环慢慢带偏。
+      if (!reduced) ring.phase += dt * burst
+      ring.spin.rotation.z = reduced ? ring.spec.hold : t * ring.spec.speed + ring.phase
       ring.sparks.forEach((spark) => {
         const angle = (reduced ? ring.spec.hold : t * 0.35) + spark.userData.offset
         spark.position.set(
@@ -830,18 +889,8 @@ export function createNebulaScene(host, options = {}) {
       projected.copy(worldPoint).project(camera)
       const padX = clamp(state.width * 0.07, 52, 78)
       const padY = clamp(state.height * 0.08, 42, 68)
-      let rawX = (projected.x * 0.5 + 0.5) * state.width
-      let rawY = (-projected.y * 0.5 + 0.5) * state.height
-      // 亮核占住中心，评分牌沿径向让开
-      const clearR = Math.min(state.width, state.height) * 0.3
-      const rdx = rawX - state.width / 2
-      const rdy = rawY - state.height / 2
-      const rdist = Math.hypot(rdx, rdy)
-      if (rdist < clearR) {
-        const push = clearR / Math.max(rdist, 8)
-        rawX = state.width / 2 + rdx * push
-        rawY = state.height / 2 + rdy * push
-      }
+      const rawX = (projected.x * 0.5 + 0.5) * state.width
+      const rawY = (-projected.y * 0.5 + 0.5) * state.height
       const closeness = clamp((1 - projected.z) * 0.5, 0, 1)
       overlay.push({
         id: data.id,
@@ -900,45 +949,26 @@ export function createNebulaScene(host, options = {}) {
       y: (-centerPoint.y * 0.5 + 0.5) * state.height,
     }
 
-    const rawTargets = []
-    const projectIntake = (world) => {
-      intakeProjected.copy(world).project(camera)
-      if (intakeProjected.z >= 1 || intakeProjected.z <= -1) return null
-      const x = (intakeProjected.x * 0.5 + 0.5) * state.width
-      const y = (-intakeProjected.y * 0.5 + 0.5) * state.height
-      if (x < 10 || y < 10 || x > state.width - 10 || y > state.height - 10) return null
-      return { x, y }
-    }
-    const pushTarget = (id, world) => {
-      const hit = projectIntake(world)
-      if (!hit) return
-      rawTargets.push({ id, x: hit.x, y: hit.y })
-    }
-    particleSamples.forEach((sample) => {
-      const attr = sample.mesh.geometry.getAttribute("position")
-      if (!attr || sample.index >= attr.count) return
-      intakeLocal.set(attr.getX(sample.index), attr.getY(sample.index), attr.getZ(sample.index))
-      sample.mesh.localToWorld(intakeLocal)
-      pushTarget(sample.id, intakeLocal)
-    })
-    rings.forEach((ring, ringIndex) => {
-      ring.sparks.forEach((spark, sparkIndex) => {
-        spark.getWorldPosition(intakeLocal)
-        pushTarget(`spark-${ringIndex}-${sparkIndex}`, intakeLocal)
+    const intakeTargets = []
+    rings.forEach((ring) => {
+      if (!ring.symbol) return
+      ring.anchors.forEach((anchor, index) => {
+        anchor.getWorldPosition(worldPoint)
+        projected.copy(worldPoint).project(camera)
+        if (projected.z <= -1 || projected.z >= 1) return
+        const x = (projected.x * 0.5 + 0.5) * state.width
+        const y = (-projected.y * 0.5 + 0.5) * state.height
+        if (x < 8 || y < 8 || x > state.width - 8 || y > state.height - 8) return
+        intakeTargets.push({
+          id: `${ring.symbol}:${index}`,
+          symbol: ring.symbol,
+          base: ring.base,
+          x,
+          y,
+        })
       })
     })
-    coinWorld.forEach((point, index) => {
-      const id = nodeMeshes[index]?.userData?.id
-      if (id) pushTarget(`node-${id}`, point)
-    })
-    const minR = Math.min(state.width, state.height) * 0.1
-    const clear = rawTargets.filter((point) => !(point.x < 180 && point.y < 124))
-    const pool = clear.length >= 4 ? clear : rawTargets
-    const spread = pool.filter((point) => Math.hypot(point.x - center.x, point.y - center.y) >= minR)
-    const picked = (spread.length >= 5 ? spread : pool)
-      .slice()
-      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-    intakeTargets = thinTargets(picked, 24)
+    state.intakeTargets = intakeTargets
 
     renderer.setClearColor(bg, 1)
     renderer.render(scene, camera)
@@ -979,7 +1009,7 @@ export function createNebulaScene(host, options = {}) {
   })
   accentObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["style"] })
 
-  return {
+  const api = {
     setNodes(nodes) {
       state.nodes = nodes || []
       rebuildNodes(state.nodes)
@@ -994,18 +1024,36 @@ export function createNebulaScene(host, options = {}) {
         renderFrame(1.15)
       } else {
         clock.start()
+        lastTime = null
         raf = requestAnimationFrame(loop)
       }
     },
     setOnFrame(fn) {
       state.onFrame = typeof fn === "function" ? fn : null
     },
-    getIntakeTargets() {
-      return intakeTargets.map((item) => ({ ...item }))
+    getIntakeTargets(symbol) {
+      const want = baseSymbol(symbol)
+      const list = state.intakeTargets || []
+      const matched = want ? list.filter((item) => item.base === want) : list
+      return matched.map((item) => ({ ...item }))
+    },
+    nudgeRing(symbol, options = {}) {
+      const want = baseSymbol(symbol)
+      if (!want || state.reduced) return false
+      const ring = rings.find((item) => item.symbol && baseSymbol(item.symbol) === want)
+      if (!ring) return false
+      const durationMs = clamp(Number(options.durationMs) || 1000, 600, 1400)
+      let mode = "boost"
+      if (options.reverse || options.mode === "reverse") mode = "reverse"
+      else if (options.boost || options.mode === "boost") mode = "boost"
+      else mode = Math.random() < 0.5 ? "reverse" : "boost"
+      ring.impulse = { start: performance.now(), duration: durationMs, mode }
+      return true
     },
     resize,
     dispose() {
       state.disposed = true
+      liveScenes.delete(api)
       cancelAnimationFrame(raf)
       observer.disconnect()
       accentObserver.disconnect()
@@ -1027,4 +1075,6 @@ export function createNebulaScene(host, options = {}) {
       if (renderer.domElement.parentNode === host) host.removeChild(renderer.domElement)
     },
   }
+  liveScenes.add(api)
+  return api
 }

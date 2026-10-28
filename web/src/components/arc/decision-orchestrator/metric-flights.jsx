@@ -1,7 +1,9 @@
-/* 高频指标飞线：左侧指标条 → 星云里随机的小节点。
+/* 高频指标飞线：左侧指标条 → 同一币种椭圆环上的随机节点。
    独立 canvas，细线加长拖尾。路径是带种子噪声的不规则三次曲线
-   （偶尔两段），横向要弯得出来，不再整圈打转后拉一条直线。 */
+   （偶尔两段），横向要弯得出来，不再整圈打转后拉一条直线。
+   头部落到环上时，通知星云把那一环加速或反向约 1 秒。 */
 import { useEffect, useRef } from "react"
+import { nudgeRing } from "./nebula-scene"
 import styles from "./metric-flights.module.css"
 
 const FADE_MS = 680
@@ -11,6 +13,11 @@ const hash = (text) => {
   for (const char of String(text)) value = (value * 31 + char.charCodeAt(0)) >>> 0
   return value
 }
+
+const coinKey = (symbol) => String(symbol || "")
+  .toLowerCase()
+  .replace(/[^a-z0-9]/g, "")
+  .replace(/usdt$/, "")
 
 const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 const clamp01 = (value) => Math.min(1, Math.max(0, value))
@@ -132,24 +139,51 @@ function makeCurve(from, to, pulse) {
 }
 
 function pickTarget(pulse) {
-  const nodes = document.querySelectorAll("[data-metric-node]")
-  const visible = []
+  const want = coinKey(pulse?.symbol)
+  if (!want) return null
+  const summary = document.querySelector("[data-strategy-summary]")
+  const box = summary?.getBoundingClientRect()
+  const nodes = document.querySelectorAll("[data-metric-node][data-symbol]")
+  const matched = []
   for (const el of nodes) {
+    if (coinKey(el.getAttribute("data-symbol")) !== want) continue
     const rect = el.getBoundingClientRect()
     const x = rect.left + rect.width / 2
     const y = rect.top + rect.height / 2
     if (rect.width < 2 || rect.height < 2) continue
     if (x < 4 || y < 4 || x > window.innerWidth - 4 || y > window.innerHeight - 4) continue
-    visible.push({ x, y })
+    if (box && x >= box.left - 6 && x <= box.right + 10 && y >= box.top - 6 && y <= box.bottom + 10) continue
+    matched.push({ x, y, id: el.getAttribute("data-node-id") || "" })
   }
-  if (visible.length) {
-    return visible[hash(String(pulse?.id ?? "x")) % visible.length]
+  if (!matched.length) return null
+  matched.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  return matched[hash(String(pulse?.id ?? "x")) % matched.length]
+}
+
+function readNode(id) {
+  if (!id) return null
+  const nodes = document.querySelectorAll("[data-metric-node]")
+  for (const el of nodes) {
+    if (el.getAttribute("data-node-id") !== id) continue
+    const rect = el.getBoundingClientRect()
+    if (rect.width < 2 || rect.height < 2) return null
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
   }
-  const intake = document.querySelector("[data-metric-intake]")
-  if (!intake) return null
-  const rect = intake.getBoundingClientRect()
-  if (rect.width < 2 || rect.height < 2) return null
-  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+  return null
+}
+
+function retarget(curve, point) {
+  curve.p3 = point
+  const part = curve.parts[curve.parts.length - 1]
+  const segment = part?.segments?.[part.segments.length - 1]
+  if (segment) segment.p3 = point
+}
+
+function nudgeForPulse(pulse) {
+  const reverse = (hash(`${pulse.id}:ring`) & 1) === 1
+  nudgeRing(pulse.symbol, reverse
+    ? { reverse: true, durationMs: 1000 }
+    : { boost: true, durationMs: 1000 })
 }
 
 export default function MetricFlights({ pulses, onDone }) {
@@ -157,6 +191,7 @@ export default function MetricFlights({ pulses, onDone }) {
   const startedRef = useRef(new Map())
   const curvesRef = useRef(new Map())
   const doneRef = useRef(new Set())
+  const arrivedRef = useRef(new Set())
   const onDoneRef = useRef(onDone)
   onDoneRef.current = onDone
 
@@ -175,21 +210,30 @@ export default function MetricFlights({ pulses, onDone }) {
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-    for (const pulse of pulses) {
-      if (doneRef.current.has(pulse.id)) continue
-      if (!startedRef.current.has(pulse.id)) {
-        const target = pickTarget(pulse)
-        if (!target) continue
-        startedRef.current.set(pulse.id, performance.now() + (pulse.delay || 0))
-        curvesRef.current.set(pulse.id, makeCurve(pulse.source, target, pulse))
-      }
-    }
-
     let raf = 0
     const draw = (now) => {
       ctx.clearRect(0, 0, W, H)
       let alive = false
       for (const pulse of pulses) {
+        if (doneRef.current.has(pulse.id)) continue
+        if (!startedRef.current.has(pulse.id)) {
+          const target = pickTarget(pulse)
+          if (!target) {
+            const age = Date.now() - (pulse.ts || Date.now())
+            if (age > 4000) {
+              doneRef.current.add(pulse.id)
+              onDoneRef.current?.(pulse.id)
+              continue
+            }
+            alive = true
+            continue
+          }
+          const curve = makeCurve(pulse.source, target, pulse)
+          curve.nodeId = target.id
+          startedRef.current.set(pulse.id, performance.now() + (pulse.delay || 0))
+          curvesRef.current.set(pulse.id, curve)
+        }
+
         const curve = curvesRef.current.get(pulse.id)
         const start = startedRef.current.get(pulse.id)
         if (!curve || start == null) continue
@@ -201,6 +245,15 @@ export default function MetricFlights({ pulses, onDone }) {
         const spawn = pulse.spawn ?? 170
         const duration = Math.max(1, pulse.duration || 1400)
         const travelElapsed = elapsed - spawn
+
+        if (!arrivedRef.current.has(pulse.id)) {
+          const live = readNode(curve.nodeId)
+          if (live) retarget(curve, live)
+        }
+        if (travelElapsed >= duration && !arrivedRef.current.has(pulse.id)) {
+          arrivedRef.current.add(pulse.id)
+          nudgeForPulse(pulse)
+        }
 
         if (travelElapsed < 0) {
           const p = Math.min(1, elapsed / Math.max(1, spawn))
@@ -286,6 +339,7 @@ export default function MetricFlights({ pulses, onDone }) {
         }
         startedRef.current.delete(pulse.id)
         curvesRef.current.delete(pulse.id)
+        arrivedRef.current.delete(pulse.id)
       }
       if (alive) raf = requestAnimationFrame(draw)
       else ctx.clearRect(0, 0, W, H)
