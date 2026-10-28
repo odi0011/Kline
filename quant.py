@@ -1923,6 +1923,9 @@ class QuantEngine:
                 "latestTraces": dict(self.latest_traces),
                 # 当前策略参数（前端展示"系统在用哪些规则"）
                 "params": {
+                    "calcIntervalSec": 5,
+                    "minScore": self.decision_cfg.minimum_score,
+                    "minScoreGap": self.decision_cfg.minimum_score_gap,
                     "atrSlMult": ATR_SL_MULT, "atrTpMult": ATR_TP_MULT,
                     "slMinPct": SL_MIN_PCT * 100, "slMaxPct": SL_MAX_PCT * 100,
                     "tpMinPct": TP_MIN_PCT * 100, "tpMaxPct": TP_MAX_PCT * 100,

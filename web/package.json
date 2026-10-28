@@ -19,7 +19,7 @@
     "react-aria-components": "^1.22.1",
     "react-dom": "^19.0.0",
     "tailwind-merge": "^3.7.0",
-    "three": "^0.170.0"
+    "three": "^0.186.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

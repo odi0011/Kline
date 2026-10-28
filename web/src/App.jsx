@@ -782,10 +782,8 @@ export default function App() {
             chartColors={chartColors} onMetricPulse={pushMetricPulse} />
         </div>
         <div className="orchestrator-slot">
-          <DecisionOrchestrator analysis={quantSnap && quantSnap.analysis}
-            symbols={orderedSymbols} events={visibleEvents}
-            structures={marketStructures} metricPulses={metricPulses}
-            account={account} />
+          <DecisionOrchestrator analysis={quantSnap && quantSnap.analysis} snapshot={quantSnap}
+            symbols={orderedSymbols} events={visibleEvents} metricPulses={metricPulses} />
         </div>
         <div className="row2-reserved" aria-hidden />
       </div>
