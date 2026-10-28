@@ -167,8 +167,13 @@ body {
 
 .orchestrator-slot {
   min-width: 0;
-  display: flex;
   min-height: 0;
+  height: 100%;
+  display: flex;
+  background: #fff;
+  border: none;
+  box-shadow: none;
+  overflow: hidden;
 }
 
 .row2-reserved {
