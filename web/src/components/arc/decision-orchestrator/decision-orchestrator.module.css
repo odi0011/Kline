@@ -1,5 +1,4 @@
-/* 量化计算编排水位：数据在顶部汇入，经两层交叉计算进入中央路由，
-   分流到两侧专家，再汇合进入风控与执行。 */
+/* 无独立边框/异色底：与整页表面融为一体，只在 50% 槽内铺满科幻动画 */
 
 .root {
   position: relative;
@@ -9,429 +8,172 @@
   min-height: 0;
   overflow: hidden;
   isolation: isolate;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel, 12px);
-  background: var(--surface);
+  border: none;
+  border-radius: 0;
+  background: transparent;
   color: var(--foreground);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--foreground) 4%, transparent);
-  container-type: inline-size;
+  box-shadow: none;
+  container-type: size;
 }
 
-.root::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  background-image: radial-gradient(
-    circle,
-    color-mix(in srgb, var(--foreground) 13%, transparent) 0.5px,
-    transparent 0.75px
-  );
-  background-size: 17px 17px;
-  opacity: 0.2;
-  pointer-events: none;
-}
-
-.network {
+.viewport {
   position: absolute;
   inset: 0;
   z-index: 1;
-  display: block;
-  width: 100%;
-  height: 100%;
+  overflow: hidden;
   pointer-events: none;
 }
 
-.network path,
-.network circle {
-  vector-effect: non-scaling-stroke;
+.coreHit {
+  position: absolute;
+  z-index: 2;
+  width: 72px;
+  height: 72px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
 }
 
-.inputWire {
-  fill: none;
-  stroke-width: 0.9;
-  stroke-dasharray: 2 5;
-  animation: wireFlow 4.8s linear infinite;
+.coreHit[data-active] {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
+    0 0 26px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
-.networkWire {
-  fill: none;
-  stroke: color-mix(in srgb, var(--foreground) 23%, transparent);
-  stroke-width: 0.6;
-  opacity: 0.58;
-  animation: networkBreathe 5.8s ease-in-out infinite;
-  animation-delay: var(--wire-delay);
-}
-
-.routerWire {
-  fill: none;
-  stroke-width: 0.8;
-  stroke-dasharray: 1.5 5;
-  opacity: 0.86;
-  animation: wireFlow 5s linear infinite;
-}
-
-.expertWire {
-  fill: none;
-  stroke: color-mix(in srgb, var(--accent) 58%, var(--border));
-  stroke-width: 0.8;
-  stroke-dasharray: 1.5 4;
-  opacity: 0.9;
-  animation: wireFlow 4.2s linear infinite;
-}
-
-.mergeWire {
-  fill: none;
-  stroke: color-mix(in srgb, var(--color-teal-500) 55%, var(--border));
-  stroke-width: 0.78;
-  stroke-dasharray: 2 5;
-  opacity: 0.82;
-  animation: wireFlow 4.8s linear infinite reverse;
-}
-
-.outputWire {
-  fill: none;
-  stroke: color-mix(in srgb, var(--accent) 52%, var(--border));
-  stroke-width: 0.8;
-  stroke-dasharray: 1.4 4;
-  animation: wireFlow 3.6s linear infinite;
-}
-
-.feedbackWire {
-  fill: none;
-  stroke: color-mix(in srgb, var(--accent) 27%, var(--border));
-  stroke-width: 0.72;
-  stroke-dasharray: 3 10;
-  opacity: 0.6;
-  animation: wireFlow 9s linear infinite reverse;
-}
-
-@keyframes wireFlow {
-  to { stroke-dashoffset: -28; }
-}
-
-@keyframes networkBreathe {
-  0%, 100% { opacity: 0.38; }
-  50% { opacity: 0.72; }
-}
-
-.microNode {
-  color: color-mix(in srgb, var(--accent) 54%, var(--foreground));
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: microNode 3.6s ease-in-out infinite;
-  animation-delay: var(--micro-delay);
-}
-
-.microHalo {
-  fill: currentColor;
-  opacity: 0.1;
-}
-
-.microCore {
-  fill: var(--surface);
-  stroke: currentColor;
-  stroke-width: 0.85;
-}
-
-@keyframes microNode {
-  0%, 100% { opacity: 0.6; transform: scale(0.92); }
-  50% { opacity: 1; transform: scale(1.12); }
-}
-
-.particle { color: var(--accent); }
-.particle[data-tone="node"] { color: color-mix(in srgb, var(--foreground) 48%, var(--accent)); }
-.particle[data-tone="router"] { color: var(--accent); }
-.particle[data-tone="collect"] { color: var(--color-teal-500); }
-.particle[data-tone="output"] { color: var(--color-blue-500); }
-.particle[data-tone="loop"] { color: color-mix(in srgb, var(--accent) 74%, var(--foreground)); }
-
-.particleHalo {
-  fill: currentColor;
-  opacity: 0.16;
-}
-
-.particleCore {
-  fill: currentColor;
-  opacity: 0.96;
-}
-
-.dataPacket { pointer-events: none; }
-
-.packetBg {
-  fill: color-mix(in srgb, var(--surface) 93%, transparent);
-  stroke: color-mix(in srgb, var(--accent) 20%, var(--border));
-  stroke-width: 0.55;
-}
-
-.packetText {
-  fill: var(--text-secondary);
-  font-size: 6.5px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.dataBus {
+.funds {
   position: absolute;
   z-index: 4;
   display: flex;
-  width: 28%;
-  height: 25px;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  text-align: center;
+  padding: 12px 16px;
+  border-radius: 18px;
+  background: color-mix(in srgb, #ffffff 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  backdrop-filter: blur(12px);
+  box-shadow:
+    0 10px 28px color-mix(in srgb, var(--foreground) 6%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, #ffffff 70%, transparent);
+}
+
+.funds span {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--foreground) 46%, transparent);
+}
+
+.funds strong {
+  font-size: clamp(20px, 4.6cqw, 30px);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  color: var(--foreground);
+  line-height: 1.05;
+}
+
+.funds em {
+  font-style: normal;
+  font-size: 10px;
+  color: color-mix(in srgb, var(--foreground) 42%, transparent);
+}
+
+.node {
+  position: absolute;
+  z-index: 5;
+  display: flex;
   align-items: center;
   gap: 7px;
-  padding: 0 7px;
+  min-width: 82px;
+  padding: 5px 11px 5px 5px;
   transform: translate(-50%, -50%);
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--surface) 95%, var(--accent) 5%);
-  box-shadow:
-    0 4px 12px color-mix(in srgb, var(--foreground) 5%, transparent),
-    inset 0 0 0 1px color-mix(in srgb, var(--surface) 84%, transparent);
-}
-
-.busIcon {
-  display: grid;
-  width: 17px;
-  height: 17px;
-  flex: none;
-  place-items: center;
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
-  color: color-mix(in srgb, var(--accent) 76%, var(--foreground));
-}
-
-.busPorts {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  align-items: center;
-  justify-content: space-between;
-  gap: 4px;
-}
-
-.busPorts i {
-  display: block;
-  width: 2px;
-  height: 9px;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--accent) 35%, var(--border));
-  animation: busPort 3.2s ease-in-out infinite;
-}
-
-.busPorts i:nth-child(2n) { animation-delay: -1.2s; }
-.busPorts i:nth-child(3n) { animation-delay: -2.1s; }
-
-@keyframes busPort {
-  0%, 100% { opacity: 0.35; transform: scaleY(0.65); }
-  50% { opacity: 1; transform: scaleY(1); }
-}
-
-.dataBus[data-active] {
-  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
-  box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--accent) 4%, transparent),
-    0 4px 14px color-mix(in srgb, var(--foreground) 6%, transparent);
-}
-
-.busImpact {
-  position: absolute;
-  inset: -2px;
-  border: 1px solid var(--impact-color, var(--accent));
-  border-radius: 9px;
-  opacity: 0;
-  pointer-events: none;
-  animation: busImpact 560ms cubic-bezier(0.2, 1.35, 0.36, 1) both;
-}
-
-@keyframes busImpact {
-  0% { opacity: 0.96; transform: scale(0.97, 0.9); }
-  54% { opacity: 0.48; transform: scale(1.035, 1.12); }
-  100% { opacity: 0; transform: scale(1.01, 1); }
-}
-
-.routerPanel {
-  position: absolute;
-  z-index: 2;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
-  box-shadow: 0 4px 14px color-mix(in srgb, var(--foreground) 4%, transparent);
-}
-
-.routerRow {
-  position: absolute;
-  right: 17%;
-  left: 17%;
-  height: 3px;
-  transform: translateY(-50%);
-  overflow: hidden;
-  border-radius: 99px;
-  background: color-mix(in srgb, var(--foreground) 7%, transparent);
-}
-
-.routerRow i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--accent);
-  transition: width 420ms var(--ease-standard);
-}
-
-.routerRow i[data-tone="mid"] { background: var(--warning); }
-.routerRow i[data-tone="weak"] { background: var(--danger); }
-
-.expertRow {
-  position: absolute;
-  z-index: 3;
-  display: flex;
-  width: 23%;
-  height: 22px;
-  align-items: center;
-  gap: 4px;
-  padding: 0 5px;
-  transform: translate(-50%, -50%);
-  border: 1px solid color-mix(in srgb, var(--foreground) 8%, var(--border));
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--surface) 89%, transparent);
-  box-shadow: 0 2px 6px color-mix(in srgb, var(--foreground) 4%, transparent);
-}
-
-.expertIcon {
-  display: grid;
-  width: 15px;
-  height: 15px;
-  flex: none;
-  place-items: center;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--expert-tone) 10%, var(--surface));
-  color: var(--expert-tone);
-}
-
-.expertMeter {
-  display: block;
-  min-width: 0;
-  flex: 1;
-  height: 3px;
-  overflow: hidden;
-  border-radius: 99px;
-  background: color-mix(in srgb, var(--foreground) 6%, transparent);
-}
-
-.expertMeter i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: color-mix(in srgb, var(--expert-tone) 76%, var(--accent));
-  transition: width 420ms var(--ease-standard);
-}
-
-.expertRow b {
-  min-width: 15px;
-  flex: none;
-  color: var(--text-secondary);
-  font-size: 7.5px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-
-.expertRow[data-tone="good"] { border-color: color-mix(in srgb, var(--success) 22%, var(--border)); }
-.expertRow[data-tone="weak"] b { color: var(--danger); }
-
-.mergeNode {
-  position: absolute;
-  z-index: 3;
-  display: grid;
-  width: 12px;
-  height: 12px;
-  place-items: center;
-  transform: translate(-50%, -50%) rotate(45deg);
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
-  border-radius: 3px;
-  background: var(--surface);
-}
-
-.mergeNode i {
-  width: 4px;
-  height: 4px;
-  border-radius: 1px;
-  background: var(--accent);
-  animation: mergePulse 2.5s ease-in-out infinite;
-}
-
-@keyframes mergePulse {
-  0%, 100% { opacity: 0.45; transform: scale(0.72); }
-  50% { opacity: 1; transform: scale(1.18); }
-}
-
-.outputNode {
-  position: absolute;
-  z-index: 3;
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  transform: translate(-50%, -50%);
-}
-
-.outputHalo {
-  position: absolute;
-  inset: -10%;
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--output-tone) 12%, transparent);
-  opacity: 0.55;
-}
-
-.outputDisc {
-  position: relative;
-  display: grid;
-  width: 24px;
-  height: 24px;
-  place-items: center;
-  border: 1px solid color-mix(in srgb, var(--output-tone) 32%, var(--border));
-  border-radius: 7px;
-  background: var(--surface);
-  color: var(--output-tone);
-  box-shadow: 0 3px 9px color-mix(in srgb, var(--foreground) 5%, transparent);
-}
-
-.outputNode[data-active] .outputHalo {
-  animation: outputPulse 2.8s ease-in-out infinite;
-}
-
-@keyframes outputPulse {
-  0%, 100% { opacity: 0.42; transform: scale(0.9); }
-  50% { opacity: 1; transform: scale(1.18); }
-}
-
-.signalPacket {
-  position: absolute;
-  z-index: 6;
-  display: inline-flex;
-  height: 17px;
-  align-items: center;
-  gap: 4px;
-  padding: 0 5px;
-  translate: -50% -50%;
-  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--node-color));
   border-radius: 999px;
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--foreground) 9%, transparent);
-  color: color-mix(in srgb, var(--accent) 78%, var(--foreground));
-  font-size: 7px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, #ffffff 90%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow:
+    0 1px 2px color-mix(in srgb, var(--foreground) 4%, transparent),
+    0 10px 22px color-mix(in srgb, var(--foreground) 5%, transparent);
   pointer-events: none;
   white-space: nowrap;
 }
 
-.signalPacket em {
-  padding-left: 4px;
-  border-left: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
-  color: var(--text-muted);
-  font-size: 6.5px;
-  font-style: normal;
-  font-weight: 500;
+.nodeIcon {
+  flex: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--border) 65%, transparent);
+}
+
+.node div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  line-height: 1.1;
+}
+
+.node b {
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  color: var(--foreground);
+}
+
+.node span {
+  font-size: 10px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--foreground) 52%, transparent);
+}
+
+.node[data-tone="idle"] span { color: color-mix(in srgb, var(--foreground) 42%, transparent); }
+.node[data-tone="weak"] span { color: #e11d48; }
+.node[data-tone="mid"] span { color: #d97706; }
+.node[data-tone="good"] span { color: #059669; }
+
+.bubble {
+  position: absolute;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 180px;
+  padding: 8px 10px;
+  transform: translate(-50%, -120%);
+  border: 1px solid color-mix(in srgb, var(--bubble-color) 24%, var(--border));
+  border-radius: 14px 14px 14px 6px;
+  background: color-mix(in srgb, #ffffff 94%, transparent);
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--foreground) 8%, transparent);
+  pointer-events: none;
+  animation: bubbleIn 280ms ease-out;
+}
+
+.bubbleHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bubble b {
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--bubble-color) 70%, var(--foreground));
+}
+
+.bubble span {
+  font-size: 11px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--foreground) 78%, transparent);
+}
+
+@keyframes bubbleIn {
+  from { opacity: 0; transform: translate(-50%, -90%) scale(0.94); }
+  to { opacity: 1; transform: translate(-50%, -120%) scale(1); }
 }
 
 .srOnly {
@@ -443,43 +185,6 @@
   white-space: nowrap;
 }
 
-@container (max-width: 340px) {
-  .dataBus {
-    height: 22px;
-    padding-inline: 5px;
-  }
-
-  .expertRow {
-    height: 20px;
-    padding-inline: 4px;
-  }
-
-  .expertIcon {
-    width: 13px;
-    height: 13px;
-  }
-
-  .expertRow b {
-    min-width: 13px;
-    font-size: 7px;
-  }
-
-  .packetText { font-size: 6px; }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .inputWire,
-  .networkWire,
-  .routerWire,
-  .expertWire,
-  .mergeWire,
-  .outputWire,
-  .feedbackWire,
-  .microNode,
-  .busPorts i,
-  .busImpact,
-  .mergeNode i,
-  .outputNode[data-active] .outputHalo {
-    animation: none;
-  }
+  .bubble { animation: none; }
 }

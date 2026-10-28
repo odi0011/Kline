@@ -182,12 +182,13 @@ export default function StrategyPanel({ analysis, symbols, chartColors, onMetric
       const targetEntry = entryState.get(targetEl)
       const rowRect = rowEl.getBoundingClientRect()
       const targetRect = targetEl.getBoundingClientRect()
-      const rowVisible = rowEntry?.isIntersecting && rowEntry.intersectionRatio >= 0.99
-      const targetVisible = targetEntry?.isIntersecting && targetEntry.intersectionRatio >= 0.99
-      const rowUsable = rowRect.height >= 240 && rowRect.width >= 260
-        && rowRect.top >= 0 && rowRect.bottom <= window.innerHeight
-      const targetUsable = targetRect.height >= 14 && targetRect.width >= 20
-        && targetRect.top >= rowRect.top && targetRect.bottom <= rowRect.bottom
+      // 0.99 太严：浏览器工具栏/滚动条轻微裁切就会永久关飞线。
+      const rowVisible = rowEntry?.isIntersecting && rowEntry.intersectionRatio >= 0.72
+      const targetVisible = targetEntry?.isIntersecting && targetEntry.intersectionRatio >= 0.72
+      const rowUsable = rowRect.height >= 200 && rowRect.width >= 240
+        && rowRect.top >= -24 && rowRect.bottom <= window.innerHeight + 24
+      const targetUsable = targetRect.height >= 12 && targetRect.width >= 16
+        && targetRect.top >= rowRect.top - 8 && targetRect.bottom <= rowRect.bottom + 8
       setFlowVisible(Boolean(rowVisible && targetVisible && rowUsable && targetUsable))
     }
 
@@ -240,10 +241,10 @@ export default function StrategyPanel({ analysis, symbols, chartColors, onMetric
     const panelRect = document.querySelector(".strategy-slot")?.getBoundingClientRect()
     for (const [sym, st] of cards) {
       const metrics = [
-        { id: "rsi", label: "RSI", value: st?.rsi, threshold: 1, ratio: (v) => clamp(v, 0, 100) / 100 },
+        { id: "rsi", label: "RSI", value: st?.rsi, threshold: 0.35, ratio: (v) => clamp(v, 0, 100) / 100 },
         { id: "pctB", label: "%B", value: st?.boll?.pctB, threshold: 0.025, ratio: (v) => clamp((v + 0.2) / 1.4, 0, 1) },
         { id: "z", label: "Z", value: st?.z, threshold: 0.08, ratio: (v) => clamp((v + 3) / 6, 0, 1) },
-        { id: "adx", label: "ADX", value: st?.adx, threshold: 0.5, ratio: (v) => clamp(v / 50, 0, 1) },
+        { id: "adx", label: "ADX", value: st?.adx, threshold: 0.2, ratio: (v) => clamp(v / 50, 0, 1) },
         { id: "roc", label: "ROC", value: st?.roc, threshold: 0.00025, ratio: (v) => 0.5 + clamp(v / 0.015, -1, 1) * 0.5 },
         { id: "bw", label: "BW", value: st?.bwPct, threshold: 1.5, ratio: (v) => clamp(v / 100, 0, 1) },
       ]
