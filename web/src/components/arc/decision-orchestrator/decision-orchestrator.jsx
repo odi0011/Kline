@@ -1,7 +1,8 @@
-/* 中间 50% 槽位：Three.js 赛博朋克星云监控。固定不滚动，飞线落在核心。 */
+/* 中间 50% 槽位：亮色轨道星云。固定不滚动，飞线落在核心。 */
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useReducedMotion } from "motion/react"
 import CoinAvatar from "@/components/ui/coin-avatar"
+import { LiquidGlass } from "@/components/ui/liquid-glass"
 import { createNebulaScene } from "./nebula-scene"
 import styles from "./decision-orchestrator.module.css"
 
@@ -35,6 +36,28 @@ function formatFunds(value) {
 
 function shortSym(symbol) {
   return String(symbol || "").replace(/usdt$/i, "").toUpperCase() || "—"
+}
+
+function bubbleAnchor(pos, center, bounds) {
+  const width = bounds?.w || 0
+  const height = bounds?.h || 0
+  const cx = typeof center?.x === "number" ? center.x : pos.x
+  const cy = typeof center?.y === "number" ? center.y : pos.y
+  const dx = pos.x - cx
+  const dy = pos.y - cy
+  const dist = Math.hypot(dx, dy) || 1
+  const minR = 108
+  let x = dist >= minR ? pos.x : cx + (dx / dist) * minR
+  let y = dist >= minR ? pos.y : cy + (dy / dist) * minR
+  let side = y >= cy ? "below" : "above"
+  if (height) {
+    if (side === "below" && y > height - 78) side = "above"
+    if (side === "above" && y < 72) side = "below"
+    if (side === "below") y = Math.min(y, height - 76)
+    else y = Math.max(y, 68)
+  }
+  if (width) x = Math.min(width - 100, Math.max(100, x))
+  return { x, y, side }
 }
 
 export default function DecisionOrchestrator({
@@ -170,6 +193,13 @@ export default function DecisionOrchestrator({
       || null
   }, [bubble, overlayNodes])
 
+  const bubblePlace = bubble && bubblePos
+    ? bubbleAnchor(bubblePos, center, {
+      w: hostRef.current?.clientWidth || 0,
+      h: hostRef.current?.clientHeight || 0,
+    })
+    : null
+
   return (
     <section
       className={styles.root}
@@ -191,9 +221,17 @@ export default function DecisionOrchestrator({
         aria-label="数据核心"
       />
 
-      <div
+      <LiquidGlass
+        radius={20}
+        bevelDepth={12}
+        scale={22}
+        aberration={0}
+        frost={2.2}
+        tint={0.58}
         className={styles.funds}
+        contentClassName={styles.fundsIn}
         style={{
+          position: "absolute",
           left: typeof center.x === "number" ? `${center.x}px` : center.x,
           top: typeof center.y === "number" ? `${center.y}px` : center.y,
         }}
@@ -201,18 +239,26 @@ export default function DecisionOrchestrator({
         <span>总资金</span>
         <strong>{formatFunds(funds)}</strong>
         <em>{scoredCount}/{Math.max(1, ordered.length)} 已评分</em>
-      </div>
+      </LiquidGlass>
 
       {overlayNodes.filter((node) => node.visible).map((node) => (
-        <div
+        <LiquidGlass
           key={node.id}
+          radius={999}
+          bevelDepth={8}
+          scale={14}
+          aberration={0}
+          frost={1.4}
+          tint={0.46}
           className={styles.node}
+          contentClassName={styles.nodeIn}
           data-tone={node.score == null ? "idle" : node.score >= 55 ? "good" : node.score >= 45 ? "mid" : "weak"}
           style={{
+            position: "absolute",
             left: `${node.x}px`,
             top: `${node.y}px`,
             "--node-color": node.color,
-            zIndex: 20 + Math.round((1 - (node.z || 0)) * 10),
+            zIndex: 8 + Math.round((node.depth ?? 0.5) * 10),
           }}
         >
           <CoinAvatar symbol={node.id} size={18} className={styles.nodeIcon} />
@@ -224,16 +270,25 @@ export default function DecisionOrchestrator({
                 : `${node.pct >= 0 && node.score == null ? "+" : ""}${Number(node.pct).toFixed(node.score == null ? 2 : 0)}${node.score == null ? "%" : ""}`}
             </span>
           </div>
-        </div>
+        </LiquidGlass>
       ))}
 
-      {bubble && bubblePos && (
-        <div
+      {bubble && bubblePlace && (
+        <LiquidGlass
           key={bubble.id}
+          radius={16}
+          bevelDepth={10}
+          scale={16}
+          aberration={0}
+          frost={1.6}
+          tint={0.5}
           className={styles.bubble}
+          contentClassName={styles.bubbleIn}
+          data-side={bubblePlace.side}
           style={{
-            left: `${bubblePos.x}px`,
-            top: `${bubblePos.y - 38}px`,
+            position: "absolute",
+            left: `${bubblePlace.x}px`,
+            top: `${bubblePlace.y}px`,
             "--bubble-color": bubble.color,
           }}
         >
@@ -242,7 +297,7 @@ export default function DecisionOrchestrator({
             <b>{bubble.label}</b>
           </div>
           <span>{bubble.text}</span>
-        </div>
+        </LiquidGlass>
       )}
 
       {/* structures reserved for future depth cues; keep prop for parent API */}
