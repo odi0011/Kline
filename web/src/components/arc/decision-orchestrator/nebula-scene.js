@@ -1,11 +1,11 @@
-/* 亮色轨道星云：铺满宿主的交叉椭圆环 + 稠密粒子网。
-   单位坐标 [-1,1] 经拉伸贴合视口（约 86% 宽高），环在拉伸之外旋转，避免非均匀缩放把圆剪成斜切。
-   配色跟页面 --accent（默认币安金）以及青 / 品红 / 涨跌色，不走深色青绿网络那套。 */
+/* DecisionOrchestrator 三维星图：同一 WebGL 场景里的中心卫星体、
+   硬币轨道环、体积粒子网，以及世界空间三次飞线。
+   环是水平面里的圆环（Torus），只绕轨道法线自旋；冲动只改这一轴的角速度，
+   轨道平面保持不动，避免扁椭圆在屏幕上翻滚。 */
 import * as THREE from "three"
 
-const FILL = 0.92
-const FOV = 30
-const BASE_Z = 7.6
+const FOV = 42
+const FILL = 0.5
 
 const SLOT = {
   accent: 0,
@@ -22,11 +22,16 @@ const SLOT = {
 }
 
 const COIN_SLOTS = [SLOT.accent, SLOT.cyan, SLOT.magenta, SLOT.success, SLOT.sky, SLOT.deep]
-
-// 四条主环按币种固定：金 / 青 / 品红 / 绿，对应 btc eth bnb sol。多出来的环留给其余币。
 const COIN_BASES = ["btc", "eth", "bnb", "sol"]
 const IMPULSE_PEAK = { boost: 3.2, reverse: -3.4 }
+const FLIGHT_FADE_MS = 680
+const ANCHORS = 8
 const liveScenes = new Set()
+
+const SLOT_KEYS = [
+  "accent", "deep", "cyan", "cyanBright", "magenta", "magentaBright",
+  "success", "successDeep", "sky", "blue", "danger",
+]
 
 export function baseSymbol(symbol) {
   return String(symbol || "")
@@ -57,10 +62,6 @@ function assignRingSymbols(rings, nodes) {
     const owner = list.find((node) => ringOf.get(node.id) === index)
     ring.base = owner ? baseSymbol(owner.id) : (COIN_BASES[index] || null)
     ring.symbol = owner ? String(owner.id).toLowerCase() : null
-    if (ring.tilt) {
-      ring.tilt.userData.symbol = ring.symbol || ""
-      ring.tilt.userData.base = ring.base || ""
-    }
   })
   return ringOf
 }
@@ -73,6 +74,27 @@ function impulseOffset(impulse, now) {
   const env = Math.sin(Math.PI * (elapsed / duration))
   const peak = impulse.mode === "reverse" ? IMPULSE_PEAK.reverse : IMPULSE_PEAK.boost
   return peak * env
+}
+
+function hashString(text) {
+  let value = 0
+  for (const char of String(text)) value = (value * 31 + char.charCodeAt(0)) >>> 0
+  return value
+}
+
+function easeInOut(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+}
+
+export function syncMetricFlights(pulses, onDone) {
+  let handled = false
+  for (const scene of liveScenes) {
+    if (typeof scene.syncFlights === "function") {
+      scene.syncFlights(pulses || [], onDone)
+      handled = true
+    }
+  }
+  return handled
 }
 
 export function nudgeRing(symbol, options = {}) {
@@ -141,11 +163,6 @@ function makePalette() {
   }
 }
 
-const SLOT_KEYS = [
-  "accent", "deep", "cyan", "cyanBright", "magenta", "magentaBright",
-  "success", "successDeep", "sky", "blue", "danger",
-]
-
 function toneColor(palette, slot, mode) {
   const base = palette[SLOT_KEYS[slot] || "accent"] || palette.accent
   const hsl = { h: 0, s: 0, l: 0 }
@@ -167,434 +184,357 @@ function toneColor(palette, slot, mode) {
   return out
 }
 
-function ellipseXY(rx, ry, segments) {
-  const pts = []
-  for (let i = 0; i < segments; i += 1) {
-    const t = (i / segments) * Math.PI * 2
-    pts.push(new THREE.Vector3(Math.cos(t) * rx, Math.sin(t) * ry, 0))
-  }
-  return pts
+function solidColor(palette, slot) {
+  const base = palette[SLOT_KEYS[slot] || "accent"] || palette.accent
+  return base.clone()
 }
 
-function superellipse(rng, r0, r1) {
-  const power = 2.45
-  for (let attempt = 0; attempt < 24; attempt += 1) {
-    const x = rng() * 2 - 1
-    const y = rng() * 2 - 1
-    const rho = (Math.abs(x) ** power + Math.abs(y) ** power) ** (1 / power)
-    if (rho < r0 || rho > r1) continue
-    const z = (rng() - 0.5) * 0.42 * (1.08 - rho)
-    return { x: x * 0.96, y: y * 0.96, z }
-  }
-  const angle = rng() * Math.PI * 2
-  const radius = r0 + (r1 - r0) * rng()
-  return {
-    x: Math.cos(angle) * radius * 0.9,
-    y: Math.sin(angle) * radius * 0.9,
-    z: (rng() - 0.5) * 0.28,
+function applyCssColor(material, value, fallback) {
+  try {
+    material.color.set(value || fallback)
+  } catch {
+    material.color.set(fallback)
   }
 }
 
-function gaussian(rng, sx, sy, sz) {
-  const u = Math.max(1e-6, rng())
-  const v = rng()
-  const mag = Math.sqrt(-2 * Math.log(u))
-  const x = mag * Math.cos(Math.PI * 2 * v) * sx
-  const u2 = Math.max(1e-6, rng())
-  const v2 = rng()
-  const mag2 = Math.sqrt(-2 * Math.log(u2))
-  const y = mag2 * Math.cos(Math.PI * 2 * v2) * sy
-  return {
-    x: clamp(x, -0.72, 0.72),
-    y: clamp(y, -0.72, 0.72),
-    z: (rng() - 0.5) * 2 * sz,
-  }
+function ringSignature(nodes) {
+  if (!nodes.length) return "default"
+  return nodes.map((node) => baseSymbol(node.id)).sort().join("|")
 }
 
-function paintBuffer(attr, slots, mode, palette) {
-  const array = attr.array
-  const scratch = new THREE.Color()
-  for (let i = 0; i < slots.length; i += 1) {
-    scratch.copy(toneColor(palette, slots[i], mode))
-    array[i * 3] = scratch.r
-    array[i * 3 + 1] = scratch.g
-    array[i * 3 + 2] = scratch.b
-  }
-  attr.needsUpdate = true
-}
-
-function makePoints(positions, slots, sizePx, opacity) {
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3))
-  const colors = new Float32Array(slots.length * 3)
-  geo.setAttribute("color", new THREE.BufferAttribute(colors, 3))
-  const material = new THREE.PointsMaterial({
-    size: sizePx,
-    vertexColors: true,
-    transparent: true,
-    opacity,
-    depthWrite: false,
-    sizeAttenuation: false,
+function makeSpecs(count) {
+  const total = Math.max(1, count)
+  const gap = total > 5 ? 0.28 : 0.36
+  const slots = [SLOT.accent, SLOT.cyan, SLOT.magenta, SLOT.success, SLOT.deep, SLOT.sky]
+  const tilts = [
+    [1.28, 0.22],
+    [0.52, -0.42],
+    [1.02, 0.88],
+    [0.78, -0.18],
+    [1.16, 0.48],
+    [0.64, -0.72],
+  ]
+  return Array.from({ length: total }, (_, index) => {
+    const tilt = tilts[index % tilts.length]
+    const sign = index % 2 === 0 ? 1 : -1
+    return {
+      radius: 1.02 + index * gap,
+      tiltX: tilt[0],
+      tiltZ: tilt[1],
+      speed: sign * (0.18 + (index % 3) * 0.05),
+      hold: 0.4 * index,
+      slot: slots[index % slots.length],
+      tube: 0.04 + (index % 2) * 0.008,
+    }
   })
-  const points = new THREE.Points(geo, material)
-  points.frustumCulled = false
-  return { points, geo, material, slots, colorAttr: geo.getAttribute("color") }
 }
 
-function glowTexture(accent) {
+function disposeTree(root) {
+  if (!root) return
+  root.traverse((obj) => {
+    if (obj.geometry) obj.geometry.dispose()
+    if (obj.material) {
+      const list = Array.isArray(obj.material) ? obj.material : [obj.material]
+      list.forEach((material) => {
+        if (material.map) material.map.dispose()
+        material.dispose()
+      })
+    }
+  })
+}
+
+function makePlanetTexture(accent) {
   const canvas = document.createElement("canvas")
-  canvas.width = 256
+  canvas.width = 512
   canvas.height = 256
   const ctx = canvas.getContext("2d")
-  const hex = `#${accent.getHexString()}`
-  const grd = ctx.createRadialGradient(128, 128, 8, 128, 128, 128)
-  grd.addColorStop(0, hex)
-  grd.addColorStop(0.22, "rgba(34, 211, 238, 0.55)")
-  grd.addColorStop(0.5, "rgba(232, 121, 249, 0.28)")
-  grd.addColorStop(1, "rgba(255, 255, 255, 0)")
-  ctx.clearRect(0, 0, 256, 256)
-  ctx.globalAlpha = 0.42
-  ctx.fillStyle = grd
-  ctx.fillRect(0, 0, 256, 256)
+  const base = accent.clone().lerp(new THREE.Color("#5c3d00"), 0.42)
+  const band = accent.clone().lerp(new THREE.Color("#fff6d2"), 0.28)
+  const panel = accent.clone().lerp(new THREE.Color("#ffffff"), 0.62)
+  ctx.fillStyle = `#${base.getHexString()}`
+  ctx.fillRect(0, 0, 512, 256)
+  ctx.fillStyle = `#${band.getHexString()}`
+  for (let i = 0; i < 8; i += 1) {
+    ctx.globalAlpha = i % 2 ? 0.45 : 0.92
+    ctx.fillRect(0, 14 + i * 30, 512, 8 + (i % 3) * 3)
+  }
+  ctx.globalAlpha = 0.9
+  ctx.fillStyle = `#${panel.getHexString()}`
+  ctx.beginPath()
+  ctx.arc(128, 74, 20, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.fillRect(286, 146, 78, 24)
+  ctx.fillRect(48, 176, 52, 16)
+  ctx.fillRect(360, 64, 28, 40)
+  ctx.globalAlpha = 1
   const tex = new THREE.CanvasTexture(canvas)
   tex.colorSpace = THREE.SRGBColorSpace
+  tex.wrapS = THREE.RepeatWrapping
+  tex.anisotropy = 4
   return tex
 }
 
-function buildMist(rng, palette) {
-  const layers = [
-    { count: 900, sx: 0.16, sy: 0.14, sz: 0.1, size: 3.1, opacity: 0.92, bias: [SLOT.accent, SLOT.deep, SLOT.accent, SLOT.magentaBright] },
-    { count: 1100, sx: 0.34, sy: 0.3, sz: 0.16, size: 2.3, opacity: 0.62, bias: [SLOT.accent, SLOT.cyanBright, SLOT.magentaBright, SLOT.sky, SLOT.deep] },
-    { count: 720, sx: 0.5, sy: 0.46, sz: 0.2, size: 1.7, opacity: 0.34, bias: [SLOT.cyan, SLOT.magenta, SLOT.blue, SLOT.success, SLOT.accent] },
-  ]
-  return layers.map((layer) => {
-    const positions = new Float32Array(layer.count * 3)
-    const slots = new Uint8Array(layer.count)
-    for (let i = 0; i < layer.count; i += 1) {
-      const lobe = i % 7 === 0
-      const p = gaussian(rng, layer.sx, layer.sy, layer.sz)
-      if (lobe) {
-        p.x = clamp(p.x * 0.65 - 0.3, -0.7, 0.15)
-        p.y = clamp(p.y * 0.7 - 0.06, -0.55, 0.4)
-      }
-      positions[i * 3] = p.x
-      positions[i * 3 + 1] = p.y
-      positions[i * 3 + 2] = p.z
-      slots[i] = layer.bias[i % layer.bias.length]
+function buildCore(palette) {
+  const group = new THREE.Group()
+  const color = palette.accent.clone()
+  const map = makePlanetTexture(color)
+  const body = new THREE.Mesh(
+    new THREE.SphereGeometry(0.46, 48, 32),
+    new THREE.MeshStandardMaterial({
+      color,
+      map,
+      emissive: color,
+      emissiveIntensity: 0.18,
+      metalness: 0.58,
+      roughness: 0.36,
+    }),
+  )
+  body.name = "core-body"
+  body.renderOrder = 3
+  group.add(body)
+
+  const atmosphere = new THREE.Mesh(
+    new THREE.SphereGeometry(0.6, 32, 24),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.14,
+      depthWrite: false,
+    }),
+  )
+  atmosphere.renderOrder = 4
+  group.add(atmosphere)
+
+  const equator = new THREE.Mesh(
+    new THREE.TorusGeometry(0.78, 0.016, 8, 80),
+    new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.35,
+      metalness: 0.4,
+      roughness: 0.35,
+    }),
+  )
+  equator.rotation.x = 1.18
+  equator.renderOrder = 3
+  group.add(equator)
+
+  return { group, body, atmosphere, equator, map }
+}
+
+function buildOrbitRings(palette, count) {
+  return makeSpecs(count).map((spec) => {
+    const tilt = new THREE.Group()
+    tilt.rotation.order = "XYZ"
+    tilt.rotation.x = spec.tiltX
+    tilt.rotation.y = 0
+    tilt.rotation.z = spec.tiltZ
+
+    const spin = new THREE.Group()
+    spin.rotation.order = "XYZ"
+    tilt.add(spin)
+
+    const color = solidColor(palette, spec.slot)
+    const tubeMat = new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.22,
+      metalness: 0.48,
+      roughness: 0.34,
+    })
+    const torus = new THREE.Mesh(
+      new THREE.TorusGeometry(spec.radius, spec.tube, 14, 120),
+      tubeMat,
+    )
+    torus.renderOrder = 4
+    tilt.add(torus)
+
+    const beadMat = new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.7,
+      metalness: 0.3,
+      roughness: 0.28,
+    })
+    const anchors = []
+    for (let i = 0; i < ANCHORS; i += 1) {
+      const angle = ((i + 0.17) / ANCHORS) * Math.PI * 2
+      const bead = new THREE.Mesh(
+        new THREE.SphereGeometry(i === 0 ? 0.09 : 0.058, 14, 12),
+        beadMat,
+      )
+      bead.position.set(Math.cos(angle) * spec.radius, Math.sin(angle) * spec.radius, 0)
+      bead.userData.index = i
+      bead.renderOrder = 5
+      spin.add(bead)
+      anchors.push(bead)
     }
-    const made = makePoints(positions, slots, layer.size, layer.opacity)
-    paintBuffer(made.colorAttr, slots, "particle", palette)
-    made.points.renderOrder = 3
-    return made
+
+    return {
+      spec,
+      tilt,
+      spin,
+      torus,
+      tubeMat,
+      beadMat,
+      anchors,
+      phase: 0,
+      impulse: null,
+      base: null,
+      symbol: null,
+    }
   })
 }
 
 function buildNetwork(rng, palette) {
-  const inner = []
-  const outer = []
-  for (let i = 0; i < 260; i += 1) {
-    const p = gaussian(rng, 0.2, 0.17, 0.12)
-    inner.push(p)
+  const count = 240
+  const positions = new Float32Array(count * 3)
+  const slots = new Uint8Array(count)
+  const points = []
+  for (let i = 0; i < count; i += 1) {
+    const radius = 0.28 + rng() * 0.72
+    const theta = Math.acos(clamp(2 * rng() - 1, -1, 1))
+    const phi = rng() * Math.PI * 2
+    const x = Math.sin(theta) * Math.cos(phi) * radius
+    const y = Math.cos(theta) * radius
+    const z = Math.sin(theta) * Math.sin(phi) * radius
+    positions[i * 3] = x
+    positions[i * 3 + 1] = y
+    positions[i * 3 + 2] = z
+    points.push({ x, y, z })
+    slots[i] = [SLOT.accent, SLOT.cyan, SLOT.magenta, SLOT.sky, SLOT.deep, SLOT.success][i % 6]
   }
-  for (let i = 0; i < 120; i += 1) inner.push(superellipse(rng, 0.18, 0.48))
-  for (let i = 0; i < 190; i += 1) outer.push(superellipse(rng, 0.5, 0.98))
-
-  const nodes = inner.concat(outer)
-  const innerCount = inner.length
-  const positions = new Float32Array(nodes.length * 3)
-  const slots = new Uint8Array(nodes.length)
-  nodes.forEach((p, i) => {
-    positions[i * 3] = p.x
-    positions[i * 3 + 1] = p.y
-    positions[i * 3 + 2] = p.z
-    slots[i] = i < innerCount
-      ? [SLOT.accent, SLOT.deep, SLOT.magentaBright, SLOT.cyanBright][i % 4]
-      : [SLOT.cyan, SLOT.magenta, SLOT.sky, SLOT.success, SLOT.accent, SLOT.blue][i % 6]
-  })
-
-  const cell = 0.09
-  const buckets = new Map()
-  const keyOf = (x, y) => `${Math.floor(x / cell)}:${Math.floor(y / cell)}`
-  inner.forEach((p, i) => {
-    const key = keyOf(p.x, p.y)
-    const list = buckets.get(key)
-    if (list) list.push(i)
-    else buckets.set(key, [i])
-  })
 
   const edges = []
-  const pushEdge = (a, b) => {
-    if (a === b || a < 0 || b < 0) return
-    const id = a < b ? a * 10000 + b : b * 10000 + a
-    edges.push(id)
-  }
-
-  inner.forEach((p, i) => {
-    const cx = Math.floor(p.x / cell)
-    const cy = Math.floor(p.y / cell)
+  const seen = new Set()
+  for (let i = 0; i < count; i += 1) {
     let best = -1
-    let bestD = 0.2
-    let second = -1
-    let secondD = 0.2
-    for (let oy = -2; oy <= 2; oy += 1) {
-      for (let ox = -2; ox <= 2; ox += 1) {
-        const list = buckets.get(`${cx + ox}:${cy + oy}`)
-        if (!list) continue
-        for (const j of list) {
-          if (j === i) continue
-          const q = inner[j]
-          const d = (p.x - q.x) ** 2 + (p.y - q.y) ** 2 + (p.z - q.z) ** 2
-          if (d < 0.004) continue
-          if (d < bestD) {
-            second = best
-            secondD = bestD
-            best = j
-            bestD = d
-          } else if (d < secondD) {
-            second = j
-            secondD = d
-          }
-        }
-      }
-    }
-    if (best >= 0) pushEdge(i, best)
-    if (second >= 0 && secondD < 0.045) pushEdge(i, second)
-  })
-
-  outer.forEach((p, i) => {
-    let best = 0
-    let bestD = Infinity
-    const stride = 3
-    for (let j = 0; j < inner.length; j += stride) {
-      const q = inner[j]
-      const d = (p.x - q.x) ** 2 + (p.y - q.y) ** 2
+    let bestD = 0.22
+    const a = points[i]
+    for (let j = 0; j < count; j += 1) {
+      if (i === j) continue
+      const b = points[j]
+      const d = (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2
       if (d < bestD) {
         bestD = d
         best = j
       }
     }
-    pushEdge(innerCount + i, best)
-    if (i % 3 === 0) pushEdge(innerCount + i, (best * 7 + 13) % inner.length)
-  })
+    if (best < 0) continue
+    const id = i < best ? i * 1000 + best : best * 1000 + i
+    if (seen.has(id)) continue
+    seen.add(id)
+    edges.push([i, best])
+  }
 
-  const unique = [...new Set(edges)]
-  const linePositions = new Float32Array(unique.length * 2 * 3)
-  const lineSlots = new Uint8Array(unique.length * 2)
-  unique.forEach((id, e) => {
-    const a = Math.floor(id / 10000)
-    const b = id % 10000
-    const pa = nodes[a]
-    const pb = nodes[b]
-    const o = e * 6
-    linePositions[o] = pa.x
-    linePositions[o + 1] = pa.y
-    linePositions[o + 2] = pa.z
-    linePositions[o + 3] = pb.x
-    linePositions[o + 4] = pb.y
-    linePositions[o + 5] = pb.z
-    lineSlots[e * 2] = slots[a]
-    lineSlots[e * 2 + 1] = slots[b]
+  const linePositions = new Float32Array(edges.length * 2 * 3)
+  const lineSlots = new Uint8Array(edges.length * 2)
+  edges.forEach(([a, b], index) => {
+    const o = index * 6
+    linePositions[o] = points[a].x
+    linePositions[o + 1] = points[a].y
+    linePositions[o + 2] = points[a].z
+    linePositions[o + 3] = points[b].x
+    linePositions[o + 4] = points[b].y
+    linePositions[o + 5] = points[b].z
+    lineSlots[index * 2] = slots[a]
+    lineSlots[index * 2 + 1] = slots[b]
   })
 
   const lineGeo = new THREE.BufferGeometry()
   lineGeo.setAttribute("position", new THREE.BufferAttribute(linePositions, 3))
   const lineColors = new Float32Array(lineSlots.length * 3)
   lineGeo.setAttribute("color", new THREE.BufferAttribute(lineColors, 3))
-  const lineMat = new THREE.LineBasicMaterial({
+  const lines = new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({
     vertexColors: true,
-    transparent: true,
-    opacity: 0.78,
-    depthWrite: false,
-  })
-  const lines = new THREE.LineSegments(lineGeo, lineMat)
-  lines.frustumCulled = false
-  lines.renderOrder = 4
-  const lineColorAttr = lineGeo.getAttribute("color")
-  paintBuffer(lineColorAttr, lineSlots, "line", palette)
-
-  const dots = makePoints(positions, slots, 3.3, 0.9)
-  paintBuffer(dots.colorAttr, slots, "particle", palette)
-  dots.points.renderOrder = 5
-
-  return {
-    lines,
-    lineSlots,
-    lineColorAttr,
-    dots,
-    edgeCount: unique.length,
-  }
-}
-
-function buildDust(rng) {
-  const count = 520
-  const positions = new Float32Array(count * 3)
-  const slots = new Uint8Array(count)
-  for (let i = 0; i < count; i += 1) {
-    const p = superellipse(rng, 0.05, 1)
-    positions[i * 3] = p.x
-    positions[i * 3 + 1] = p.y
-    positions[i * 3 + 2] = p.z * 0.4 - 0.15
-    slots[i] = i % 5 === 0 ? SLOT.accent : SLOT.blue
-  }
-  const made = makePoints(positions, slots, 1.45, 0.4)
-  made.points.renderOrder = 1
-  return made
-}
-
-function buildRadar() {
-  const group = new THREE.Group()
-  const material = new THREE.LineBasicMaterial({
-    color: 0xb7c2d0,
     transparent: true,
     opacity: 0.55,
     depthWrite: false,
-  })
-  for (const radius of [0.28, 0.46, 0.64, 0.8, 0.94]) {
-    group.add(new THREE.LineLoop(
-      new THREE.BufferGeometry().setFromPoints(ellipseXY(radius, radius * 0.96, 96)),
-      material,
-    ))
+  }))
+  lines.frustumCulled = false
+  lines.renderOrder = 1
+
+  const dotGeo = new THREE.BufferGeometry()
+  dotGeo.setAttribute("position", new THREE.BufferAttribute(positions, 3))
+  const dotColors = new Float32Array(slots.length * 3)
+  dotGeo.setAttribute("color", new THREE.BufferAttribute(dotColors, 3))
+  const dots = new THREE.Points(dotGeo, new THREE.PointsMaterial({
+    size: 0.055,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.9,
+    depthWrite: false,
+    sizeAttenuation: true,
+  }))
+  dots.frustumCulled = false
+  dots.renderOrder = 1
+
+  const paint = (nextPalette) => {
+    const lineAttr = lineGeo.getAttribute("color")
+    const dotAttr = dotGeo.getAttribute("color")
+    const scratch = new THREE.Color()
+    for (let i = 0; i < lineSlots.length; i += 1) {
+      scratch.copy(toneColor(nextPalette, lineSlots[i], "line"))
+      lineAttr.array[i * 3] = scratch.r
+      lineAttr.array[i * 3 + 1] = scratch.g
+      lineAttr.array[i * 3 + 2] = scratch.b
+    }
+    for (let i = 0; i < slots.length; i += 1) {
+      scratch.copy(toneColor(nextPalette, slots[i], "particle"))
+      dotAttr.array[i * 3] = scratch.r
+      dotAttr.array[i * 3 + 1] = scratch.g
+      dotAttr.array[i * 3 + 2] = scratch.b
+    }
+    lineAttr.needsUpdate = true
+    dotAttr.needsUpdate = true
   }
-  for (let i = 0; i < 12; i += 1) {
-    const a = (i / 12) * Math.PI * 2
-    group.add(new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(Math.cos(a) * 0.16, Math.sin(a) * 0.15, 0),
-        new THREE.Vector3(Math.cos(a) * 0.96, Math.sin(a) * 0.92, 0),
-      ]),
-      material,
-    ))
-  }
-  group.position.z = -0.22
-  group.renderOrder = 0
-  return group
+  paint(palette)
+
+  const root = new THREE.Group()
+  root.add(lines)
+  root.add(dots)
+  return { root, paint }
 }
 
-function buildRings(palette) {
-  const specs = [
-    { rx: 0.72, ry: 0.56, tiltX: 1.08, tiltZ: 0.18, speed: 0.11, hold: 0.4, slot: SLOT.accent, opacity: 0.95, tube: 0.02 },
-    { rx: 0.86, ry: 0.62, tiltX: 0.78, tiltZ: -0.48, speed: -0.08, hold: 1.1, slot: SLOT.cyan, opacity: 0.9, tube: 0.016 },
-    { rx: 0.64, ry: 0.84, tiltX: 0.42, tiltZ: 0.96, speed: 0.07, hold: 2.2, slot: SLOT.magenta, opacity: 0.88, tube: 0.015 },
-    { rx: 0.94, ry: 0.7, tiltX: 1.24, tiltZ: 0.28, speed: -0.05, hold: 0.8, slot: SLOT.successDeep, opacity: 0.82, tube: 0.013 },
-    { rx: 0.52, ry: 0.44, tiltX: 1.32, tiltZ: -0.22, speed: 0.14, hold: 1.7, slot: SLOT.deep, opacity: 0.9, tube: 0.018 },
-  ]
-  return specs.map((spec) => {
-    const tilt = new THREE.Group()
-    tilt.rotation.x = spec.tiltX
-    tilt.rotation.z = spec.tiltZ
-    const spin = new THREE.Group()
-    const stretch = new THREE.Group()
-    tilt.add(spin)
-    spin.add(stretch)
+function bendCurve(from, to, seed, viewDir) {
+  const sign = (seed & 1) ? 1 : -1
+  const span = Math.max(0.45, from.distanceTo(to))
+  const mag = span * (0.38 + ((seed >>> 4) % 30) / 100)
+  const mid = from.clone().lerp(to, 0.5)
+  const away = mid.lengthSq() > 1e-4 ? mid.clone().normalize() : new THREE.Vector3(0, 1, 0)
+  const side = new THREE.Vector3().crossVectors(away, new THREE.Vector3(0, 1, 0))
+  if (side.lengthSq() < 1e-6) side.set(1, 0, 0)
+  side.normalize()
+  const toward = (viewDir || new THREE.Vector3(0, 0, 1)).clone().multiplyScalar(-sign)
+  const c1 = from.clone().lerp(to, 0.32)
+    .addScaledVector(side, sign * mag)
+    .addScaledVector(toward, span * 0.34)
+    .add(new THREE.Vector3(0, sign * span * 0.22, 0))
+  const c2 = from.clone().lerp(to, 0.7)
+    .addScaledVector(side, sign * mag * 0.45)
+    .addScaledVector(toward, span * 0.12)
+  for (const point of [c1, c2]) {
+    if (point.length() < 0.78) point.setLength(0.78)
+  }
+  return new THREE.CubicBezierCurve3(from.clone(), c1, c2, to.clone())
+}
 
-    const curve = new THREE.CatmullRomCurve3(ellipseXY(spec.rx, spec.ry, 140), true, "catmullrom", 0.05)
-    const color = toneColor(palette, spec.slot, "particle")
-    const tube = new THREE.Mesh(
-      new THREE.TubeGeometry(curve, 140, spec.tube, 6, true),
-      new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: spec.opacity,
-        depthWrite: false,
-      }),
-    )
-    tube.renderOrder = 6
-    const rail = new THREE.Mesh(
-      new THREE.TubeGeometry(
-        new THREE.CatmullRomCurve3(ellipseXY(spec.rx * 0.985, spec.ry * 0.985, 100), true),
-        100, spec.tube * 0.38, 4, true,
-      ),
-      new THREE.MeshBasicMaterial({
-        color: 0xffffff,
-        transparent: true,
-        opacity: 0.55,
-        depthWrite: false,
-      }),
-    )
-    rail.renderOrder = 7
-    stretch.add(tube)
-    stretch.add(rail)
-
-    const tickPositions = []
-    const tickSlots = []
-    const ticks = 42
-    for (let i = 0; i < ticks; i += 1) {
-      const a = (i / ticks) * Math.PI * 2
-      const x = Math.cos(a) * spec.rx
-      const y = Math.sin(a) * spec.ry
-      tickPositions.push(x, y, 0, x * 0.93, y * 0.93, 0)
-      tickSlots.push(spec.slot, spec.slot)
-    }
-    const tickGeo = new THREE.BufferGeometry()
-    tickGeo.setAttribute("position", new THREE.Float32BufferAttribute(tickPositions, 3))
-    const tickColors = new Float32Array(tickSlots.length * 3)
-    tickGeo.setAttribute("color", new THREE.BufferAttribute(tickColors, 3))
-    const tickColorAttr = tickGeo.getAttribute("color")
-    paintBuffer(tickColorAttr, tickSlots, "line", palette)
-    const tickLines = new THREE.LineSegments(tickGeo, new THREE.LineBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.45,
-      depthWrite: false,
-    }))
-    tickLines.renderOrder = 6
-    stretch.add(tickLines)
-
-    const dustCount = 70
-    const dustPos = new Float32Array(dustCount * 3)
-    const dustSlots = new Uint8Array(dustCount)
-    for (let i = 0; i < dustCount; i += 1) {
-      const a = (i / dustCount) * Math.PI * 2 + (i % 5) * 0.02
-      const j = 1 + ((i * 17) % 9) * 0.012
-      dustPos[i * 3] = Math.cos(a) * spec.rx * j
-      dustPos[i * 3 + 1] = Math.sin(a) * spec.ry * j
-      dustPos[i * 3 + 2] = ((i % 7) - 3) * 0.01
-      dustSlots[i] = spec.slot
-    }
-    const dust = makePoints(dustPos, dustSlots, 2.4, 0.75)
-    paintBuffer(dust.colorAttr, dustSlots, "particle", palette)
-    dust.points.renderOrder = 6
-    stretch.add(dust.points)
-
-    const sparkGeo = new THREE.SphereGeometry(0.032, 12, 12)
-    const haloGeo = new THREE.SphereGeometry(0.058, 10, 10)
-    const sparks = [0, 1, 2, 3].map((index) => {
-      const spark = new THREE.Mesh(sparkGeo, new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 0.98,
-        depthWrite: false,
-      }))
-      const halo = new THREE.Mesh(haloGeo, new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 0.22,
-        depthWrite: false,
-      }))
-      spark.add(halo)
-      spark.userData.offset = index * (Math.PI / 2)
-      spark.renderOrder = 8
-      stretch.add(spark)
-      return spark
-    })
-
-    const anchors = []
-    const anchorCount = 8
-    for (let i = 0; i < anchorCount; i += 1) {
-      const jitter = ((i * 47) % 11) / 11
-      const angle = ((i + jitter * 0.55) / anchorCount) * Math.PI * 2
-      const anchor = new THREE.Object3D()
-      anchor.position.set(Math.cos(angle) * spec.rx, Math.sin(angle) * spec.ry, 0)
-      anchor.userData.index = i
-      stretch.add(anchor)
-      anchors.push(anchor)
-    }
-
-    return {
-      spec, tilt, spin, stretch, tube, sparks, dust, tickSlots, tickColorAttr,
-      anchors, phase: 0, sparkPhase: 0, impulse: null, base: null, symbol: null,
-    }
-  })
+function failureStub() {
+  const stub = {
+    setNodes() {},
+    setReduced() {},
+    setOnFrame() {},
+    getIntakeTargets() { return [] },
+    nudgeRing() { return false },
+    syncFlights(pulses, onDone) {
+      for (const pulse of pulses || []) onDone?.(pulse.id)
+    },
+    sampleOrbit() { return { hasCore: false, rings: [] } },
+    resize() {},
+    dispose() { liveScenes.delete(stub) },
+  }
+  liveScenes.add(stub)
+  return stub
 }
 
 export function createNebulaScene(host, options = {}) {
@@ -602,11 +542,15 @@ export function createNebulaScene(host, options = {}) {
     nodes: options.nodes || [],
     reduced: Boolean(options.reduced),
     onFrame: typeof options.onFrame === "function" ? options.onFrame : null,
+    onFlightDone: null,
     intakeTargets: [],
     disposed: false,
     width: 1,
     height: 1,
     accentHex: "",
+    outer: 2.2,
+    camDist: 12,
+    ringSig: "",
   }
 
   let palette = makePalette()
@@ -616,8 +560,8 @@ export function createNebulaScene(host, options = {}) {
   const scene = new THREE.Scene()
   scene.background = bg
 
-  const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 80)
-  camera.position.set(0, 0.04, BASE_Z)
+  const camera = new THREE.PerspectiveCamera(FOV, 1, 0.08, 80)
+  camera.position.set(0, 4, 10)
   camera.lookAt(0, 0, 0)
 
   let renderer
@@ -626,17 +570,10 @@ export function createNebulaScene(host, options = {}) {
       antialias: true,
       alpha: false,
       powerPreference: "high-performance",
+      preserveDrawingBuffer: true,
     })
   } catch {
-    return {
-      setNodes() {},
-      setReduced() {},
-      setOnFrame() {},
-      getIntakeTargets() { return [] },
-      nudgeRing() { return false },
-      resize() {},
-      dispose() {},
-    }
+    return failureStub()
   }
   renderer.setClearColor(bg, 1)
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
@@ -647,48 +584,37 @@ export function createNebulaScene(host, options = {}) {
   renderer.domElement.style.pointerEvents = "none"
   host.appendChild(renderer.domElement)
 
-  const cloudTilt = new THREE.Group()
-  cloudTilt.rotation.x = 0.06
-  const cloudStretch = new THREE.Group()
-  cloudTilt.add(cloudStretch)
-  scene.add(cloudTilt)
+  scene.add(new THREE.AmbientLight(0xfff8ee, 0.22))
+  scene.add(new THREE.HemisphereLight(0xfff4dc, 0xd5deea, 0.2))
+  const key = new THREE.DirectionalLight(0xffffff, 3.3)
+  key.position.set(4.2, 6.4, 3.6)
+  scene.add(key)
+  const rim = new THREE.DirectionalLight(0xb7d7ff, 0.9)
+  rim.position.set(-5.2, 1.4, -3.8)
+  scene.add(rim)
+  const coreLight = new THREE.PointLight(0xf0b90b, 8, 16, 2)
+  scene.add(coreLight)
 
-  const rng = mulberry32(0xa11ce)
+  let core = buildCore(palette)
+  scene.add(core.group)
 
-  cloudStretch.add(buildRadar())
-  const dust = buildDust(rng)
-  paintBuffer(dust.colorAttr, dust.slots, "particle", palette)
-  cloudStretch.add(dust.points)
-  const mist = buildMist(rng, palette)
-  mist.forEach((layer) => cloudStretch.add(layer.points))
-  const network = buildNetwork(rng, palette)
-  cloudStretch.add(network.lines)
-  cloudStretch.add(network.dots.points)
+  const network = buildNetwork(mulberry32(0xa11ce), palette)
+  scene.add(network.root)
 
-  let glowMap = glowTexture(palette.accent)
-  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: glowMap,
-    transparent: true,
-    opacity: 0.55,
-    depthWrite: false,
-    blending: THREE.NormalBlending,
-  }))
-  glow.scale.set(1.15, 1.15, 1)
-  glow.position.z = -0.05
-  glow.renderOrder = 2
-  cloudStretch.add(glow)
-
-  const rings = buildRings(palette)
-  rings.forEach((ring) => scene.add(ring.tilt))
-
+  let rings = []
   const coinRoot = new THREE.Group()
   scene.add(coinRoot)
-  const coinGeo = new THREE.SphereGeometry(1, 16, 16)
-  const coinHaloGeo = new THREE.SphereGeometry(1, 12, 12)
+  const coinGeo = new THREE.SphereGeometry(0.09, 18, 14)
   const nodeMeshes = []
 
-  const linkPos = new Float32Array(64 * 2 * 3)
-  const linkCol = new Float32Array(64 * 2 * 3)
+  const flightRoot = new THREE.Group()
+  scene.add(flightRoot)
+  const flights = new Map()
+  const headGeo = new THREE.SphereGeometry(0.05, 12, 10)
+
+  const linkMax = 32
+  const linkPos = new Float32Array(linkMax * 2 * 3)
+  const linkCol = new Float32Array(linkMax * 2 * 3)
   const linkGeo = new THREE.BufferGeometry()
   linkGeo.setAttribute("position", new THREE.BufferAttribute(linkPos, 3))
   linkGeo.setAttribute("color", new THREE.BufferAttribute(linkCol, 3))
@@ -696,124 +622,137 @@ export function createNebulaScene(host, options = {}) {
   const linkLine = new THREE.LineSegments(linkGeo, new THREE.LineBasicMaterial({
     vertexColors: true,
     transparent: true,
-    opacity: 0.7,
+    opacity: 0.65,
     depthWrite: false,
   }))
   linkLine.frustumCulled = false
-  linkLine.renderOrder = 7
+  linkLine.renderOrder = 2
   scene.add(linkLine)
-
-  const syncRingSymbols = (nodes) => assignRingSymbols(rings, nodes)
-
-  const paintCoins = () => {
-    nodeMeshes.forEach((mesh, index) => {
-      const slot = COIN_SLOTS[index % COIN_SLOTS.length]
-      const color = toneColor(palette, slot, "particle")
-      mesh.userData.color = `#${color.getHexString()}`
-      mesh.userData.slot = slot
-      mesh.children.forEach((child) => child.material.color.copy(color))
-    })
-  }
-
-  const rebuildNodes = (nodes) => {
-    while (coinRoot.children.length) {
-      const child = coinRoot.children.pop()
-      child.traverse((obj) => {
-        if (obj.material) {
-          const list = Array.isArray(obj.material) ? obj.material : [obj.material]
-          list.forEach((m) => m.dispose())
-        }
-      })
-    }
-    nodeMeshes.length = 0
-    const ringOf = syncRingSymbols(nodes)
-    nodes.forEach((node, index) => {
-      const slot = COIN_SLOTS[index % COIN_SLOTS.length]
-      const color = toneColor(palette, slot, "particle")
-      const pivot = new THREE.Group()
-      const glowMesh = new THREE.Mesh(coinGeo, new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 0.95,
-        depthWrite: false,
-      }))
-      const halo = new THREE.Mesh(coinHaloGeo, new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 0.18,
-        depthWrite: false,
-      }))
-      glowMesh.scale.setScalar(0.045)
-      halo.scale.setScalar(0.09)
-      glowMesh.renderOrder = 9
-      halo.renderOrder = 8
-      pivot.add(halo)
-      pivot.add(glowMesh)
-      const ringIndex = ringOf.get(node.id)
-      pivot.userData = {
-        id: node.id,
-        symbol: String(node.id || "").toLowerCase(),
-        label: node.label,
-        color: `#${color.getHexString()}`,
-        pct: node.pct,
-        score: node.score,
-        ring: Number.isInteger(ringIndex) ? ringIndex : (node.ring ?? index) % rings.length,
-        baseAngle: node.baseAngle || 0,
-        drift: node.drift || 0,
-        bob: node.bob || 0,
-        slot,
-      }
-      coinRoot.add(pivot)
-      nodeMeshes.push(pivot)
-    })
-  }
-  rebuildNodes(state.nodes)
-
-  const repaint = () => {
-    palette = makePalette()
-    state.accentHex = palette.accent.getHexString()
-    mist.forEach((layer) => paintBuffer(layer.colorAttr, layer.slots, "particle", palette))
-    paintBuffer(network.lineColorAttr, network.lineSlots, "line", palette)
-    paintBuffer(network.dots.colorAttr, network.dots.slots, "particle", palette)
-    paintBuffer(dust.colorAttr, dust.slots, "particle", palette)
-    rings.forEach((ring) => {
-      const color = toneColor(palette, ring.spec.slot, "particle")
-      ring.tube.material.color.copy(color)
-      ring.sparks.forEach((spark) => {
-        spark.material.color.copy(color)
-        spark.children.forEach((child) => child.material.color.copy(color))
-      })
-      paintBuffer(ring.dust.colorAttr, ring.dust.slots, "particle", palette)
-      paintBuffer(ring.tickColorAttr, ring.tickSlots, "line", palette)
-    })
-    if (glow.material.map) glow.material.map.dispose()
-    glowMap = glowTexture(palette.accent)
-    glow.material.map = glowMap
-    paintCoins()
-  }
 
   const clock = new THREE.Clock()
   let lastTime = null
   const projected = new THREE.Vector3()
   const worldPoint = new THREE.Vector3()
   const centerPoint = new THREE.Vector3()
+  const targetPoint = new THREE.Vector3()
   let raf = 0
-  let stretchX = 1
-  let stretchY = 1
-  let stretchZ = 1
+
+  const layoutNetwork = () => {
+    network.root.scale.setScalar(Math.max(1.15, state.outer))
+  }
+
+  const clearRings = () => {
+    rings.forEach((ring) => {
+      scene.remove(ring.tilt)
+      disposeTree(ring.tilt)
+    })
+    rings = []
+  }
+
+  const ensureRings = (nodes) => {
+    const sig = ringSignature(nodes)
+    if (sig === state.ringSig && rings.length) return
+    state.ringSig = sig
+    clearRings()
+    rings = buildOrbitRings(palette, nodes.length || 4)
+    rings.forEach((ring) => scene.add(ring.tilt))
+    state.outer = rings.reduce((max, ring) => Math.max(max, ring.spec.radius), 1.2)
+    layoutNetwork()
+  }
+
+  const rebuildCoins = (nodes, ringOf) => {
+    while (coinRoot.children.length) {
+      const child = coinRoot.children.pop()
+      child.traverse((obj) => {
+        if (obj.material && obj.geometry !== coinGeo) {
+          const list = Array.isArray(obj.material) ? obj.material : [obj.material]
+          list.forEach((material) => material.dispose())
+        } else if (obj.material) {
+          const list = Array.isArray(obj.material) ? obj.material : [obj.material]
+          list.forEach((material) => material.dispose())
+        }
+      })
+    }
+    nodeMeshes.length = 0
+    nodes.forEach((node, index) => {
+      const ringIndex = ringOf?.get(node.id) ?? (index % Math.max(1, rings.length))
+      const ring = rings[ringIndex] || rings[0]
+      const slot = ring?.spec.slot ?? COIN_SLOTS[index % COIN_SLOTS.length]
+      const color = toneColor(palette, slot, "particle")
+      const mesh = new THREE.Mesh(coinGeo, new THREE.MeshStandardMaterial({
+        color,
+        emissive: color,
+        emissiveIntensity: 0.5,
+        metalness: 0.32,
+        roughness: 0.36,
+      }))
+      mesh.renderOrder = 6
+      mesh.userData = {
+        id: node.id,
+        label: node.label,
+        color: `#${color.getHexString()}`,
+        pct: node.pct,
+        score: node.score,
+        ring: ringIndex,
+        baseAngle: node.baseAngle || 0,
+        drift: node.drift || 0,
+        slot,
+      }
+      coinRoot.add(mesh)
+      nodeMeshes.push(mesh)
+    })
+  }
+
+  const syncNodes = (nodes) => {
+    state.nodes = nodes || []
+    ensureRings(state.nodes)
+    const ringOf = assignRingSymbols(rings, state.nodes)
+    rebuildCoins(state.nodes, ringOf)
+    fit()
+  }
+
+  const repaint = () => {
+    palette = makePalette()
+    state.accentHex = palette.accent.getHexString()
+    const accent = palette.accent.clone()
+    if (core.map) core.map.dispose()
+    core.map = makePlanetTexture(accent)
+    core.body.material.color.copy(accent)
+    core.body.material.emissive.copy(accent)
+    core.body.material.map = core.map
+    core.body.material.needsUpdate = true
+    core.atmosphere.material.color.copy(accent)
+    core.equator.material.color.copy(accent)
+    core.equator.material.emissive.copy(accent)
+    coreLight.color.copy(accent)
+    network.paint(palette)
+    rings.forEach((ring) => {
+      const color = solidColor(palette, ring.spec.slot)
+      ring.tubeMat.color.copy(color)
+      ring.tubeMat.emissive.copy(color)
+      ring.beadMat.color.copy(color)
+      ring.beadMat.emissive.copy(color)
+    })
+    nodeMeshes.forEach((mesh) => {
+      const color = toneColor(palette, mesh.userData.slot, "particle")
+      mesh.material.color.copy(color)
+      mesh.material.emissive.copy(color)
+      mesh.userData.color = `#${color.getHexString()}`
+    })
+  }
 
   const fit = () => {
     const aspect = state.width / Math.max(1, state.height)
     camera.aspect = aspect
+    camera.fov = FOV
+    const outer = Math.max(1.35, state.outer + 0.42)
+    const half = THREE.MathUtils.degToRad(FOV) / 2
+    const limit = Math.min(Math.max(aspect, 0.35), 1)
+    const visH = (2 * outer / FILL) / limit
+    state.camDist = visH / (2 * Math.tan(half))
+    camera.near = 0.08
+    camera.far = Math.max(80, state.camDist * 4)
     camera.updateProjectionMatrix()
-    const vFov = THREE.MathUtils.degToRad(camera.fov)
-    const visH = 2 * Math.tan(vFov / 2) * BASE_Z
-    const visW = visH * aspect
-    stretchX = (visW * FILL) / 2
-    stretchY = (visH * FILL) / 2
-    stretchZ = (Math.min(visW, visH) * FILL) / 2 * 0.7
-    cloudStretch.scale.set(stretchX, stretchY, stretchZ)
-    rings.forEach((ring) => ring.stretch.scale.set(stretchX, stretchY, stretchZ))
   }
 
   const resize = () => {
@@ -826,6 +765,169 @@ export function createNebulaScene(host, options = {}) {
     if (state.reduced) renderFrame(1.15)
   }
 
+  const placeCamera = (time) => {
+    const yaw = state.reduced ? 0.62 : 0.42 + Math.sin(time * 0.16) * 0.38
+    const elev = state.reduced ? 0.34 : 0.32 + Math.sin(time * 0.08) * 0.035
+    const dist = state.camDist
+    camera.position.set(
+      Math.sin(yaw) * Math.cos(elev) * dist,
+      Math.sin(elev) * dist,
+      Math.cos(yaw) * Math.cos(elev) * dist,
+    )
+    camera.lookAt(0, 0, 0)
+  }
+
+  const resolveAnchor = (symbol, index) => {
+    const want = baseSymbol(symbol)
+    if (!want) return null
+    const ring = rings.find((item) => item.symbol && baseSymbol(item.symbol) === want)
+    if (!ring || !ring.anchors.length) return null
+    return ring.anchors[index % ring.anchors.length]
+  }
+
+  const raycaster = new THREE.Raycaster()
+  const rayNdc = new THREE.Vector2()
+  const screenToWorld = (clientX, clientY) => {
+    const rect = renderer.domElement.getBoundingClientRect()
+    const width = Math.max(1, rect.width)
+    const height = Math.max(1, rect.height)
+    let nx = ((Number(clientX) - rect.left) / width) * 2 - 1
+    let ny = -((Number(clientY) - rect.top) / height) * 2 + 1
+    if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
+      nx = -0.9
+      ny = 0.12
+    }
+    rayNdc.set(clamp(nx, -1.35, 1.35), clamp(ny, -1.15, 1.15))
+    raycaster.setFromCamera(rayNdc, camera)
+    const hit = new THREE.Vector3()
+    const shellRadius = Math.max(1.35, state.outer * 1.05)
+    const shell = new THREE.Sphere(new THREE.Vector3(0, 0, 0), shellRadius)
+    if (raycaster.ray.intersectSphere(shell, hit)) return hit
+    const closest = raycaster.ray.closestPointToPoint(new THREE.Vector3(), new THREE.Vector3())
+    if (closest.lengthSq() < 1e-4) closest.set(-shellRadius, 0.25, 0.35)
+    return closest.setLength(shellRadius)
+  }
+
+  const hideFlightMesh = (rec) => {
+    if (rec.tube) rec.tube.visible = false
+    if (rec.head) rec.head.visible = false
+  }
+
+  const finishFlight = (rec) => {
+    if (rec.done) return
+    rec.done = true
+    hideFlightMesh(rec)
+    state.onFlightDone?.(rec.pulse.id)
+  }
+
+  const showHead = (rec, position, color, alpha) => {
+    if (!rec.head) {
+      rec.head = new THREE.Mesh(headGeo, new THREE.MeshBasicMaterial({
+        color: 0xf0b90b,
+        transparent: true,
+        depthWrite: false,
+      }))
+      rec.head.renderOrder = 9
+      rec.head.frustumCulled = false
+      flightRoot.add(rec.head)
+    }
+    rec.head.visible = true
+    rec.head.position.copy(position)
+    rec.head.material.opacity = alpha
+    applyCssColor(rec.head.material, color, "#f0b90b")
+  }
+
+  const showTrail = (rec, curve, t0, t1, color, alpha) => {
+    const steps = 18
+    const pts = []
+    for (let i = 0; i <= steps; i += 1) {
+      pts.push(curve.getPoint(t0 + (t1 - t0) * (i / steps)))
+    }
+    const tooClose = pts.some((point) => camera.position.distanceTo(point) < 1.4)
+    const tooFar = pts.some((point) => point.length() > Math.max(4, state.outer * 2.4))
+    if (tooClose || tooFar || pts[0].distanceTo(pts[pts.length - 1]) < 0.04) {
+      if (rec.tube) rec.tube.visible = false
+      return
+    }
+    const trail = new THREE.CatmullRomCurve3(pts)
+    const geometry = new THREE.TubeGeometry(trail, 22, 0.03, 6, false)
+    if (!rec.tube) {
+      rec.tube = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+        color: 0xf0b90b,
+        transparent: true,
+        depthWrite: false,
+      }))
+      rec.tube.renderOrder = 8
+      rec.tube.frustumCulled = false
+      flightRoot.add(rec.tube)
+    } else {
+      rec.tube.geometry.dispose()
+      rec.tube.geometry = geometry
+    }
+    rec.tube.visible = true
+    rec.tube.material.opacity = 0.92 * alpha
+    applyCssColor(rec.tube.material, color, "#f0b90b")
+  }
+
+  const updateFlights = (now) => {
+    for (const rec of flights.values()) {
+      if (rec.done) continue
+      const pulse = rec.pulse
+      if (rec.startedAt == null) rec.startedAt = now + (Number(pulse.delay) || 0)
+      const elapsed = now - rec.startedAt
+      if (elapsed < 0) continue
+      const spawn = pulse.spawn ?? 170
+      const duration = Math.max(1, Number(pulse.duration) || 1400)
+      const travel = elapsed - spawn
+      const anchor = resolveAnchor(pulse.symbol, rec.anchorIndex)
+      if (!anchor) {
+        const age = Date.now() - (pulse.ts || Date.now())
+        if (age > 4000) finishFlight(rec)
+        continue
+      }
+      anchor.getWorldPosition(targetPoint)
+      const source = pulse.source || {}
+      const from = screenToWorld(source.x, source.y)
+      if (travel < 0) {
+        showHead(rec, from, pulse.color, 0.85)
+        if (rec.tube) rec.tube.visible = false
+        continue
+      }
+      if (travel >= duration && !rec.arrived) {
+        rec.arrived = true
+        const reverse = (hashString(`${pulse.id}:ring`) & 1) === 1
+        nudgeLocal(pulse.symbol, reverse
+          ? { reverse: true, durationMs: 1000 }
+          : { boost: true, durationMs: 1000 })
+      }
+      const fade = travel < duration ? 1 : 1 - (travel - duration) / FLIGHT_FADE_MS
+      if (fade <= 0) {
+        finishFlight(rec)
+        continue
+      }
+      const t = travel < duration ? easeInOut(Math.min(1, travel / duration)) : 1
+      const viewDir = new THREE.Vector3()
+      camera.getWorldDirection(viewDir)
+      const curve = bendCurve(from, targetPoint, hashString(String(pulse.id)), viewDir)
+      showTrail(rec, curve, Math.max(0, t - 0.4), t, pulse.color, fade)
+      showHead(rec, curve.getPoint(t), pulse.color, fade)
+    }
+  }
+
+  function nudgeLocal(symbol, options = {}) {
+    const want = baseSymbol(symbol)
+    if (!want || state.reduced) return false
+    const ring = rings.find((item) => item.symbol && baseSymbol(item.symbol) === want)
+    if (!ring) return false
+    const durationMs = clamp(Number(options.durationMs) || 1000, 600, 1400)
+    let mode = "boost"
+    if (options.reverse || options.mode === "reverse") mode = "reverse"
+    else if (options.boost || options.mode === "boost") mode = "boost"
+    else mode = Math.random() < 0.5 ? "reverse" : "boost"
+    ring.impulse = { start: performance.now(), duration: durationMs, mode }
+    return true
+  }
+
   const renderFrame = (time) => {
     const reduced = state.reduced
     const t = reduced ? 1.15 : time
@@ -833,36 +935,23 @@ export function createNebulaScene(host, options = {}) {
     lastTime = time
     const nowMs = performance.now()
 
-    cloudTilt.rotation.z = reduced ? 0.03 : Math.sin(t * 0.17) * 0.04
-    cloudTilt.rotation.x = reduced ? 0.08 : 0.06 + Math.sin(t * 0.23) * 0.025
+    core.body.rotation.y = reduced ? 0.4 : t * 0.32
 
     rings.forEach((ring) => {
       if (ring.impulse && nowMs >= ring.impulse.start + ring.impulse.duration) ring.impulse = null
       const burst = reduced ? 0 : impulseOffset(ring.impulse, nowMs)
-      // phase 只累计冲动角。常速仍用绝对时间，避免帧间隔把环慢慢带偏。
       if (!reduced) ring.phase += dt * burst
+      ring.spin.rotation.x = 0
+      ring.spin.rotation.y = 0
       ring.spin.rotation.z = reduced ? ring.spec.hold : t * ring.spec.speed + ring.phase
-      ring.sparks.forEach((spark) => {
-        const angle = (reduced ? ring.spec.hold : t * 0.35) + spark.userData.offset
-        spark.position.set(
-          Math.cos(angle) * ring.spec.rx,
-          Math.sin(angle) * ring.spec.ry,
-          0,
-        )
-      })
+      ring.tilt.rotation.x = ring.spec.tiltX
+      ring.tilt.rotation.y = 0
+      ring.tilt.rotation.z = ring.spec.tiltZ
     })
 
-    if (!reduced) {
-      camera.position.x = Math.sin(t * 0.15) * 0.12
-      camera.position.y = 0.04 + Math.sin(t * 0.11) * 0.03
-      camera.position.z = BASE_Z
-    } else {
-      camera.position.set(0, 0.04, BASE_Z)
-    }
-    camera.lookAt(0, 0, 0)
+    placeCamera(t)
     camera.updateMatrixWorld(true)
-    cloudStretch.updateWorldMatrix(true, true)
-    rings.forEach((ring) => ring.stretch.updateWorldMatrix(true, true))
+    scene.updateMatrixWorld(true)
 
     const positions = linkGeo.getAttribute("position")
     const colors = linkGeo.getAttribute("color")
@@ -870,20 +959,19 @@ export function createNebulaScene(host, options = {}) {
     const overlay = []
     const coinWorld = []
 
-    nodeMeshes.forEach((mesh, index) => {
+    nodeMeshes.forEach((mesh) => {
       const data = mesh.userData
       const ring = rings[data.ring] || rings[0]
-      const angle = data.baseAngle + (reduced ? 0 : t * data.drift) + (reduced ? ring.spec.hold * 0.15 : 0)
+      if (!ring) return
+      const drift = reduced ? 0 : t * data.drift
+      const angle = ring.spin.rotation.z + data.baseAngle + drift
       worldPoint.set(
-        Math.cos(angle) * ring.spec.rx,
-        Math.sin(angle) * ring.spec.ry,
-        Math.sin(t * 1.3 + index) * 0.02,
+        Math.cos(angle) * ring.spec.radius,
+        Math.sin(angle) * ring.spec.radius,
+        0,
       )
-      ring.stretch.localToWorld(worldPoint)
+      ring.tilt.localToWorld(worldPoint)
       mesh.position.copy(worldPoint)
-      const pixel = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * BASE_Z) / Math.max(1, state.height)
-      mesh.children[0].scale.setScalar(pixel * 11)
-      mesh.children[1].scale.setScalar(pixel * 6.5)
       coinWorld.push(worldPoint.clone())
 
       projected.copy(worldPoint).project(camera)
@@ -925,18 +1013,10 @@ export function createNebulaScene(host, options = {}) {
     }
 
     const origin = new THREE.Vector3(0, 0, 0)
-    cloudStretch.localToWorld(origin)
     for (let i = 0; i < coinWorld.length; i += 1) {
-      const a = coinWorld[i]
       const ca = toneColor(palette, nodeMeshes[i].userData.slot, "line")
-      const core = toneColor(palette, SLOT.accent, "line")
-      pushLink(a, origin, ca, core)
-      for (let j = i + 1; j < coinWorld.length; j += 1) {
-        const b = coinWorld[j]
-        if (a.distanceTo(b) > Math.max(stretchX, stretchY) * 1.15) continue
-        const cb = toneColor(palette, nodeMeshes[j].userData.slot, "line")
-        pushLink(a, b, ca, cb)
-      }
+      const coreTone = toneColor(palette, SLOT.accent, "line")
+      pushLink(coinWorld[i], origin, ca, coreTone)
     }
     positions.needsUpdate = true
     colors.needsUpdate = true
@@ -970,6 +1050,8 @@ export function createNebulaScene(host, options = {}) {
     })
     state.intakeTargets = intakeTargets
 
+    updateFlights(nowMs)
+
     renderer.setClearColor(bg, 1)
     renderer.render(scene, camera)
 
@@ -994,6 +1076,8 @@ export function createNebulaScene(host, options = {}) {
     renderFrame(clock.getElapsedTime())
   }
 
+  syncNodes(state.nodes)
+
   const observer = new ResizeObserver(resize)
   observer.observe(host)
   resize()
@@ -1011,8 +1095,7 @@ export function createNebulaScene(host, options = {}) {
 
   const api = {
     setNodes(nodes) {
-      state.nodes = nodes || []
-      rebuildNodes(state.nodes)
+      syncNodes(nodes || [])
       if (state.reduced) renderFrame(1.15)
     },
     setReduced(value) {
@@ -1037,18 +1120,65 @@ export function createNebulaScene(host, options = {}) {
       const matched = want ? list.filter((item) => item.base === want) : list
       return matched.map((item) => ({ ...item }))
     },
-    nudgeRing(symbol, options = {}) {
-      const want = baseSymbol(symbol)
-      if (!want || state.reduced) return false
-      const ring = rings.find((item) => item.symbol && baseSymbol(item.symbol) === want)
-      if (!ring) return false
-      const durationMs = clamp(Number(options.durationMs) || 1000, 600, 1400)
-      let mode = "boost"
-      if (options.reverse || options.mode === "reverse") mode = "reverse"
-      else if (options.boost || options.mode === "boost") mode = "boost"
-      else mode = Math.random() < 0.5 ? "reverse" : "boost"
-      ring.impulse = { start: performance.now(), duration: durationMs, mode }
-      return true
+    nudgeRing(symbol, options) {
+      return nudgeLocal(symbol, options)
+    },
+    syncFlights(pulses, onDone) {
+      state.onFlightDone = typeof onDone === "function" ? onDone : state.onFlightDone
+      const incoming = new Set()
+      for (const pulse of pulses || []) {
+        if (!pulse?.id) continue
+        incoming.add(pulse.id)
+        const existing = flights.get(pulse.id)
+        if (existing) {
+          existing.pulse = pulse
+          continue
+        }
+        flights.set(pulse.id, {
+          pulse,
+          anchorIndex: hashString(String(pulse.id)) % ANCHORS,
+          startedAt: null,
+          arrived: false,
+          done: false,
+          tube: null,
+          head: null,
+        })
+      }
+      for (const [id, rec] of flights) {
+        if (incoming.has(id)) continue
+        if (rec.tube) {
+          flightRoot.remove(rec.tube)
+          rec.tube.geometry.dispose()
+          rec.tube.material.dispose()
+        }
+        if (rec.head) {
+          flightRoot.remove(rec.head)
+          rec.head.material.dispose()
+        }
+        flights.delete(id)
+      }
+    },
+    sampleOrbit() {
+      const bead = new THREE.Vector3()
+      return {
+        hasCore: Boolean(core?.body),
+        coreRadius: core.body.geometry.parameters.radius,
+        camera: camera.position.toArray(),
+        rings: rings.map((ring) => {
+          ring.anchors[0]?.getWorldPosition(bead)
+          return {
+            symbol: ring.symbol,
+            radius: ring.spec.radius,
+            spinX: ring.spin.rotation.x,
+            spinY: ring.spin.rotation.y,
+            spinZ: ring.spin.rotation.z,
+            tiltX: ring.tilt.rotation.x,
+            tiltY: ring.tilt.rotation.y,
+            tiltZ: ring.tilt.rotation.z,
+            bead: bead.toArray(),
+          }
+        }),
+      }
     },
     resize,
     dispose() {
@@ -1057,24 +1187,20 @@ export function createNebulaScene(host, options = {}) {
       cancelAnimationFrame(raf)
       observer.disconnect()
       accentObserver.disconnect()
-      renderer.dispose()
-      const geometries = new Set()
-      const materials = new Set()
-      scene.traverse((obj) => {
-        if (obj.geometry) geometries.add(obj.geometry)
-        if (obj.material) {
-          const list = Array.isArray(obj.material) ? obj.material : [obj.material]
-          list.forEach((m) => materials.add(m))
+      for (const rec of flights.values()) {
+        if (rec.tube) {
+          rec.tube.geometry.dispose()
+          rec.tube.material.dispose()
         }
-      })
-      geometries.forEach((geo) => geo.dispose())
-      materials.forEach((m) => {
-        if (m.map) m.map.dispose()
-        m.dispose()
-      })
+        if (rec.head) rec.head.material.dispose()
+      }
+      flights.clear()
+      renderer.dispose()
+      disposeTree(scene)
       if (renderer.domElement.parentNode === host) host.removeChild(renderer.domElement)
     },
   }
+  renderer.domElement.__orbitScene = api
   liveScenes.add(api)
   return api
 }
