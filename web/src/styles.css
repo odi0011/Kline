@@ -173,6 +173,8 @@ body {
 
 .row2-reserved {
   min-width: 0;
+  min-height: 0;
+  display: flex;
 }
 
 /* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3）。

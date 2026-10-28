@@ -21,12 +21,19 @@ export class LiveClient {
     this._retry = 0
     this._closed = false
     this._lastStatus = 'reconnecting'
+    this.agentLocked = true
+    this.agentReadOnly = false
+    this.agentPersistenceError = ''
+    this.requests = new Map()
+    this._requestId = 0
+    this._retryTimer = null
+    this._onVisibility = () => {
+      if (document.hidden || this._closed) return
+      this._emitStatus(this._lastStatus)
+      this._emitKey('resume', {})
+    }
     if (typeof document !== 'undefined') {
-      document.addEventListener('visibilitychange', () => {
-        if (document.hidden || this._closed) return
-        this._emitStatus(this._lastStatus)
-        this._emitKey('resume', {})
-      })
+      document.addEventListener('visibilitychange', this._onVisibility)
     }
   }
 
@@ -41,6 +48,10 @@ export class LiveClient {
     this.ws.onopen = () => {
       this._retry = 0
       this._emitStatus('connected')
+      this.agentLocked = true
+      let token = ''
+      try { token = sessionStorage.getItem('oddd-access') || '' } catch {}
+      if (token) this.unlockAgent(token)
       if (this.detectInterval) this.setDetectInterval(this.detectInterval)   // 重连后重新下发检测周期
       if (this.quantSymbols) this.setQuantSymbols(this.quantSymbols)         // 重连后重新下发量化范围
     }
@@ -48,6 +59,9 @@ export class LiveClient {
       try { this._dispatch(JSON.parse(ev.data)) } catch { /* 忽略坏帧 */ }
     }
     this.ws.onclose = () => {
+      this._rejectRequests('连接已断开，请重试')
+      this.agentLocked = true
+      this._emitKey('agent_access', { locked: true })
       if (this._closed) return
       this._emitStatus('reconnecting')
       this._scheduleRetry()
@@ -57,16 +71,31 @@ export class LiveClient {
 
   close() {
     this._closed = true
+    clearTimeout(this._retryTimer)
+    this._rejectRequests('连接已关闭')
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this._onVisibility)
     this.ws?.close()
+    this.subs.clear()
+    this.listeners = { meta: [], stats: [], status: [] }
   }
 
   _scheduleRetry() {
+    clearTimeout(this._retryTimer)
     const delay = Math.min(1000 * 2 ** this._retry++, 10000)
-    setTimeout(() => { if (!this._closed) this.connect() }, delay)
+    this._retryTimer = setTimeout(() => { if (!this._closed) this.connect() }, delay)
   }
 
   _dispatch(m) {
-    if (m.type === 'init') {
+    if (m.requestId && this.requests.has(m.requestId)) {
+      const pending = this.requests.get(m.requestId)
+      clearTimeout(pending.timer)
+      this.requests.delete(m.requestId)
+      pending.resolve(m.result || { ok: false, error: '无效响应' })
+    }
+    if (m.type === 'agent_access') {
+      this.agentLocked = m.locked !== false
+      this._emitKey('agent_access', m)
+    } else if (m.type === 'init') {
       for (const sym of m.symbols) {
         const cell = (this.store[sym] ||= {})
         for (const iv of m.intervals) {
@@ -102,6 +131,7 @@ export class LiveClient {
       const last = bars[bars.length - 1]
       if (last && last.time === b.time) Object.assign(last, b)
       else bars.push(b)
+      if (bars.length > 1200) bars.splice(0, bars.length - 1200)
       this._emitKey(`candle|${m.symbol}|${m.interval}`, b)
     } else if (m.type === 'hit') {
       this.hits.unshift(m)
@@ -122,6 +152,14 @@ export class LiveClient {
     } else if (m.type === 'quant') {
       this.quant = m.snapshot
       this._emitKey('quant', m)
+    } else if (m.type === 'agent_state') {
+      this.agentTasks = m.tasks || []
+      this.agentChat = m.chat || []
+      this.agentReadOnly = m.readOnly === true
+      this.agentPersistenceError = m.persistenceError || ''
+      this._emitKey('agent_state', m)
+    } else if (m.type === 'agent_ack') {
+      this._emitKey('agent_ack', m)
     } else if (m.type === 'depths') {
       this.depths = m.depths || {}
       this._emitKey('depths', m)
@@ -144,7 +182,14 @@ export class LiveClient {
     } else if (m.type === 'ai_meta') {
       this._emitKey('ai_meta', m)
     } else if (m.type === 'quant_event') {
-      this._emitKey('quant_event', m.event)
+      const event = m.event
+      if (!event) return
+      const key = event.id ?? `${event.ts}-${event.reason}`
+      const events = this.quantEvents || []
+      if (!events.some((item) => (item.id ?? `${item.ts}-${item.reason}`) === key)) {
+        this.quantEvents = [...events, { ...event, id: key }].slice(-2000)
+      }
+      this._emitKey('quant_event', event)
     } else if (m.type === 'stats') {
       if (typeof document === 'undefined' || !document.hidden) this.listeners.stats.forEach((f) => f(m))
     }
@@ -195,11 +240,47 @@ export class LiveClient {
   send(msg) {
     if (this.ws && this.ws.readyState === 1 && msg && msg.type) {
       this.ws.send(JSON.stringify(msg))
+      return true
     }
+    return false
+  }
+
+  request(msg, timeout = 25000) {
+    if (!this.ws || this.ws.readyState !== 1) return Promise.resolve({ ok: false, error: '尚未连接服务端' })
+    if (this.requests.size >= 16) return Promise.resolve({ ok: false, error: '请求过多，请稍后重试' })
+    const requestId = String(++this._requestId)
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.requests.delete(requestId)
+        resolve({ ok: false, error: '请求超时，请检查任务列表后再重试' })
+      }, timeout)
+      this.requests.set(requestId, { resolve, timer })
+      if (!this.send({ ...msg, requestId })) this._rejectRequests('连接已断开')
+    })
+  }
+
+  async unlockAgent(token) {
+    const result = await this.request({ type: 'agent_auth', token })
+    this.agentLocked = !result.ok
+    try {
+      if (result.ok) sessionStorage.setItem('oddd-access', token)
+      else sessionStorage.removeItem('oddd-access')
+    } catch {}
+    this._emitKey('agent_access', { locked: this.agentLocked })
+    return result
+  }
+
+  _rejectRequests(error) {
+    for (const { resolve, timer } of this.requests.values()) {
+      clearTimeout(timer)
+      resolve({ ok: false, error })
+    }
+    this.requests.clear()
   }
 
   _emitKey(key, payload) {
-    if (typeof document !== 'undefined' && document.hidden) return
+    const control = /^(ai_|agent_access|agent_ack|settings|bar_detail)/.test(key)
+    if (!control && typeof document !== 'undefined' && document.hidden) return
     this.subs.get(key)?.forEach((f) => {
       try { f(payload) } catch (e) { console.error(e) }
     })

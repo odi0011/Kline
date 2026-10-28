@@ -176,3 +176,50 @@
 }
 .emptyTitle { font-size: 12.5px; font-weight: 700; color: #1c2333; }
 .emptyTxt { font-size: 10.5px; color: var(--text-muted, #8b949e); line-height: 1.5; max-width: 240px; }
+
+/* 空仓时在原卡片高度内展示永久日档案；有持仓的尺寸与样式不变。 */
+.historyCard .curve { height: 28px; margin-top: 0; margin-bottom: 0; }
+.heatmap {
+  height: 100%; min-width: 0; padding: 0 2px; box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 2px;
+  color: #526070; font-size: 9px; line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+.heatHead { display: flex; align-items: center; gap: 8px; height: 16px; flex: none; }
+.heatHead b { color: #384253; font-size: 10px; font-weight: 600; }
+.heatHead select {
+  margin-left: auto; max-width: 80px; height: 16px; padding: 0 2px;
+  border: 1px solid hsl(var(--h) 30% 84%); border-radius: 4px;
+  background: #ffffffb3; color: #465264; font: inherit; cursor: pointer;
+}
+.heatHead select:focus-visible { outline: 2px solid hsl(var(--h) 50% 35%); outline-offset: 1px; }
+.heatMissing { display: inline-flex; align-items: center; gap: 3px; color: #75808d; }
+.heatMissing i { width: 6px; height: 6px; background: #edf0f3; border: 1px solid #dce1e7; border-radius: 2px; }
+.heatSince { color: #75808d; font-size: 8.5px; flex: none; }
+.heatScroll {
+  flex: 1 1 auto; min-height: 66px; overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: thin; scrollbar-color: #ccd2da transparent;
+}
+.heatScroll::-webkit-scrollbar { height: 3px; }
+.heatScroll::-webkit-scrollbar-thumb { background: #ccd2da; border-radius: 3px; }
+.heatCalendar { width: calc(var(--weeks) * 8px - 1px); }
+.heatMonths, .heatDays { display: grid; grid-template-columns: repeat(var(--weeks), 7px); column-gap: 1px; }
+.heatMonths { height: 9px; font-size: 8px; color: #75808d; }
+.heatMonths span { white-space: nowrap; }
+.heatDays { grid-template-rows: repeat(7, 7px); grid-auto-flow: column; row-gap: 1px; }
+.heatDay {
+  display: block; width: 100%; min-width: 0; height: 7px; padding: 0;
+  appearance: none; border: 0; border-radius: 1.5px; cursor: crosshair;
+  background: #edf0f3; box-shadow: inset 0 0 0 0.5px #2634460d;
+}
+.heatDay[data-missing] { box-shadow: inset 0 0 0 0.5px #dce1e7; }
+.heatDay:hover, .heatDay:focus-visible {
+  outline: 1px solid #384253; outline-offset: -1px; box-shadow: inset 0 0 0 2px #ffffff80;
+}
+.heatWaiting { flex: 1; display: grid; place-items: center; color: #87919e; }
+.heatDetail {
+  display: flex; align-items: center; gap: 4px; flex: none; min-height: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #617083; font-size: 8.5px;
+}
+.heatScale { display: inline-flex; gap: 1px; flex: none; }
+.heatScale i { width: 6px; height: 6px; border-radius: 1px; }

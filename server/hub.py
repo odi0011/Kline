@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 import time
 
 import websockets
@@ -57,6 +58,13 @@ class BroadcastHub:
         self.settings_fn = None           # 当前可编辑设置（main 注入）
         self.on_settings = None           # 客户端下发设置时的回调：应用+持久化，返回新设置
         self.ai_fn = None                 # AI 辅助（main 注入）：("list"|"test"|"guess", arg1, arg2) -> dict
+        self.agent_state_fn = None        # ODDD 任务与会话快照（main 注入）
+        self.agent_fn = None              # ODDD 异步动作：(action, payload) -> dict
+        self.agent_token = None
+        self.agent_clients: set = set()
+        self.news_article_fn = None
+        self._article_cache: dict = {}
+        self._article_slots = asyncio.Semaphore(2)
         self.quant_fn = None              # 量化快照（main 注入）
         self.quant_events_fn = None       # 决策流水查询（main 注入）：(acct, limit) -> list
         self.analysis_fn = None           # 结构分析（main 注入）：(sym, iv, candles) -> dict
@@ -151,6 +159,8 @@ class BroadcastHub:
 
     async def _handler(self, ws) -> None:
         self.clients.add(ws)
+        last_auth = 0.0
+        last_article = 0.0
         print(f"[ws] 客户端接入 ({len(self.clients)} 个在线)")
         try:
             await ws.send(self._snapshot())
@@ -171,6 +181,9 @@ class BroadcastHub:
                                          separators=(",", ":")))
             if self.quant_fn:
                 await ws.send(json.dumps({"type": "quant", "snapshot": self.quant_fn()},
+                                         separators=(",", ":")))
+            if self.agent_state_fn:
+                await ws.send(json.dumps({"type": "agent_access", "locked": True},
                                          separators=(",", ":")))
             if self.trades_fn:
                 try:
@@ -193,9 +206,38 @@ class BroadcastHub:
                 except Exception:
                     pass
             async for raw in ws:
+                request_id = ""
                 try:
                     msg = json.loads(raw)
+                    if not isinstance(msg, dict):
+                        continue
                     mtype = msg.get("type")
+                    request_id = str(msg.get("requestId") or "")[:80]
+                    if mtype == "agent_auth":
+                        token = msg.get("token")
+                        allowed = (time.monotonic() - last_auth >= 1 and self._same_origin(ws)
+                                   and isinstance(token, str) and token.isascii()
+                                   and len(token) <= 256
+                                   and bool(self.agent_token)
+                                   and secrets.compare_digest(token, self.agent_token))
+                        last_auth = time.monotonic()
+                        if allowed:
+                            self.agent_clients.add(ws)
+                        result = {"ok": bool(allowed)}
+                        if not allowed:
+                            result["error"] = "访问令牌无效，或请求过于频繁"
+                        await ws.send(json.dumps({"type": "agent_auth_ack", "requestId": request_id,
+                                                 "result": result}, separators=(",", ":")))
+                        if allowed and self.agent_state_fn:
+                            await ws.send(json.dumps({"type": "agent_state", **self.agent_state_fn()},
+                                                     separators=(",", ":")))
+                        continue
+                    if mtype in ("agent_action", "ai_list_models", "ai_test_model", "ai_guess_meta"):
+                        if ws not in self.agent_clients or not self._same_origin(ws):
+                            await ws.send(json.dumps({"type": "agent_ack", "requestId": request_id,
+                                                     "result": {"ok": False, "error": "请先解锁 ODDD"}},
+                                                    separators=(",", ":")))
+                            continue
                     if mtype == "set_detect_interval" and self.on_detect:
                         if self._same_origin(ws):
                             self.on_detect(msg.get("interval"))
@@ -208,8 +250,15 @@ class BroadcastHub:
                         if not self._same_origin(ws):
                             print("[settings] 拒绝跨源 set_settings")
                             continue
-                        print(f"[settings] 收到 set_settings: {str(msg.get('settings'))[:150]}")
-                        new_settings = self.on_settings(msg.get("settings") or {})
+                        settings = msg.get("settings") or {}
+                        if not isinstance(settings, dict):
+                            continue
+                        if ("ai" in settings or "accounts" in settings) and ws not in self.agent_clients:
+                            await ws.send(json.dumps({"type": "agent_ack", "requestId": request_id,
+                                                     "result": {"ok": False, "error": "修改账户或 AI 配置前请先解锁 ODDD"}}))
+                            continue
+                        print("[settings] 收到设置更新")
+                        new_settings = self.on_settings(settings)
                         await ws.send(json.dumps({"type": "settings", "settings": new_settings},
                                                  separators=(",", ":")))
                     elif mtype == "ai_list_models" and self.ai_fn:
@@ -232,6 +281,34 @@ class BroadcastHub:
                             self.ai_fn, "guess", msg.get("model") or "")
                         await ws.send(json.dumps({"type": "ai_meta", "result": res},
                                                  separators=(",", ":")))
+                    elif mtype == "agent_action" and self.agent_fn:
+                        action = str(msg.get("action") or "")
+                        payload = msg.get("payload") or {}
+                        if not isinstance(payload, dict):
+                            res = {"ok": False, "error": "任务参数无效"}
+                        else:
+                            res = await self.agent_fn(action, payload)
+                        await ws.send(json.dumps({"type": "agent_ack", "action": action,
+                                                 "requestId": request_id, "result": res}, separators=(",", ":")))
+                    elif mtype == "query_news_article" and self.news_article_fn:
+                        url = str(msg.get("url") or "")
+                        item = next((item for item in self.news if item.get("url") == url), None)
+                        if item is None:
+                            result = {"ok": False, "error": "此新闻已不在当前来源列表，请刷新"}
+                        elif url in self._article_cache:
+                            result = self._article_cache[url]
+                        elif time.monotonic() - last_article < 1 or self._article_slots.locked():
+                            result = {"ok": False, "error": "正文读取繁忙，请稍后重试"}
+                        else:
+                            last_article = time.monotonic()
+                            async with self._article_slots:
+                                result = await asyncio.to_thread(self.news_article_fn, item)
+                            if result.get("ok"):
+                                self._article_cache[url] = result
+                                if len(self._article_cache) > 80:
+                                    self._article_cache.pop(next(iter(self._article_cache)))
+                        await ws.send(json.dumps({"type": "news_article", "requestId": request_id,
+                                                 "result": result}, separators=(",", ":")))
                     elif mtype == "query_quant_trades" and self.trades_fn:
                         acct = str(msg.get("account") or "")
                         limit = int(msg.get("limit") or 300)
@@ -262,6 +339,10 @@ class BroadcastHub:
                 except Exception:
                     import traceback
                     traceback.print_exc()
+                    if request_id:
+                        await ws.send(json.dumps({"type": "request_error", "requestId": request_id,
+                                                 "result": {"ok": False, "error": "服务端处理失败，请重试"}},
+                                                separators=(",", ":")))
         except Exception as e:
             if _is_expected_ws_error(e):
                 print(f"[ws] 客户端连接结束: {type(e).__name__}")
@@ -271,6 +352,7 @@ class BroadcastHub:
                 traceback.print_exc()
         finally:
             self.clients.discard(ws)
+            self.agent_clients.discard(ws)
             print(f"[ws] 客户端断开 ({len(self.clients)} 个在线)")
 
     async def _flusher(self) -> None:
@@ -320,8 +402,9 @@ class BroadcastHub:
         if not self.clients:
             return
         data = json.dumps(obj, separators=(",", ":"))
+        clients = self.agent_clients if obj.get("type") == "agent_state" else self.clients
         results = await asyncio.gather(
-            *(c.send(data) for c in list(self.clients)), return_exceptions=True)
+            *(c.send(data) for c in list(clients)), return_exceptions=True)
         for r in results:
             if isinstance(r, Exception):
                 pass

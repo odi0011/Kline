@@ -1,12 +1,11 @@
-"""AI 模型接入层：配置持久化 + 模型列表探测 + 连通性测试。
+"""AI 模型接入层：配置持久化 + 模型列表探测 + 连通性测试 + 对话请求。
 
 支持 OpenAI 兼容协议（/chat/completions、/models），覆盖绝大多数服务商：
   OpenAI / DeepSeek / Moonshot / 智谱 / 阿里通义 / 硅基流动 / OpenRouter /
   其他 OpenAI 兼容端点。
 
 职责边界（刻意保持很窄）：
-  · 只做「读配置 / 写配置 / 列模型 / 测连通」，不在这里跑推理。
-    推理放在将来的 AI 复盘模块里，按需读取这里的配置。
+  · 只做「读配置 / 写配置 / 列模型 / 测连通 / 发对话请求」，不在这里执行工具。
   · API Key 不回传明文到浏览器：前端拿到的是掩码，保存时留空即沿用原值。
 """
 from __future__ import annotations
@@ -19,6 +18,7 @@ import urllib.request
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 TIMEOUT = 20
+MAX_RESPONSE = 8 * 1024 * 1024
 MASK = "••••••••"
 
 # 常见服务商预设：前端下拉直接选，省得手填端点
@@ -43,7 +43,7 @@ CAPABILITIES = [
 
 
 def _request(url: str, key: str = "", payload: dict | None = None,
-             proxy: str | None = None) -> tuple[int, dict | str | None]:
+             proxy: str | None = None, timeout: int = TIMEOUT) -> tuple[int, dict | str | None]:
     """统一请求：返回 (status, body)。body 为解析后的 JSON 或错误文本。"""
     headers = {"User-Agent": UA, "Accept": "application/json"}
     data = None
@@ -54,24 +54,29 @@ def _request(url: str, key: str = "", payload: dict | None = None,
         headers["Authorization"] = f"Bearer {key}"
     req = urllib.request.Request(url, data=data, headers=headers,
                                  method="POST" if data else "GET")
+
+    def read_body(response):
+        raw = response.read(MAX_RESPONSE + 1)
+        if len(raw) > MAX_RESPONSE:
+            raise ValueError("模型响应超过 8MB 限制")
+        return getattr(response, "status", 200), _maybe_json(raw.decode("utf-8", "replace"))
+
     try:
         if proxy:
             opener = urllib.request.build_opener(urllib.request.ProxyHandler(
                 {"http": proxy, "https": proxy}))
-            with opener.open(req, timeout=TIMEOUT) as r:
-                raw = r.read().decode("utf-8", "replace")
-                return getattr(r, "status", 200), _maybe_json(raw)
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            raw = r.read().decode("utf-8", "replace")
-            return getattr(r, "status", 200), _maybe_json(raw)
+            with opener.open(req, timeout=timeout) as r:
+                return read_body(r)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return read_body(r)
     except urllib.error.HTTPError as e:
         body = ""
         try:
-            body = e.read().decode("utf-8", "replace")[:500]
+            body = e.read(2000).decode("utf-8", "replace")[:500]
         except Exception:
             pass
         return e.code, _maybe_json(body) if body else None
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
         return 0, str(e)[:200]
 
 
@@ -175,6 +180,82 @@ def test_model(cfg: dict, model_id: str, proxy: str | None = None) -> dict:
         if choices:
             reply = (choices[0].get("message") or {}).get("content") or ""
     return {"ok": True, "ms": ms, "reply": str(reply)[:100]}
+
+
+def chat_completion(cfg: dict, model_id: str, messages: list[dict],
+                    proxy: str | None = None, max_tokens: int = 1800,
+                    timeout: float = 150, tools: list[dict] | None = None,
+                    tool_choice: str | dict | None = None) -> dict:
+    """非流式 OpenAI 协议；保留 tool_calls，绝不降级重试为纯文本执行。"""
+    base = (cfg.get("base") or "").strip()
+    key = (cfg.get("key") or "").strip()
+    if not base or not model_id:
+        return {"ok": False, "error": "未配置 AI 端点或模型"}
+    payload = {"model": model_id, "messages": messages,
+               "max_tokens": max_tokens, "stream": False}
+    if tools is not None:
+        payload.update(tools=tools, tool_choice=tool_choice or "auto")
+    started = time.monotonic()
+    status, body = _request(_join(base, "/chat/completions"), key, payload,
+                            proxy=proxy, timeout=min(180, max(1, timeout)))
+    ms = int((time.monotonic() - started) * 1000)
+
+    def failure(detail):
+        # 服务商可能回显认证数据；不能进入聊天/持久化状态。
+        text = str(detail)
+        if key:
+            text = text.replace(key, "[REDACTED]")
+        return {"ok": False, "error": text[:600], "ms": ms, "status": status}
+
+    if status == 0:
+        return failure(f"连接失败：{body}")
+    if status >= 400:
+        detail = ""
+        if isinstance(body, dict):
+            err = body.get("error")
+            detail = err.get("message") if isinstance(err, dict) else err or body.get("message")
+        prefix = "工具请求失败（服务商可能不支持 tools/tool_choice），未降级执行：" if tools is not None else ""
+        return failure(prefix + str(detail or body or f"HTTP {status}"))
+    choices = body.get("choices") if isinstance(body, dict) else None
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return failure("模型返回 choices 格式无效或为空")
+    choice = choices[0]
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        return failure("模型返回 message 格式无效")
+    content = message.get("content")
+    if isinstance(content, list):
+        content = "".join(str(part.get("text") or "") for part in content if isinstance(part, dict))
+    if content is not None and not isinstance(content, str):
+        return failure("模型返回 content 格式无效")
+    reply = (content or "").strip()
+    calls = message.get("tool_calls") or []
+    if not isinstance(calls, list) or len(calls) > 8:
+        return failure("模型 tool_calls 格式无效或超过每轮 8 次限制")
+    seen = set()
+    for call in calls:
+        if not isinstance(call, dict) or call.get("type") != "function":
+            return failure("模型工具调用必须为 function")
+        function = call.get("function")
+        call_id = call.get("id")
+        if (not isinstance(call_id, str) or not call_id or len(call_id) > 200
+                or call_id in seen or not isinstance(function, dict)
+                or not isinstance(function.get("name"), str)
+                or not isinstance(function.get("arguments"), str)
+                or len(function["arguments"]) > 4096):
+            return failure("模型工具调用参数或 ID 无效")
+        seen.add(call_id)
+    if tool_choice == "required" and not calls:
+        return failure("服务商未返回必需的工具调用，不支持 tools 或忽略 tool_choice；未执行")
+    if choice.get("finish_reason") in ("length", "content_filter"):
+        return failure("模型输出被截断或过滤，不能作为已完成结果")
+    if not reply and not calls:
+        return failure("模型未返回文本或工具调用")
+    return {"ok": True, "reply": reply, "tool_calls": calls,
+            "message": {"role": "assistant", "content": reply or None,
+                        **({"tool_calls": calls} if calls else {})},
+            "finish_reason": choice.get("finish_reason"), "ms": ms,
+            "usage": body.get("usage") or {}, "model": body.get("model") or model_id}
 
 
 def mask_cfg(ai: dict) -> dict:

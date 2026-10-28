@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import threading
 import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
 
 import pymysql
 
@@ -86,6 +88,14 @@ class Storage:
         self._q("""CREATE TABLE IF NOT EXISTS equity(
             acct VARCHAR(64), ts BIGINT, bal DOUBLE, upnl DOUBLE,
             PRIMARY KEY(acct, ts)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # 永久日档案：day 是 UTC 零点毫秒，完全不依赖数据库会话时区。
+        self._q("""CREATE TABLE IF NOT EXISTS equity_daily(
+            acct VARCHAR(64) NOT NULL, day BIGINT NOT NULL,
+            first_ts BIGINT NOT NULL, last_ts BIGINT NOT NULL,
+            open DOUBLE NOT NULL, close DOUBLE NOT NULL,
+            high DOUBLE NOT NULL, low DOUBLE NOT NULL,
+            PRIMARY KEY(acct, day)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        self._backfill_equity_daily()
         # 仓位历史（已平仓记录）：按账户隔离，保留 7 天
         self._q("""CREATE TABLE IF NOT EXISTS quant_trades(
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -227,9 +237,76 @@ class Storage:
 
     # ---- 账户权益 ----
 
+    @contextmanager
+    def _equity_transaction(self):
+        """同一连接上串行提交 raw / daily；中途失败不能删除旧键或漏存日档案。"""
+        with self._lock:
+            self._conn.ping(reconnect=True)
+            self._conn.begin()
+            try:
+                with self._conn.cursor() as cur:
+                    yield cur
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    @staticmethod
+    def _merge_equity_day(cur, acct, day, first_ts, last_ts, open_value,
+                          close_value, high, low, *, replace_equal=False):
+        """按采样时间合并，保留观测极值；相同时间戳的迁移让目标优先。"""
+        cur.execute(
+            "INSERT IGNORE INTO equity_daily "
+            "(acct,day,first_ts,last_ts,open,close,high,low) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
+            (acct, day, first_ts, last_ts, open_value, close_value, high, low))
+        # 先计算 open/close，最后更新时间戳，兼容 MySQL UPDATE 的从左到右赋值。
+        first_op, last_op = ("<=", ">=") if replace_equal else ("<", ">")
+        cur.execute(
+            f"UPDATE equity_daily SET open=CASE WHEN %s {first_op} first_ts "
+            "THEN %s ELSE open END, "
+            f"close=CASE WHEN %s {last_op} last_ts THEN %s ELSE close END, "
+            "high=GREATEST(high,%s), low=LEAST(low,%s), "
+            "first_ts=LEAST(first_ts,%s), last_ts=GREATEST(last_ts,%s) "
+            "WHERE acct=%s AND day=%s",
+            (first_ts, open_value, last_ts, close_value, high, low,
+             first_ts, last_ts, acct, day))
+
+    def _backfill_equity_daily(self) -> None:
+        """启动时幂等合并现存 raw；已被清理的旧历史无法恢复，也不补造缺失日。"""
+        with self._equity_transaction() as cur:
+            cur.execute("""SELECT d.acct,d.day,d.first_ts,d.last_ts,
+                    ROUND(o.bal,4),ROUND(c.bal,4),d.high,d.low
+                FROM (
+                    SELECT acct,ts-MOD(ts,86400000) AS day,
+                        MIN(ts) AS first_ts,MAX(ts) AS last_ts,
+                        MAX(ROUND(bal,4)) AS high,MIN(ROUND(bal,4)) AS low
+                    FROM equity GROUP BY acct,day
+                ) d
+                JOIN equity o ON o.acct=d.acct AND o.ts=d.first_ts
+                JOIN equity c ON c.acct=d.acct AND c.ts=d.last_ts""")
+            for row in cur.fetchall():
+                self._merge_equity_day(cur, *row)
+
     def save_equity(self, acct: str, ts: int, bal: float, upnl: float) -> None:
-        self._q("REPLACE INTO equity VALUES(%s,%s,%s,%s)",
-                (acct, ts, round(bal, 4), round(upnl, 4)))
+        if not self.enabled:
+            return
+        ts, bal, upnl = int(ts), round(bal, 4), round(upnl, 4)
+        total = bal
+        with self._equity_transaction() as cur:
+            cur.execute("REPLACE INTO equity VALUES(%s,%s,%s,%s)", (acct, ts, bal, upnl))
+            self._merge_equity_day(cur, acct, ts - ts % 86400_000,
+                                   ts, ts, total, total, total, total, replace_equal=True)
+
+    def equity_heatmap(self, acct: str) -> list[dict]:
+        """永久 UTC 日权益档案；bal 已包含未实现盈亏。"""
+        rows = self._qall(
+            "SELECT day,first_ts,last_ts,open,close,high,low FROM equity_daily "
+            "WHERE acct=%s ORDER BY day ASC", (acct,))
+        return [{"date": datetime.fromtimestamp(int(r[0]) / 1000, timezone.utc).date().isoformat(),
+                 "firstTs": int(r[1]), "lastTs": int(r[2]),
+                 "open": float(r[3]), "close": float(r[4]),
+                 "high": float(r[5]), "low": float(r[6])} for r in rows]
 
     def equity_series(self, acct: str, minutes: int = 480, limit: int = 960) -> list[dict]:
         """最近 minutes 分钟的权益采样（升序），供前端画权益曲线。"""
@@ -240,21 +317,26 @@ class Storage:
         return [{"t": int(r[0]), "bal": float(r[1]), "upnl": float(r[2])} for r in reversed(rows)]
 
     def migrate_equity(self, old_keys: list[str], new_key: str) -> int:
-        """把旧键（历史账户名 / 旧 ID）下的权益采样迁移到新键（稳定 ID）。
-
-        账户改名/首次升级时调用：不迁移的话曲线会因为查不到历史而"重置"。
-        时间戳冲突时保留新键已有数据（INSERT IGNORE 后再删旧行）。
-        """
+        """原子迁移原始采样及永久档案，同时间戳保留新键数据。"""
+        if not self.enabled:
+            return 0
         moved = 0
         for old in old_keys:
             if not old or old == new_key:
                 continue
             try:
-                rows = self._qall("SELECT ts,bal,upnl FROM equity WHERE acct=%s", (old,))
-                for ts, bal, upnl in rows:
-                    self._q("INSERT IGNORE INTO equity VALUES(%s,%s,%s,%s)",
-                            (new_key, int(ts), float(bal), float(upnl)))
-                self._q("DELETE FROM equity WHERE acct=%s", (old,))
+                with self._equity_transaction() as cur:
+                    cur.execute("SELECT ts,bal,upnl FROM equity WHERE acct=%s", (old,))
+                    rows = cur.fetchall()
+                    for ts, bal, upnl in rows:
+                        cur.execute("INSERT IGNORE INTO equity VALUES(%s,%s,%s,%s)",
+                                    (new_key, int(ts), float(bal), float(upnl)))
+                    cur.execute("SELECT day,first_ts,last_ts,open,close,high,low "
+                                "FROM equity_daily WHERE acct=%s", (old,))
+                    for row in cur.fetchall():
+                        self._merge_equity_day(cur, new_key, *row)
+                    cur.execute("DELETE FROM equity WHERE acct=%s", (old,))
+                    cur.execute("DELETE FROM equity_daily WHERE acct=%s", (old,))
                 moved += len(rows)
             except Exception as e:
                 print(f"[equity] 迁移 {old} -> {new_key} 失败: {e}")

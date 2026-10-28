@@ -47,6 +47,21 @@ const pointOnPath = (path, t) => {
   return path.p3
 }
 
+// Deform the existing path, not its seed/phase: departure stays fixed and t=1
+// always lands on the receiver's CURRENT Three-camera projection.
+export const pointFollowingReceiver = (path, t, receiver) => {
+  const point = pointOnPath(path, t)
+  const u = clamp01(t), weight = u * u * (3 - 2 * u)
+  return { x: point.x + (receiver.x - path.p3.x) * weight, y: point.y + (receiver.y - path.p3.y) * weight }
+}
+
+export const pruneFlightMaps = (pulses, started, curves, done) => {
+  const alive = new Set(pulses.slice(-48).map((p) => p.id))
+  for (const collection of [started, curves, done]) {
+    for (const id of collection.keys()) if (!alive.has(id)) collection.delete(id)
+  }
+}
+
 const circleSegments = (center, radius, startAngle, sweep, steps = 22) => {
   const points = []
   for (let index = 0; index <= steps; index += 1) {
@@ -117,7 +132,7 @@ function makeCurve(from, to, pulse) {
     }
     const startAngle = Math.atan2(from.y - center.y, from.x - center.x)
     const sweep = sign * Math.PI * (variant === 2 ? 2.08 : 2.65)
-    const loop = circleSegments(center, radius, startAngle, sweep)
+    const loop = circleSegments(center, Math.hypot(from.x - center.x, from.y - center.y), startAngle, sweep)
     const loopEnd = loop[loop.length - 1].p3
     return {
       p0: from,
@@ -207,159 +222,153 @@ function makeCurve(from, to, pulse) {
   }
 }
 
-export default function MetricFlights({ pulses, onDone }) {
+export default function MetricFlights({ pulses = [], onDone }) {
   const canvasRef = useRef(null)
-  const startedRef = useRef(new Map())
-  const curvesRef = useRef(new Map())
-  const doneRef = useRef(new Set())
-  const onDoneRef = useRef(onDone)
-  onDoneRef.current = onDone
+  const startedRef = useRef(new Map()), curvesRef = useRef(new Map()), doneRef = useRef(new Set())
+  const onDoneRef = useRef(onDone), pulsesRef = useRef(pulses), syncRef = useRef(null)
+  onDoneRef.current = onDone; pulsesRef.current = pulses.slice(-48)
+  useEffect(() => { syncRef.current?.() }, [pulses])
 
   useEffect(() => {
-    if (!pulses.length) return
-    // doneRef 只用于区分同一批脉冲是否播过；脉冲被移除后其 id 永久失效，
-    // 定期清掉不在当前批次里的 id，避免长开页面集合无限增长。
-    const alive = new Set(pulses.map((pulse) => pulse.id))
-    for (const id of doneRef.current) {
-      if (!alive.has(id)) doneRef.current.delete(id)
+    const canvas = canvasRef.current, ctx = canvas?.getContext("2d")
+    if (!canvas || !ctx) return
+    let W = 1, H = 1, raf = 0, clock = 0, lastFrame = 0, disposed = false
+    let targetEl = null, intersecting = true, targetObserver = null, motionObserver = null
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)")
+    const started = startedRef.current, curves = curvesRef.current, done = doneRef.current
+    const canMove = () => targetEl?.isConnected && targetEl.dataset.ready === "true"
+      && targetEl.dataset.motion === "running" && !document.hidden && !media.matches && intersecting
+    const receiver = () => {
+      const rect = targetEl?.getBoundingClientRect()
+      return rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null
     }
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const targetEl = document.querySelector("[data-metric-intake]")
-    const targetRect = targetEl?.getBoundingClientRect()
-    const target = targetRect
-      ? { x: targetRect.left + targetRect.width / 2, y: targetRect.top + targetRect.height / 2 }
-      : null
-    if (!target) return
-
-    const dpr = Math.min(window.devicePixelRatio || 1, 2)
-    const W = window.innerWidth
-    const H = window.innerHeight
-    canvas.width = Math.round(W * dpr)
-    canvas.height = Math.round(H * dpr)
-    canvas.style.width = `${W}px`
-    canvas.style.height = `${H}px`
-    const ctx = canvas.getContext("2d")
-    if (!ctx) return
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-
-    for (const pulse of pulses) {
-      if (doneRef.current.has(pulse.id)) continue
-      if (!startedRef.current.has(pulse.id)) {
-        startedRef.current.set(pulse.id, performance.now() + (pulse.delay || 0))
-        curvesRef.current.set(pulse.id, makeCurve(pulse.source, target, pulse))
+    const finish = (id) => {
+      started.delete(id); curves.delete(id)
+      if (!done.has(id)) { done.add(id); onDoneRef.current?.(id) }
+    }
+    const bindTarget = () => {
+      const next = document.querySelector("[data-metric-intake]")
+      if (next === targetEl) return
+      targetObserver?.disconnect(); motionObserver?.disconnect()
+      targetEl = next; intersecting = true
+      if (!next) return
+      targetObserver = new IntersectionObserver(([entry]) => { intersecting = entry.isIntersecting; wake() }, { threshold: [0, 0.01] })
+      targetObserver.observe(next)
+      motionObserver = new MutationObserver(wake)
+      motionObserver.observe(next, { attributes: true, attributeFilter: ["data-ready", "data-motion"] })
+    }
+    const draw = (now, still = false) => {
+      if (!still) raf = 0
+      if (disposed || (!still && !canMove())) { lastFrame = 0; return }
+      if (!still) {
+        clock += lastFrame ? Math.min(80, Math.max(0, now - lastFrame)) : 0
+        lastFrame = now
       }
-    }
-
-    let raf = 0
-    const draw = (now) => {
+      const target = receiver()
+      if (!target) return
       ctx.clearRect(0, 0, W, H)
       let alive = false
-      for (const pulse of pulses) {
-        const curve = curvesRef.current.get(pulse.id)
-        const start = startedRef.current.get(pulse.id)
-        if (!curve || start == null) continue
-        const elapsed = now - start
-        if (elapsed < 0) {
-          alive = true
-          continue
+      for (const pulse of pulsesRef.current) {
+        if (done.has(pulse.id)) continue
+        if (!started.has(pulse.id)) {
+          if (still) continue
+          if (!Number.isFinite(pulse.source?.x) || !Number.isFinite(pulse.source?.y)) { finish(pulse.id); continue }
+          started.set(pulse.id, clock + Math.max(0, pulse.delay || 0))
+          curves.set(pulse.id, makeCurve(pulse.source, target, pulse))
         }
-        const spawn = pulse.spawn ?? 170
-        const duration = Math.max(1, pulse.duration || 1400)
-        const travelElapsed = elapsed - spawn
-
+        const curve = curves.get(pulse.id), elapsed = clock - started.get(pulse.id)
+        if (!curve) continue
+        if (elapsed < 0) { alive = true; continue }
+        const spawn = Math.max(0, pulse.spawn ?? 170), duration = Math.max(1, pulse.duration || 1400)
+        const travelElapsed = elapsed - spawn, color = pulse.color || "#24caba"
         if (travelElapsed < 0) {
           const p = Math.min(1, elapsed / Math.max(1, spawn))
-          ctx.save()
-          ctx.strokeStyle = pulse.color
-          ctx.lineWidth = 0.9
-          ctx.globalAlpha = 0.68 * (1 - p)
-          ctx.beginPath()
-          ctx.arc(curve.p0.x, curve.p0.y, 2 + 9 * p, 0, Math.PI * 2)
-          ctx.stroke()
-          ctx.fillStyle = pulse.color
-          ctx.globalAlpha = 1
-          ctx.beginPath()
-          ctx.arc(curve.p0.x, curve.p0.y, 1.5, 0, Math.PI * 2)
-          ctx.fill()
-          ctx.restore()
-          alive = true
-          continue
+          ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 0.9; ctx.globalAlpha = 0.68 * (1 - p)
+          ctx.beginPath(); ctx.arc(curve.p0.x, curve.p0.y, 2 + 9 * p, 0, Math.PI * 2); ctx.stroke()
+          ctx.fillStyle = color; ctx.globalAlpha = 1
+          ctx.beginPath(); ctx.arc(curve.p0.x, curve.p0.y, 1.5, 0, Math.PI * 2); ctx.fill(); ctx.restore()
+          alive = true; continue
         }
-
         if (travelElapsed < duration) {
-          const t = easeInOut(Math.min(1, travelElapsed / duration))
-          const tail = 0.38
-          const segments = 28
-          ctx.save()
-          ctx.strokeStyle = pulse.color
-          ctx.lineCap = "round"
-          for (let index = 0; index < segments; index += 1) {
-            const a = Math.max(0, t - tail * (index + 1) / segments)
-            const b = Math.max(0, t - tail * index / segments)
+          const t = easeInOut(Math.min(1, travelElapsed / duration)), tail = 0.38, segments = 28
+          ctx.save(); ctx.strokeStyle = color; ctx.lineCap = "round"
+          for (let index = 0; index < segments; index++) {
+            const a = Math.max(0, t - tail * (index + 1) / segments), b = Math.max(0, t - tail * index / segments)
             if (b <= a) continue
-            const p1 = pointOnPath(curve, a)
-            const p2 = pointOnPath(curve, b)
-            const strength = 1 - index / segments
-            ctx.globalAlpha = 0.07 + strength * 0.58
-            ctx.lineWidth = 0.46 + strength * 0.68
-            ctx.beginPath()
-            ctx.moveTo(p1.x, p1.y)
-            ctx.lineTo(p2.x, p2.y)
-            ctx.stroke()
+            const p1 = pointFollowingReceiver(curve, a, target), p2 = pointFollowingReceiver(curve, b, target), strength = 1 - index / segments
+            ctx.globalAlpha = 0.07 + strength * 0.58; ctx.lineWidth = 0.46 + strength * 0.68
+            ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke()
           }
-          const head = pointOnPath(curve, t)
-          ctx.globalAlpha = 0.28
-          ctx.fillStyle = pulse.color
-          ctx.beginPath()
-          ctx.arc(head.x, head.y, 5.5, 0, Math.PI * 2)
-          ctx.fill()
-          ctx.globalAlpha = 1
-          ctx.beginPath()
-          ctx.arc(head.x, head.y, 1.35, 0, Math.PI * 2)
-          ctx.fill()
-          ctx.restore()
-          alive = true
-          continue
+          const head = pointFollowingReceiver(curve, t, target)
+          ctx.globalAlpha = 0.28; ctx.fillStyle = color
+          ctx.beginPath(); ctx.arc(head.x, head.y, 5.5, 0, Math.PI * 2); ctx.fill()
+          ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(head.x, head.y, 1.35, 0, Math.PI * 2); ctx.fill(); ctx.restore()
+          alive = true; continue
         }
-
+        if (!curve.arrived && !still) {
+          curve.arrived = true
+          window.dispatchEvent(new CustomEvent("quant-metric-arrival", { detail: { id: pulse.id } }))
+        }
         const fade = (travelElapsed - duration) / FADE_MS
         if (fade < 1) {
-          ctx.save()
-          ctx.strokeStyle = pulse.color
-          ctx.lineCap = "round"
-          ctx.globalAlpha = 0.27 * (1 - fade)
-          ctx.lineWidth = 0.62
+          ctx.save(); ctx.strokeStyle = color; ctx.lineCap = "round"; ctx.globalAlpha = 0.27 * (1 - fade); ctx.lineWidth = 0.62
           ctx.beginPath()
-          for (let index = 0; index <= 56; index += 1) {
-            const point = pointOnPath(curve, index / 56)
-            if (index === 0) ctx.moveTo(point.x, point.y)
-            else ctx.lineTo(point.x, point.y)
+          for (let index = 0; index <= 56; index++) {
+            const point = pointFollowingReceiver(curve, index / 56, target)
+            if (index === 0) ctx.moveTo(point.x, point.y); else ctx.lineTo(point.x, point.y)
           }
-          ctx.stroke()
-          ctx.globalAlpha = 0.58 * (1 - fade)
-          ctx.beginPath()
-          ctx.arc(curve.p3.x, curve.p3.y, 3 + 18 * fade, 0, Math.PI * 2)
-          ctx.stroke()
-          ctx.restore()
-          alive = true
-          continue
+          ctx.stroke(); ctx.globalAlpha = 0.58 * (1 - fade)
+          ctx.beginPath(); ctx.arc(target.x, target.y, 3 + 18 * fade, 0, Math.PI * 2); ctx.stroke(); ctx.restore()
+          alive = true; continue
         }
-
-        if (!doneRef.current.has(pulse.id)) {
-          doneRef.current.add(pulse.id)
-          onDoneRef.current?.(pulse.id)
-        }
-        startedRef.current.delete(pulse.id)
-        curvesRef.current.delete(pulse.id)
+        finish(pulse.id)
       }
-      if (alive) raf = requestAnimationFrame(draw)
-      else ctx.clearRect(0, 0, W, H)
+      if (alive && !still) raf = requestAnimationFrame(draw)
+      else if (!alive) { lastFrame = 0; ctx.clearRect(0, 0, W, H) }
     }
-    raf = requestAnimationFrame(draw)
-    return () => cancelAnimationFrame(raf)
-  }, [pulses])
+    function wake() {
+      if (disposed) return
+      canvas.style.visibility = !document.hidden && intersecting && targetEl?.isConnected ? "visible" : "hidden"
+      if (!canMove()) {
+        cancelAnimationFrame(raf); raf = 0; lastFrame = 0
+        if (targetEl?.isConnected) draw(performance.now(), true)
+        else ctx.clearRect(0, 0, W, H)
+        return
+      }
+      if (!raf && pulsesRef.current.some((p) => !done.has(p.id))) raf = requestAnimationFrame(draw)
+    }
+    const sync = () => {
+      pruneFlightMaps(pulsesRef.current, started, curves, done)
+      bindTarget()
+      if (document.hidden || media.matches || !intersecting || targetEl?.dataset.motion === "frozen") {
+        // Preserve already flying pulses, but do not queue a replay of samples received while suspended.
+        for (const pulse of pulsesRef.current) if (!started.has(pulse.id) && !done.has(pulse.id)) finish(pulse.id)
+      }
+      if (!pulsesRef.current.length) {
+        cancelAnimationFrame(raf); raf = 0; lastFrame = 0; ctx.clearRect(0, 0, W, H)
+      } else wake()
+    }
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5)
+      W = window.innerWidth; H = window.innerHeight
+      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr)
+      canvas.style.width = `${W}px`; canvas.style.height = `${H}px`; ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      wake()
+    }
+    // Only listen for receiver replacement; do not recalculate curves on every React render.
+    const mountObserver = new MutationObserver(() => { if (!targetEl?.isConnected) { bindTarget(); wake() } })
+    mountObserver.observe(document.body, { childList: true, subtree: true })
+    document.addEventListener("visibilitychange", wake); media.addEventListener("change", wake)
+    window.addEventListener("resize", resize)
+    syncRef.current = sync; resize(); sync()
+    return () => {
+      disposed = true; syncRef.current = null
+      cancelAnimationFrame(raf); targetObserver?.disconnect(); motionObserver?.disconnect(); mountObserver.disconnect()
+      document.removeEventListener("visibilitychange", wake); media.removeEventListener("change", wake); window.removeEventListener("resize", resize)
+      started.clear(); curves.clear(); done.clear(); ctx.clearRect(0, 0, W, H)
+      canvas.width = canvas.height = 1
+    }
+  }, [])
 
-  if (!pulses.length) return null
   return <canvas ref={canvasRef} className={styles.layer} aria-hidden />
 }

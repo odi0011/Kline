@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import secrets
 import sys
 import threading
 import uuid
@@ -24,7 +25,7 @@ from feed.liquidation import LiquidationStream
 from feed.market_data import (
     funding_snapshot, onboard_dates, open_interest_history, ticker_24h,
 )
-from feed.news import fetch_all as fetch_news
+from feed.news import fetch_all as fetch_news, fetch_article
 from feed.source import BinanceFuturesStream
 from decision.config import DecisionConfig
 from decision.pool_audit import audit_universe
@@ -35,6 +36,7 @@ from quant import QuantEngine
 from server.hub import BroadcastHub
 from storage import Storage
 from accounts import fetch_account
+from ai.agent import AgentManager
 from ai.provider import (
     PROVIDER_PRESETS, CAPABILITIES, mask_cfg, merge_cfg,
     list_models as ai_list_models, test_model as ai_test_model, guess_model_meta,
@@ -535,6 +537,60 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     bcfg = cfg.get("feed", {})
     proxy_cfg = (bcfg.get("proxy") or "").strip()
+
+    def _agent_context() -> dict:
+        snapshot = quant.snapshot()
+        analysis = snapshot.get("analysis") or {}
+        accounts = []
+        for item in hub.last_accounts or []:
+            accounts.append({key: item.get(key) for key in (
+                "name", "balance", "unrealized", "available", "positions", "error")})
+        return {
+            "ts": snapshot.get("ts"),
+            "enabled": snapshot.get("enabled"),
+            "symbols": symbols,
+            "stats": snapshot.get("stats") or {},
+            "market": analysis.get("symbols") or {},
+            "positions": snapshot.get("positions") or [],
+            "accounts": accounts,
+            "trades": list(getattr(quant, "trades", [])[-20:]),
+            "positionPlans": analysis.get("positionPlans") or [],
+            "drawdown": analysis.get("drawdown") or {},
+            "drift": analysis.get("drift") or {},
+            "evaluations": analysis.get("liveEvaluations") or {},
+            "params": analysis.get("params") or {},
+            "recentEvents": (snapshot.get("events") or [])[-40:],
+            "news": [{key: item.get(key) for key in ("title", "source", "url", "ts", "desc")}
+                     for item in hub.news[:30]],
+            "health": {"mode": hub.mode, "lagP50": hub.lag_p50,
+                       "accountsAvailable": len(hub.last_accounts or [])},
+        }
+
+    token_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "agent-access-token")
+    try:
+        with open(token_path, encoding="utf-8") as handle:
+            hub.agent_token = handle.read().strip()
+        os.chmod(token_path, 0o600)
+    except FileNotFoundError:
+        token = secrets.token_urlsafe(32)
+        fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(token)
+        hub.agent_token = token
+    if len(hub.agent_token) < 32:
+        raise ValueError("Agent 访问令牌无效，需至少 32 字符")
+    hub.news_article_fn = lambda item: fetch_article(item, proxy_cfg or None)
+
+    agent = AgentManager(
+        lambda: cfg.get("ai", {}) or {},
+        lambda: proxy_cfg,
+        _agent_context,
+        hub.broadcast,
+        os.path.join(os.path.dirname(os.path.abspath(config_path)), "agent-state.json"),
+    )
+    hub.agent_state_fn = agent.state
+    hub.agent_fn = agent.handle
+
     limit = int(bcfg.get("backfill_bars", 300))
     for (sym, iv), agg in {**aggs, **watch_aggs}.items():
         try:
@@ -619,6 +675,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         quant.liquidation_fn = lambda sym: {"active": False}
 
     await hub.start()
+    await agent.start()
 
     dist = "web/dist"
     if os.path.isdir(dist):
@@ -675,8 +732,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                         print(f"[accounts] 权益采样落库失败: {e}")
                     try:
                         row["series"] = storage.equity_series(eq_key)
+                        row["equityHistory"] = storage.equity_heatmap(eq_key)
                     except Exception:
                         row["series"] = []
+                        row["equityHistory"] = []
                     results.append(row)
                 except Exception as e:
                     row = {"name": a["name"], "id": a.get("id", ""), "icon": a.get("icon", ""),
@@ -684,8 +743,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                            "positions": [], "error": str(e)[:80]}
                     try:
                         row["series"] = storage.equity_series(a.get("id") or a["name"])
+                        row["equityHistory"] = storage.equity_heatmap(a.get("id") or a["name"])
                     except Exception:
                         row["series"] = []
+                        row["equityHistory"] = []
                     results.append(row)
             try:
                 hub.last_accounts = results
@@ -811,9 +872,12 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 print(f"[market] 衍生品快照刷新失败: {e}")
             await asyncio.sleep(60)
 
-    await asyncio.gather(supervisor(), sweep(), accounts_poller(),
-                         news_poller(), backfill_retry(), pool_auditor(),
-                         market_feature_poller())
+    try:
+        await asyncio.gather(supervisor(), sweep(), accounts_poller(),
+                             news_poller(), backfill_retry(), pool_auditor(),
+                             market_feature_poller())
+    finally:
+        await agent.stop()
 
 
 def main() -> None:

@@ -21,19 +21,30 @@
 
 设计要点：
   · 每个源独立 try，一个挂掉不影响其余（真实环境里 RSS 站点经常抽风）。
-  · 相关性排序：标题/摘要命中当前展示币种（BTC/ETH/…）或该币全名时置顶；
-    命中"加密/比特币/美联储"等宽泛关键词次之；其余按时间。
+  · 相关性筛选：标题/摘要命中当前展示币种（BTC/ETH/…）或该币全名时优先保留；
+    命中"加密/比特币/美联储"等宽泛关键词次之；筛选后按时间稳定升序展示。
   · 只保留最近 N 小时的内容，避免旧闻占据版面。
-  · 全部走标准库（urllib + re），不引入 feedparser / requests 依赖。
+  · 全部走标准库（urllib/http.client、ElementTree、HTMLParser），不安装新依赖。
 """
 from __future__ import annotations
 
+import base64
+import http.client
+import ipaddress
 import json
+import queue
 import re
+import socket
+import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
+from urllib.parse import urljoin, urlsplit
 
 # 币安这个接口 pageSize 上限很小（>5 会 400 Bad Request），固定 5 并翻页凑数
 BINANCE_URL = ("https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
@@ -134,45 +145,377 @@ def _strip_html(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+# 精确匹配，不允许任意子域；RSS 的文章落地页域名需显式列入。
+ARTICLE_HOSTS = frozenset({
+    "binance.com", "www.binance.com", "okx.com", "www.okx.com",
+    "cointelegraph.com", "www.cointelegraph.com", "coindesk.com", "www.coindesk.com",
+    "theblock.co", "www.theblock.co", "decrypt.co", "www.decrypt.co",
+    "cryptoslate.com", "www.cryptoslate.com", "cn.investing.com",
+    "feeds.a.dj.com", "wsj.com", "www.wsj.com", "forexlive.com", "www.forexlive.com",
+})
+ARTICLE_MAX_BYTES = 2 * 1024 * 1024
+ARTICLE_MAX_REDIRECTS = 4
+_DNS_SLOTS = threading.BoundedSemaphore(4)
+
+
+class _ArticleError(ValueError):
+    pass
+
+
+def _validate_article_url(url: str) -> str:
+    if not isinstance(url, str) or not url or re.search(r"[\s\\\x00-\x1f\x7f]", url):
+        raise _ArticleError("不安全的新闻地址")
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        port = parts.port
+    except ValueError as exc:
+        raise _ArticleError("无效的新闻地址") from exc
+    if (parts.scheme != "https" or parts.username is not None or parts.password is not None
+            or port not in (None, 443) or host not in ARTICLE_HOSTS
+            or parts.netloc.lower() not in (host, host + ":443")):
+        raise _ArticleError("仅允许 HTTPS 可信新闻域名（不含凭据或自定义端口）")
+    return host
+
+
+def _public_addresses(host: str, timeout: float) -> list[str]:
+    """有界 DNS 等待；所有答案必须公网，连接时固定 IP，避免二次解析/rebinding。"""
+    if not _DNS_SLOTS.acquire(blocking=False):
+        raise _ArticleError("DNS 查询繁忙，请稍后重试")
+    result = queue.Queue(maxsize=1)
+
+    def resolve():
+        try:
+            result.put(socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM))
+        except OSError as exc:
+            result.put(exc)
+        finally:
+            _DNS_SLOTS.release()
+
+    threading.Thread(target=resolve, daemon=True).start()
+    try:
+        records = result.get(timeout=max(0.001, timeout))
+    except queue.Empty as exc:
+        raise _ArticleError("新闻域名解析超时") from exc
+    if isinstance(records, Exception):
+        raise _ArticleError("新闻域名解析失败")
+    addresses = list(dict.fromkeys(record[4][0] for record in records))
+    if not addresses:
+        raise _ArticleError("新闻域名没有公网地址")
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        # 也拒绝 IPv6 转换/隧道地址，防止嵌入内网 IPv4 绕过。
+        if (not ip.is_global or ip.is_multicast or ip.is_reserved
+                or (ip.version == 6 and (ip.ipv4_mapped or ip.sixtofour or ip.teredo))):
+            raise _ArticleError("拒绝非公网新闻地址")
+    return addresses
+
+
+class _ArticleConnection(http.client.HTTPSConnection):
+    """直连或经服务器配置的 HTTP CONNECT 代理；目标 IP 固定，TLS 校验原域名。"""
+    def __init__(self, host, address, timeout, proxy=None):
+        super().__init__(host, 443, timeout=timeout, context=ssl.create_default_context())
+        self.address = address
+        self.proxy_address = None
+        if proxy:
+            try:
+                parsed = urlsplit(proxy)
+                if parsed.scheme != "http" or not parsed.hostname or parsed.path not in ("", "/"):
+                    raise ValueError
+                self.proxy_address = (parsed.hostname, parsed.port or 80)
+                headers = {"Host": host + ":443"}
+                if parsed.username is not None:
+                    from urllib.parse import unquote
+                    auth = f"{unquote(parsed.username)}:{unquote(parsed.password or '')}"
+                    headers["Proxy-Authorization"] = "Basic " + base64.b64encode(auth.encode()).decode()
+                self.set_tunnel(address, 443, headers)
+            except ValueError as exc:
+                raise _ArticleError("正文抓取仅支持服务器配置的 HTTP CONNECT 代理") from exc
+
+    def connect(self):
+        self.sock = socket.create_connection(self.proxy_address or (self.address, 443), self.timeout)
+        try:
+            if self.proxy_address:
+                self._tunnel()
+            self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
+        except Exception:
+            self.close()
+            raise
+
+
+def _request_article(url, host, address, proxy, timeout):
+    """单跳请求，不自动跟随跳转、不继承环境代理、不发送 cookie。"""
+    conn = _ArticleConnection(host, address, timeout, proxy)
+    connected_socket = None
+
+    def abort():
+        sock = connected_socket or conn.sock
+        if sock:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    watchdog = threading.Timer(timeout, abort)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        parts = urlsplit(url)
+        path = (parts.path or "/") + ("?" + parts.query if parts.query else "")
+        conn.request("GET", path, headers={"Host": host, "User-Agent": UA,
+                     "Accept": "text/html,application/xhtml+xml", "Accept-Encoding": "identity"})
+        connected_socket = conn.sock
+        with conn.getresponse() as response:
+            headers = response.headers
+            if response.status in (301, 302, 303, 307, 308):
+                return response.status, headers, b""
+            if response.status != 200:
+                raise _ArticleError(f"新闻源返回 HTTP {response.status}")
+            if headers.get("Content-Encoding", "identity").lower() not in ("identity", ""):
+                raise _ArticleError("新闻源返回不支持的压缩正文")
+            if headers.get_content_type() not in ("text/html", "application/xhtml+xml"):
+                raise _ArticleError("新闻源未返回 HTML 正文")
+            length = headers.get("Content-Length")
+            if length and (not length.isdigit() or int(length) > ARTICLE_MAX_BYTES):
+                raise _ArticleError("新闻正文超过 2MB 或长度无效")
+            raw = response.read(ARTICLE_MAX_BYTES + 1)
+            if len(raw) > ARTICLE_MAX_BYTES:
+                raise _ArticleError("新闻正文超过 2MB")
+            return response.status, headers, raw
+    finally:
+        watchdog.cancel()
+        conn.close()
+
+
+class _ArticleParser(HTMLParser):
+    SKIP = {"script", "style", "nav", "footer", "header", "aside", "form", "noscript", "svg", "template"}
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+    BLOCK = {"p", "div", "section", "article", "main", "li", "br", "h1", "h2", "h3", "h4", "blockquote", "tr"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack = []
+        self.parts = []
+        self.regions = []
+        self.jsonld = []
+        self.json_buffer = None
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.rsplit(":", 1)[-1]
+        attrs = dict(attrs)
+        if tag == "script" and attrs.get("type", "").split(";")[0].strip().lower() == "application/ld+json":
+            self.json_buffer = []
+        if tag in self.BLOCK:
+            self.handle_data("\n")
+        blocked = (tag in self.SKIP or "hidden" in attrs or attrs.get("aria-hidden") == "true"
+                   or bool(self.stack and self.stack[-1][1]))
+        if tag not in self.VOID:
+            self.stack.append((tag, blocked))
+        if tag in ("article", "main") and not blocked:
+            self.regions.append({"tag": tag, "depth": len(self.stack), "parts": [], "open": True})
+
+    def handle_startendtag(self, tag, attrs):
+        tag = tag.rsplit(":", 1)[-1]
+        self.handle_starttag(tag, attrs)
+        if tag not in self.VOID:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        tag = tag.rsplit(":", 1)[-1]
+        if tag == "script" and self.json_buffer is not None:
+            self.jsonld.append("".join(self.json_buffer))
+            self.json_buffer = None
+        for i in range(len(self.stack) - 1, -1, -1):
+            if self.stack[i][0] == tag:
+                del self.stack[i:]
+                for region in self.regions:
+                    if region["depth"] > len(self.stack):
+                        region["open"] = False
+                break
+        if tag in self.BLOCK:
+            self.handle_data("\n")
+
+    def handle_data(self, data):
+        if self.json_buffer is not None:
+            self.json_buffer.append(data)
+        if self.stack and self.stack[-1][1]:
+            return
+        self.parts.append(data)
+        for region in self.regions:
+            if region["open"]:
+                region["parts"].append(data)
+
+
+def _clean_text(parts) -> str:
+    text = "".join(parts).replace("\xa0", " ")
+    return "\n\n".join(re.sub(r"[^\S\n]+", " ", line).strip()
+                       for line in text.splitlines() if line.strip())
+
+
+def _plain_text(html: str) -> str:
+    parser = _ArticleParser()
+    parser.feed(html or "")
+    parser.close()
+    return _clean_text(parser.parts)
+
+
+def _extract_article(html: str) -> tuple[str, bool]:
+    parser = _ArticleParser()
+    parser.feed(html)
+    parser.close()
+    bodies = []
+    paywall = False
+    for raw in parser.jsonld:
+        try:
+            nodes = [json.loads(raw)]
+        except (ValueError, RecursionError):
+            continue
+        while nodes:
+            node = nodes.pop()
+            if isinstance(node, dict):
+                if node.get("isAccessibleForFree") in (False, "false", "False"):
+                    paywall = True
+                body = node.get("articleBody")
+                if isinstance(body, str) and body.strip():
+                    cleaned = _plain_text(body)
+                    if cleaned:
+                        bodies.append(cleaned)
+                nodes.extend(node.values())
+            elif isinstance(node, list):
+                nodes.extend(node)
+    if bodies:
+        return max(bodies, key=len), paywall
+    for tag in ("article", "main"):
+        candidates = [_clean_text(region["parts"]) for region in parser.regions if region["tag"] == tag]
+        if any(candidates):
+            return max(candidates, key=len), paywall
+    return "", paywall
+
+
+def fetch_article(item: dict, proxy: str | None = None) -> dict:
+    """读取服务器当前 news 中的 item，绝不能直接传入客户端 dict/任意 URL。
+
+    hub 必须按 URL 匹配当前 news，再传入匹配到的服务器 item（含 RSS content）。
+    ok 表示有可显示文本；partial=True 表示摘要/截断内容，error 说明限制。
+    所有联网跳转均重新验证域名和全部 DNS 答案，最多 4 跳、总计 12 秒、2MB。
+    """
+    def result(content="", partial=True, error=""):
+        return {"ok": bool(content), "content": content, "partial": partial, "error": error}
+
+    if not isinstance(item, dict):
+        return result(error="需要服务器已知的新闻条目")
+    summary = _plain_text(str(item.get("desc") or "")[:ARTICLE_MAX_BYTES])
+    try:
+        url = item.get("url")
+        _validate_article_url(url)
+        # 仅信任服务器 RSS 解析器生成的标记；摘要字段从不冒充全文。
+        full = item.get("content")
+        if isinstance(full, str) and full.strip() and item.get("contentPartial") is False:
+            encoded = full.encode("utf-8")
+            limited = len(encoded) > ARTICLE_MAX_BYTES
+            return result(encoded[:ARTICLE_MAX_BYTES].decode("utf-8", "ignore"), limited,
+                          "RSS 正文超过 2MB，已截断" if limited else "")
+        deadline = time.monotonic() + FETCH_TIMEOUT
+        visited = set()
+        for hop in range(ARTICLE_MAX_REDIRECTS + 1):
+            if url in visited:
+                raise _ArticleError("新闻地址重定向循环")
+            visited.add(url)
+            host = _validate_article_url(url)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _ArticleError("正文读取超时")
+            address = _public_addresses(host, min(remaining, 3))[0]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _ArticleError("正文读取超时")
+            status, headers, raw = _request_article(url, host, address, proxy, remaining)
+            if time.monotonic() >= deadline:
+                raise _ArticleError("正文读取超时")
+            if status in (301, 302, 303, 307, 308):
+                location = headers.get("Location", "")
+                if not location or hop == ARTICLE_MAX_REDIRECTS:
+                    raise _ArticleError("新闻地址重定向过多或缺少地址")
+                # 原始 Location 也检查控制字符，避免 urljoin 静默剔除。
+                if re.search(r"[\s\\\x00-\x1f\x7f]", location):
+                    raise _ArticleError("不安全的新闻重定向")
+                url = urljoin(url, location)
+                continue
+            charset = headers.get_content_charset() or "utf-8"
+            try:
+                html = raw.decode(charset, "replace")
+            except LookupError:
+                html = raw.decode("utf-8", "replace")
+            content, partial = _extract_article(html)
+            if not content:
+                raise _ArticleError("未能提取正文（可能需要登录、订阅或动态加载）")
+            compact = lambda text: re.sub(r"\s+", "", text)
+            if summary and compact(content) in (compact(summary),
+                    compact(str(item.get("title") or "")) + compact(summary)):
+                partial = True
+            return result(content, partial, "仅获取到摘要或受限正文，并非全文" if partial else "")
+        raise _ArticleError("未能获取正文")
+    except (_ArticleError, OSError, http.client.HTTPException, ValueError, RecursionError) as exc:
+        message = str(exc) if isinstance(exc, _ArticleError) else "正文读取失败，请稍后重试"
+        return result(summary, True, message + ("；仅显示 RSS 摘要，并非全文" if summary else ""))
+
+
 def _parse_rss(xml: str) -> list[dict]:
-    """极简 RSS/Atom 解析：不引第三方库，只取 item/entry 的标题、链接、时间、摘要。"""
+    """RSS/Atom；摘要与 content:encoded 分开，全文不截成 400 字摘要。"""
+    # 禁止实体声明，避免 XML 实体膨胀；ElementTree 不联网解析外部实体。
+    if re.search(r"<!\s*(?:DOCTYPE|ENTITY)\b", xml, re.I):
+        return []
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return []
     items = []
-    # RSS 2.0 (<item>) 与 Atom (<entry>) 都支持
-    blocks = re.findall(r"<item\b.*?</item>", xml, flags=re.S | re.I)
-    if not blocks:
-        blocks = re.findall(r"<entry\b.*?</entry>", xml, flags=re.S | re.I)
-    for b in blocks:
-        def pick(tag: str) -> str:
-            m = re.search(rf"<{tag}\b[^>]*>(.*?)</{tag}>", b, flags=re.S | re.I)
-            return _strip_html(m.group(1)) if m else ""
-        title = pick("title")
+    local = lambda tag: tag.rsplit("}", 1)[-1]
+    for block in root.iter():
+        if local(block.tag) not in ("item", "entry"):
+            continue
+
+        def pick(*names, exact=False):
+            for name in names:
+                for child in block:
+                    if (child.tag if exact else local(child.tag)) == name:
+                        return (child.text or "") + "".join(
+                            ET.tostring(node, encoding="unicode") for node in child)
+            return ""
+
+        title = _plain_text(pick("title"))
         if not title:
             continue
-        # link：RSS 是 <link>url</link>，Atom 是 <link href="url"/>
-        link = pick("link")
+        link = pick("link").strip()
         if not link:
-            m = re.search(r'<link\b[^>]*href="([^"]+)"', b, flags=re.I)
-            link = m.group(1) if m else ""
-        # 时间：pubDate / published / updated / dc:date
+            link = next((child.get("href", "") for child in block
+                         if local(child.tag) == "link"
+                         and child.get("rel", "alternate") == "alternate"), "")
         ts = 0
-        for tag in ("pubDate", "published", "updated", "dc:date"):
-            raw = pick(tag)
+        for tag in ("pubDate", "published", "updated", "date"):
+            raw = pick(tag).strip()
             if not raw:
                 continue
             try:
-                ts = int(parsedate_to_datetime(raw).timestamp() * 1000)
-                break
-            except Exception:
-                try:  # ISO 8601 (Atom): 2026-10-27T10:00:00Z
-                    iso = raw.replace("Z", "+00:00")
-                    ts = int(time.mktime(time.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S")) * 1000)
-                    break
-                except Exception:
+                dt = parsedate_to_datetime(raw)
+            except (TypeError, ValueError, OverflowError):
+                try:
+                    dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except ValueError:
                     continue
-        if not ts:
-            ts = int(time.time() * 1000)
-        desc = pick("description") or pick("summary") or pick("content")
-        items.append({"title": title, "url": link, "ts": ts, "desc": desc[:400]})
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            ts = int(dt.timestamp() * 1000)
+            break
+        full = _plain_text(pick("{http://purl.org/rss/1.0/modules/content/}encoded",
+                                "{http://www.w3.org/2005/Atom}content", "content", exact=True))
+        desc = _plain_text(pick("description", "summary")) or full
+        item = {"title": title, "url": link, "ts": ts or int(time.time() * 1000),
+                "desc": desc[:400]}
+        if full:
+            item["content"] = full
+            item["contentPartial"] = False
+        items.append(item)
     return items
 
 
@@ -285,10 +628,10 @@ def _score(item: dict, shown: list[str]) -> int:
 def fetch_all(limit_each: int = 12, proxy: str | None = None,
               shown_symbols: list[str] | None = None,
               limit_total: int = 60) -> list[dict]:
-    """聚合全部来源，按「相关性 → 权重 → 时间」排序。
+    """聚合全部来源，按相关性筛选后按时间稳定升序展示。
 
     shown_symbols: 前端当前展示的币种（如 ["btcusdt","ethusdt"]），
-                   用于把与该币相关的新闻提到最前面。
+                   用于优先保留与该币相关的新闻。
     """
     shown = [s.lower() for s in (shown_symbols or [])]
     items: list[dict] = []
@@ -324,4 +667,5 @@ def fetch_all(limit_each: int = 12, proxy: str | None = None,
         out.append(it)
 
     out.sort(key=lambda x: (-x["rel"], -int(x.get("weight") or 0), -x["ts"]))
-    return out[:limit_total]
+    # 相关性用于筛选；展示始终稳定升序，最新消息在底部。
+    return sorted(out[:limit_total], key=lambda x: x["ts"])

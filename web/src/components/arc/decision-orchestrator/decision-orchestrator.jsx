@@ -1,7 +1,7 @@
-import { useMemo } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { motion, useReducedMotion } from "motion/react"
 import { LiquidGlass } from "@/components/ui/liquid-glass"
-import QuantScene from "./quant-scene"
+import QuantScene, { advanceEventGate, createEventGate } from "./quant-scene"
 import styles from "./decision-orchestrator.module.css"
 
 const number = (value) => {
@@ -17,18 +17,6 @@ const percent = (value, digits = 2) => {
   const parsed = number(value)
   return parsed == null ? "--" : `${parsed.toFixed(digits)}%`
 }
-const isRecent = (event, windowMs) => Boolean(
-  event && Date.now() - (number(event.ts) || 0) < windowMs,
-)
-
-const findLatest = (events, kind) => {
-  if (!Array.isArray(events)) return null
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    if (events[index]?.kind === kind) return events[index]
-  }
-  return null
-}
-
 export default function DecisionOrchestrator({
   analysis,
   snapshot,
@@ -48,21 +36,14 @@ export default function DecisionOrchestrator({
     return requested.filter((symbol) => number(evaluations[symbol]?.score) != null).length
   }, [evaluations, symbols])
 
-  const latestSignal = useMemo(() => findLatest(events, "signal"), [events])
-  const recentOpen = useMemo(() => findLatest(events, "open"), [events])
-  const recentSkip = useMemo(() => findLatest(events, "skip"), [events])
-  const signalActive = isRecent(latestSignal, 5000)
-  const riskActive = Boolean(analysis?.drawdown?.paused) || isRecent(recentSkip, 5000)
-  const executionActive = isRecent(recentOpen, 5000)
-  const coreActive = metricPulses.length > 0 || signalActive
-  const activeStages = {
-    intake: metricPulses.length > 0,
-    features: computedCount > 0,
-    decision: coreActive,
-    risk: riskActive,
-    execution: executionActive,
-    feedback: activePositions > 0,
-  }
+  const gateRef = useRef(null)
+  if (!gateRef.current) gateRef.current = createEventGate()
+  const [newEvents, setNewEvents] = useState([])
+  useEffect(() => {
+    if (!snapshot?.ts && !events?.length && !Object.keys(analysis?.liveEvaluations || {}).length) return
+    const batch = advanceEventGate(gateRef.current, { analysis, snapshot, symbols, events })
+    if (batch.length) setNewEvents(batch)
+  }, [analysis, snapshot, symbols, events])
 
   const runningLabel = enabled == null ? "待接入" : enabled ? "运行中" : "已暂停"
   const scoreGate = number(params.minScore) == null
@@ -92,8 +73,11 @@ export default function DecisionOrchestrator({
       transition={{ duration: reduced ? 0 : 0.35, ease: [0.22, 1, 0.36, 1] }}
     >
       <QuantScene
-        activeStages={activeStages}
-        signalActive={signalActive}
+        analysis={analysis}
+        snapshot={snapshot}
+        symbols={symbols}
+        events={events}
+        newEvents={newEvents}
         enabled={enabled}
         reduced={reduced}
         metricPulses={metricPulses}

@@ -7,6 +7,8 @@ dist.tar.gz
 
 # 运行配置含密钥（用 config.example.yaml 作模板）
 config.yaml
+agent-state.json*
+agent-access-token
 
 web/node_modules/
 web/dist/

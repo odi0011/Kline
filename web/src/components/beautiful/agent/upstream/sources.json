@@ -1,0 +1,70 @@
+{
+  "license": "https://www.beautifului.dev/license",
+  "copyright": "Copyright (c) 2026 Shane Levine",
+  "adaptation": "Selected JSX structures and Button variants; remove demo data/timers, use controlled realtime props and scoped compact CSS. Foundation tokens mapped only inside agent root. ChatComposer supplies tabs/thread/composer; PromptBar and full-screen demo not shipped.",
+  "sources": [
+    {
+      "registry": "https://www.beautifului.dev/r/button.json",
+      "files": [
+        {
+          "path": "components/atoms/Button.tsx",
+          "sourceSha256": "1d939f68820366648a7b3292b88001da41253154bc49494be60cb8188100f0b0"
+        }
+      ]
+    },
+    {
+      "registry": "https://www.beautifului.dev/r/chat-composer.json",
+      "files": [
+        {
+          "path": "components/primitives/ChatComposer.tsx",
+          "sourceSha256": "1b8ac6cd342a5ccab92c0e0265d7431a35703e23496bd85c4cf64d883e6cc7f5"
+        }
+      ]
+    },
+    {
+      "registry": "https://www.beautifului.dev/r/task-rows.json",
+      "files": [
+        {
+          "path": "components/primitives/TaskRows.tsx",
+          "sourceSha256": "7a81c2a264528405826b8ac9db9e92d4c14ef6fa3fcdb39010022df3cf4c0920"
+        }
+      ]
+    },
+    {
+      "registry": "https://www.beautifului.dev/r/thinking-state.json",
+      "files": [
+        {
+          "path": "components/primitives/ThinkingState.tsx",
+          "sourceSha256": "3d73617406120fad93fd15c67054a59debb9e43ccd385a21e2f48a7fb4036e24"
+        }
+      ]
+    },
+    {
+      "registry": "https://www.beautifului.dev/r/tool-chips.json",
+      "files": [
+        {
+          "path": "components/primitives/ToolChips.tsx",
+          "sourceSha256": "dc06a0ec805825622bf622f0f56cc8305f79751fe7fcb55727a59869b443c9c8"
+        }
+      ]
+    },
+    {
+      "registry": "https://www.beautifului.dev/r/approval-card.json",
+      "files": [
+        {
+          "path": "components/primitives/ApprovalCard.tsx",
+          "sourceSha256": "5e90ba19b79f4d385a34e9cf703b15e819c72df93d70a72c8c01aa85d500ca95"
+        }
+      ]
+    },
+    {
+      "registry": "https://www.beautifului.dev/r/foundation.json",
+      "files": [
+        {
+          "path": "app/beautifui/foundation.css",
+          "sourceSha256": "32c68b62b5bfa18fc33cb291f6966d02dc2585a87e75e925c86225b2cf058e1d"
+        }
+      ]
+    }
+  ]
+}

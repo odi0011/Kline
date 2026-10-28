@@ -9,6 +9,7 @@ import { LiquidGlass } from "@/components/ui/liquid-glass"
 import CoinAvatar from "@/components/ui/coin-avatar"
 import { hexHue } from "@/lib/account-theme"
 import EquityCurve from "./equity-curve"
+import EquityHeatmap from "./equity-heatmap"
 import styles from "./account-card.module.css"
 
 const fmtPrice = (v) => {
@@ -84,7 +85,8 @@ export default function AccountCard({ account, series, chartColors, accent = "#f
   const up = (pnl ?? 0) > 0
   const down = (pnl ?? 0) < 0
   const lost = account.balance == null
-  const scrollable = edges.left || edges.right
+  const showHistory = positions.length === 0 && !account.error
+  const scrollable = positions.length > 0 && (edges.left || edges.right)
 
   const nudge = (dir) => {
     const vp = viewportRef.current
@@ -93,7 +95,7 @@ export default function AccountCard({ account, series, chartColors, accent = "#f
   }
 
   return (
-    <section className={styles.card} aria-label="账户">
+    <section className={`${styles.card}${showHistory ? ` ${styles.historyCard}` : ""}`} aria-label="账户">
       <header className={styles.head}>
         <span className={styles.avatar}>
           {account.icon
@@ -105,7 +107,7 @@ export default function AccountCard({ account, series, chartColors, accent = "#f
           <span className={styles.sub}>USDT 本位合约</span>
         </div>
         <div className={styles.curve}>
-          <EquityCurve samples={series || []} hue={hue} height={46} onHover={setHoverS} />
+          <EquityCurve samples={series || []} hue={hue} height={showHistory ? 28 : 46} onHover={setHoverS} />
         </div>
       </header>
 
@@ -133,8 +135,10 @@ export default function AccountCard({ account, series, chartColors, accent = "#f
               ))}
             </div>
           </ScrollArea>
+        ) : account.error ? (
+          <span className={styles.posEmpty} role="alert">数据获取失败</span>
         ) : (
-          <span className={styles.posEmpty}>{account.error ? "数据获取失败" : "无持仓"}</span>
+          <EquityHeatmap key={account.id || account.name} history={account.equityHistory} />
         )}
         {scrollable && (
           <div className={styles.posNav}>
