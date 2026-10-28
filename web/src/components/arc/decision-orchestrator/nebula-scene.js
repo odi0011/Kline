@@ -5,7 +5,7 @@
 import * as THREE from "three"
 
 const FOV = 42
-const FILL = 0.5
+const FILL = 0.74
 
 const SLOT = {
   accent: 0,
@@ -387,12 +387,12 @@ function buildOrbitRings(palette, count) {
 }
 
 function buildNetwork(rng, palette) {
-  const count = 240
+  const count = 680
   const positions = new Float32Array(count * 3)
   const slots = new Uint8Array(count)
   const points = []
   for (let i = 0; i < count; i += 1) {
-    const radius = 0.28 + rng() * 0.72
+    const radius = 0.22 + Math.pow(rng(), 0.72) * 0.86
     const theta = Math.acos(clamp(2 * rng() - 1, -1, 1))
     const phi = rng() * Math.PI * 2
     const x = Math.sin(theta) * Math.cos(phi) * radius
@@ -409,7 +409,7 @@ function buildNetwork(rng, palette) {
   const seen = new Set()
   for (let i = 0; i < count; i += 1) {
     let best = -1
-    let bestD = 0.22
+    let bestD = 0.08
     const a = points[i]
     for (let j = 0; j < count; j += 1) {
       if (i === j) continue
@@ -459,7 +459,7 @@ function buildNetwork(rng, palette) {
   const dotColors = new Float32Array(slots.length * 3)
   dotGeo.setAttribute("color", new THREE.BufferAttribute(dotColors, 3))
   const dots = new THREE.Points(dotGeo, new THREE.PointsMaterial({
-    size: 0.055,
+    size: 0.042,
     vertexColors: true,
     transparent: true,
     opacity: 0.9,
@@ -936,6 +936,7 @@ export function createNebulaScene(host, options = {}) {
     const nowMs = performance.now()
 
     core.body.rotation.y = reduced ? 0.4 : t * 0.32
+    network.root.rotation.y = reduced ? 0.2 : t * 0.07
 
     rings.forEach((ring) => {
       if (ring.impulse && nowMs >= ring.impulse.start + ring.impulse.duration) ring.impulse = null

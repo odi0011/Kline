@@ -363,8 +363,8 @@ export default function DecisionOrchestrator({
             bevelDepth={8}
             scale={14}
             aberration={0}
-            frost={1.6}
-            tint={0.2}
+            frost={1.4}
+            tint={0.46}
             className={styles.node}
             contentClassName={styles.nodeIn}
             data-symbol={node.id}
@@ -375,7 +375,6 @@ export default function DecisionOrchestrator({
               left: `${placed.x}px`,
               top: `${placed.y}px`,
               "--node-color": node.color,
-              backgroundColor: GLASS_WASH,
               zIndex: 8 + Math.round((node.depth ?? 0.5) * 10),
             }}
           >
