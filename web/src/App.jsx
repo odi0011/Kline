@@ -23,6 +23,13 @@ import { hexHue } from './lib/account-theme'
 import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins, Settings } from 'lucide-react'
 
 const WS_PORT = 8765
+
+// HTTPS 走同源 wss（nginx 反代 /ws）；本地 HTTP 直连行情端口。
+function liveHubUrl() {
+  if (location.protocol === 'https:') return `wss://${location.host}/ws`
+  return `ws://${location.hostname}:${WS_PORT}`
+}
+
 const HIT_TTL_MS = 9_000
 // 命中动画队列：最多排队 2 条；排队超过 5 秒的放弃动画（交还流水显示）。
 // 多币同时收线时会一起触发，串行播完要好幾秒，动画必然落后于数据。
@@ -220,7 +227,7 @@ export default function App() {
   const accountSeries = account && Array.isArray(account.series) ? account.series : undefined
 
   useEffect(() => {
-    const live = new LiveClient(`ws://${location.hostname}:${WS_PORT}`)
+    const live = new LiveClient(liveHubUrl())
     liveRef.current = live
     if (typeof window !== "undefined") window.__live = live   // 调试钩子：控制台可注入模拟信号
     live.onMeta((m) => {
