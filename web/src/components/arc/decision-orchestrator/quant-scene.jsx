@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import * as THREE from "three"
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js"
 import styles from "./decision-orchestrator.module.css"
 
 const NODE_DEFINITIONS = [
@@ -26,6 +27,114 @@ const makeGlowTexture = () => {
   const texture = new THREE.CanvasTexture(canvas)
   texture.colorSpace = THREE.SRGBColorSpace
   return texture
+}
+
+const makeQuartzTexture = () => {
+  const canvas = document.createElement("canvas")
+  canvas.width = 1024
+  canvas.height = 1024
+  const context = canvas.getContext("2d")
+  context.fillStyle = "#f7f5f0"
+  context.fillRect(0, 0, 1024, 1024)
+  for (let index = 0; index < 16; index += 1) {
+    context.strokeStyle = `rgba(168,174,182,${0.05 + (index % 3) * 0.022})`
+    context.lineWidth = 0.8 + (index % 3) * 0.6
+    context.beginPath()
+    let x = -60
+    let y = (index / 16) * 1124 - 40
+    context.moveTo(x, y)
+    for (let step = 0; step <= 22; step += 1) {
+      x += 52
+      y += Math.sin(step * 0.72 + index * 1.3) * 26 + (index % 2 ? 9 : -9)
+      context.lineTo(x, y)
+    }
+    context.stroke()
+  }
+  for (let index = 0; index < 700; index += 1) {
+    const px = (index * 137.51) % 1024
+    const py = (index * 289.73) % 1024
+    context.fillStyle = `rgba(158,166,176,${0.03 + (index % 4) * 0.014})`
+    context.fillRect(px, py, 1.4, 1.4)
+  }
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.anisotropy = 4
+  return texture
+}
+
+const addBoltRing = (parent, radius, count, y, material, size = 0.026) => {
+  const geometry = new THREE.CylinderGeometry(size, size, size * 0.85, 6)
+  for (let index = 0; index < count; index += 1) {
+    const angle = (index / count) * Math.PI * 2
+    const bolt = new THREE.Mesh(geometry, material)
+    bolt.position.set(Math.cos(angle) * radius, y, Math.sin(angle) * radius)
+    parent.add(bolt)
+  }
+}
+
+const addStruts = (parent, radius, count, bottom, top, material, thickness = 0.012) => {
+  const height = Math.max(0.02, top - bottom)
+  const geometry = new THREE.CylinderGeometry(thickness, thickness, height, 8)
+  for (let index = 0; index < count; index += 1) {
+    const angle = (index / count) * Math.PI * 2 + Math.PI / count
+    const strut = new THREE.Mesh(geometry, material)
+    strut.position.set(Math.cos(angle) * radius, (top + bottom) / 2, Math.sin(angle) * radius)
+    parent.add(strut)
+  }
+}
+
+const addTickRing = (parent, radius, count, y, material, majorEvery = 6) => {
+  const geometry = new THREE.BoxGeometry(0.012, 0.012, 0.07)
+  for (let index = 0; index < count; index += 1) {
+    const angle = (index / count) * Math.PI * 2
+    const tick = new THREE.Mesh(geometry, material)
+    tick.position.set(Math.cos(angle) * radius, y, Math.sin(angle) * radius)
+    tick.rotation.y = Math.PI / 2 - angle
+    if (index % majorEvery === 0) tick.scale.set(1.4, 1.2, 1.9)
+    parent.add(tick)
+  }
+}
+
+const addFins = (parent, radius, count, y, material, width = 0.03, height = 0.16, depth = 0.12) => {
+  const geometry = new THREE.BoxGeometry(width, height, depth)
+  for (let index = 0; index < count; index += 1) {
+    const angle = (index / count) * Math.PI * 2
+    const fin = new THREE.Mesh(geometry, material)
+    fin.position.set(Math.cos(angle) * radius, y, Math.sin(angle) * radius)
+    fin.rotation.y = Math.PI / 2 - angle
+    parent.add(fin)
+  }
+}
+
+const makeRod = (from, to, radius, material) => {
+  const direction = new THREE.Vector3().subVectors(to, from)
+  const length = direction.length()
+  const rod = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, length, 8), material)
+  rod.position.copy(from).addScaledVector(direction, 0.5)
+  rod.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize())
+  return rod
+}
+
+const makeDish = (material) => {
+  const profile = []
+  for (let index = 0; index <= 18; index += 1) {
+    const radius = (index / 18) * 0.42
+    profile.push(new THREE.Vector2(radius, radius * radius * 1.5))
+  }
+  return new THREE.Mesh(new THREE.LatheGeometry(profile, 44), material)
+}
+
+const makeNozzle = (material) => {
+  const profile = [
+    new THREE.Vector2(0.1, 0.3),
+    new THREE.Vector2(0.14, 0.2),
+    new THREE.Vector2(0.1, 0.08),
+    new THREE.Vector2(0.09, 0.0),
+    new THREE.Vector2(0.13, -0.08),
+    new THREE.Vector2(0.22, -0.2),
+    new THREE.Vector2(0.3, -0.28),
+  ]
+  return new THREE.Mesh(new THREE.LatheGeometry(profile, 36), material)
 }
 
 const arrivalDelay = (pulse) =>
@@ -86,11 +195,16 @@ export default function QuantScene({
     renderer.setClearColor(0x000000, 0)
     renderer.outputColorSpace = THREE.SRGBColorSpace
     renderer.toneMapping = THREE.ACESFilmicToneMapping
-    renderer.toneMappingExposure = 0.98
+    renderer.toneMappingExposure = 0.88
     renderer.shadowMap.enabled = true
     renderer.shadowMap.type = THREE.PCFSoftShadowMap
 
     const scene = new THREE.Scene()
+    const pmrem = new THREE.PMREMGenerator(renderer)
+    const environment = pmrem.fromScene(new RoomEnvironment(), 0.04)
+    scene.environment = environment.texture
+    scene.environmentIntensity = 0.35
+    pmrem.dispose()
     const camera = new THREE.OrthographicCamera(-6, 6, 4, -4, 0.1, 80)
     camera.position.set(7.2, 6.1, 8.2)
     camera.lookAt(0, 0.65, 0)
@@ -99,10 +213,10 @@ export default function QuantScene({
     const accent = new THREE.Color(style.getPropertyValue("--accent").trim() || "#f0b90b")
     const teal = new THREE.Color("#24b8aa")
     const amber = new THREE.Color("#e5a43b")
-    const pale = new THREE.Color("#1c2735")
+    const pale = new THREE.Color("#dfe4ea")
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0xdbe4ee, 1.65))
-    const keyLight = new THREE.DirectionalLight(0xffffff, 2.25)
+    scene.add(new THREE.HemisphereLight(0xffffff, 0xdbe4ee, 1.2))
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.8)
     keyLight.position.set(-3.5, 8, 5)
     keyLight.castShadow = true
     keyLight.shadow.mapSize.set(1024, 1024)
@@ -118,14 +232,13 @@ export default function QuantScene({
     const world = new THREE.Group()
     scene.add(world)
 
+    const quartzTexture = makeQuartzTexture()
     const platform = new THREE.Mesh(
       new THREE.CylinderGeometry(4.25, 4.34, 0.11, 80),
       new THREE.MeshStandardMaterial({
-        color: 0x101823,
+        color: 0xe9e7e1,
         roughness: 0.32,
-        metalness: 0.82,
-        transparent: true,
-        opacity: 0.96,
+        metalness: 0.5,
       }),
     )
     platform.position.y = -0.12
@@ -135,11 +248,10 @@ export default function QuantScene({
     const ground = new THREE.Mesh(
       new THREE.CircleGeometry(4.23, 96),
       new THREE.MeshStandardMaterial({
-        color: 0x131e2b,
-        roughness: 0.5,
-        metalness: 0.58,
-        transparent: true,
-        opacity: 0.98,
+        map: quartzTexture,
+        color: 0xffffff,
+        roughness: 0.46,
+        metalness: 0.08,
       }),
     )
     ground.rotation.x = -Math.PI / 2
@@ -147,11 +259,44 @@ export default function QuantScene({
     ground.receiveShadow = true
     world.add(ground)
 
-    const grid = new THREE.GridHelper(6.0, 24, 0x2f8f8b, 0x314152)
+    const rim = new THREE.Mesh(
+      new THREE.TorusGeometry(4.28, 0.028, 10, 160),
+      new THREE.MeshStandardMaterial({ color: 0xd9c9a8, roughness: 0.24, metalness: 0.86 }),
+    )
+    rim.rotation.x = Math.PI / 2
+    rim.position.y = -0.06
+    world.add(rim)
+
+    const dialMaterial = new THREE.MeshStandardMaterial({ color: 0xa9b2bd, roughness: 0.4, metalness: 0.6 })
+    addTickRing(world, 4.06, 96, -0.036, dialMaterial, 8)
+
+    const grid = new THREE.GridHelper(6.0, 24, 0xb9c6d2, 0xd7dde4)
     grid.position.y = -0.043
     grid.material.transparent = true
-    grid.material.opacity = 0.32
+    grid.material.opacity = 0.42
     world.add(grid)
+
+    const chipBody = new THREE.MeshStandardMaterial({ color: 0x4a5462, roughness: 0.5, metalness: 0.4 })
+    const chipCap = new THREE.MeshStandardMaterial({ color: 0xd6dde4, roughness: 0.28, metalness: 0.8 })
+    for (let index = 0; index < 9; index += 1) {
+      const angle = (index / 9) * Math.PI * 2 + 0.22
+      const chip = new THREE.Group()
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.035, 0.11), chipBody)
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.014, 0.07), chipCap)
+      cap.position.y = 0.024
+      chip.add(body, cap)
+      for (let pin = 0; pin < 3; pin += 1) {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.012, 0.024), chipCap)
+        leg.position.set(-0.05 + pin * 0.05, -0.006, 0.068)
+        chip.add(leg)
+        const leg2 = leg.clone()
+        leg2.position.z = -0.068
+        chip.add(leg2)
+      }
+      chip.position.set(Math.cos(angle) * 3.55, -0.036, Math.sin(angle) * 3.55)
+      chip.rotation.y = Math.PI / 2 - angle
+      world.add(chip)
+    }
 
     for (const radius of [2.9, 4.06]) {
       const ring = new THREE.Mesh(
@@ -241,8 +386,8 @@ export default function QuantScene({
     const nodes = new Map()
     const neutralMaterial = new THREE.MeshStandardMaterial({
       color: pale,
-      roughness: 0.38,
-      metalness: 0.46,
+      roughness: 0.42,
+      metalness: 0.18,
     })
 
     for (const definition of NODE_DEFINITIONS) {
@@ -255,13 +400,24 @@ export default function QuantScene({
       world.add(group)
 
       const base = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.43, 0.52, 0.09, 6),
+        new THREE.CylinderGeometry(0.46, 0.54, 0.07, 6),
         neutralMaterial.clone(),
       )
-      base.position.y = -y + 0.06
+      base.position.y = -y + 0.045
       base.castShadow = true
       base.receiveShadow = true
       group.add(base)
+
+      const baseTop = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.36, 0.4, 0.05, 32),
+        new THREE.MeshStandardMaterial({ color: 0xc7cfd8, roughness: 0.26, metalness: 0.8 }),
+      )
+      baseTop.position.y = -y + 0.1
+      group.add(baseTop)
+
+      const boltMaterial = new THREE.MeshStandardMaterial({ color: 0x8d99a6, roughness: 0.34, metalness: 0.82 })
+      addBoltRing(group, 0.42, 6, -y + 0.085, boltMaterial)
+      addStruts(group, 0.3, 3, -y + 0.12, -0.2, boltMaterial)
 
       const baseRing = new THREE.Mesh(
         new THREE.TorusGeometry(0.43, 0.014, 6, 48),
@@ -289,9 +445,9 @@ export default function QuantScene({
       const glowMaterials = []
       const makeGlowMaterial = (options = {}) => {
         const material = new THREE.MeshStandardMaterial({
-          color: options.color || 0x263445,
+          color: options.color || 0xe6ebf0,
           roughness: options.roughness ?? 0.25,
-          metalness: options.metalness ?? 0.5,
+          metalness: options.metalness ?? 0.6,
           transparent: options.transparent || false,
           opacity: options.opacity ?? 1,
           emissive: nodeColor,
@@ -312,27 +468,39 @@ export default function QuantScene({
 
       if (definition.id === "intake") {
         spinner = new THREE.Group()
-        const receiver = new THREE.Mesh(
-          new THREE.TorusGeometry(0.4, 0.052, 12, 56),
-          makeGlowMaterial({ color: nodeColor, emissiveIntensity: 0.18 }),
+        const dishMaterial = makeGlowMaterial({ roughness: 0.32, metalness: 0.55, emissiveIntensity: 0.08 })
+        dishMaterial.side = THREE.DoubleSide
+        const dish = makeDish(dishMaterial)
+        dish.castShadow = true
+        spinner.add(dish)
+        const rimRing = new THREE.Mesh(
+          new THREE.TorusGeometry(0.42, 0.016, 8, 64),
+          makeGlowMaterial({ color: nodeColor, emissiveIntensity: 0.3 }),
         )
-        receiver.rotation.x = Math.PI / 2.35
-        spinner.add(receiver)
-        const bowl = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.23, 0.34, 0.22, 32, 1, true),
-          makeGlowMaterial({ transparent: true, opacity: 0.88 }),
+        rimRing.rotation.x = Math.PI / 2
+        rimRing.position.y = 0.265
+        spinner.add(rimRing)
+        const silver = makeGlowMaterial({ color: 0xb9c3cd, emissiveIntensity: 0.04 })
+        const feed = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.032, 0.16, 12), silver)
+        feed.position.y = 0.3
+        spinner.add(feed)
+        const feedTip = new THREE.Mesh(
+          new THREE.SphereGeometry(0.036, 14, 10),
+          makeGlowMaterial({ color: nodeColor, emissiveIntensity: 0.6 }),
         )
-        bowl.position.y = -0.08
-        spinner.add(bowl)
-        const center = new THREE.Mesh(
-          new THREE.SphereGeometry(0.095, 20, 16),
-          makeGlowMaterial({ color: nodeColor, emissiveIntensity: 0.65 }),
-        )
-        spinner.add(center)
+        feedTip.position.y = 0.4
+        spinner.add(feedTip)
+        for (let index = 0; index < 3; index += 1) {
+          const angle = (index / 3) * Math.PI * 2
+          const from = new THREE.Vector3(Math.cos(angle) * 0.36, 0.19, Math.sin(angle) * 0.36)
+          spinner.add(makeRod(from, new THREE.Vector3(0, 0.32, 0), 0.008, silver))
+        }
+        spinner.rotation.x = 0.5
         visual.add(spinner)
       }
 
       if (definition.id === "features") {
+        const finMaterial = makeGlowMaterial({ color: 0xc3ccd5, emissiveIntensity: 0.06 })
         for (let index = 0; index < 3; index += 1) {
           const layer = new THREE.Group()
           const box = new THREE.Mesh(
@@ -345,10 +513,24 @@ export default function QuantScene({
             new THREE.LineBasicMaterial({ color: nodeColor, transparent: true, opacity: 0.52 }),
           )
           layer.add(box, edges)
+          for (let fin = 0; fin < 4; fin += 1) {
+            const front = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.07, 0.1), finMaterial)
+            front.position.set(-0.19 + fin * 0.125, 0, 0.32)
+            layer.add(front)
+            const back = front.clone()
+            back.position.z = -0.32
+            layer.add(back)
+          }
           layer.position.y = (index - 1) * 0.23
           layer.rotation.y = Math.PI / 4 + index * 0.12
           visual.add(layer)
           layers.push(layer)
+        }
+        for (let corner = 0; corner < 4; corner += 1) {
+          const angle = Math.PI / 4 + corner * Math.PI / 2
+          const from = new THREE.Vector3(Math.cos(angle) * 0.4, -0.35, Math.sin(angle) * 0.4)
+          const to = new THREE.Vector3(Math.cos(angle) * 0.4, 0.35, Math.sin(angle) * 0.4)
+          visual.add(makeRod(from, to, 0.01, finMaterial))
         }
         core = new THREE.Mesh(
           new THREE.OctahedronGeometry(0.18, 0),
@@ -376,8 +558,9 @@ export default function QuantScene({
         visual.add(coreWire)
         for (let index = 0; index < 3; index += 1) {
           const pivot = new THREE.Group()
+          const radius = 0.67 + index * 0.055
           const ring = new THREE.Mesh(
-            new THREE.TorusGeometry(0.67 + index * 0.055, 0.017, 8, 96),
+            new THREE.TorusGeometry(radius, 0.017, 8, 96),
             new THREE.MeshBasicMaterial({
               color: index === 1 ? teal : nodeColor,
               transparent: true,
@@ -385,10 +568,42 @@ export default function QuantScene({
             }),
           )
           ring.rotation.set(index * 0.82 + 0.25, index * 0.65, index * 0.38)
+          const gearMaterial = makeGlowMaterial({ color: 0xd9c9a8, emissiveIntensity: 0.1 })
+          const teeth = 22 + index * 4
+          for (let tooth = 0; tooth < teeth; tooth += 1) {
+            const angle = (tooth / teeth) * Math.PI * 2
+            const toothMesh = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.028, 0.042), gearMaterial)
+            toothMesh.position.set(Math.cos(angle) * radius, Math.sin(angle) * radius, 0)
+            toothMesh.rotation.z = angle
+            ring.add(toothMesh)
+          }
           pivot.add(ring)
           visual.add(pivot)
           rings.push(pivot)
         }
+        const antennaMaterial = makeGlowMaterial({ color: 0xb9c3cd, emissiveIntensity: 0.05 })
+        for (let index = 0; index < 4; index += 1) {
+          const angle = index * Math.PI / 2 + Math.PI / 4
+          const from = new THREE.Vector3(Math.cos(angle) * 0.3, -0.28, Math.sin(angle) * 0.3)
+          const to = new THREE.Vector3(Math.cos(angle) * 0.7, -0.6, Math.sin(angle) * 0.7)
+          visual.add(makeRod(from, to, 0.011, antennaMaterial))
+          const tip = new THREE.Mesh(new THREE.SphereGeometry(0.024, 10, 8), antennaMaterial)
+          tip.position.copy(to)
+          visual.add(tip)
+        }
+        const halo = new THREE.Mesh(
+          new THREE.RingGeometry(0.46, 0.5, 64),
+          new THREE.MeshBasicMaterial({
+            color: nodeColor,
+            transparent: true,
+            opacity: 0.32,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          }),
+        )
+        halo.rotation.x = -Math.PI / 2
+        halo.position.y = 0.94
+        visual.add(halo)
         for (let index = 0; index < 6; index += 1) {
           const angle = (index / 6) * Math.PI * 2
           const port = new THREE.Mesh(
@@ -433,6 +648,14 @@ export default function QuantScene({
         shield.rotation.y = Math.PI / 6
         shield.castShadow = true
         visual.add(shield)
+        const topPlate = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.28, 0.33, 0.06, 6),
+          makeGlowMaterial({ color: 0xd9dee5, emissiveIntensity: 0.08 }),
+        )
+        topPlate.position.y = 0.12
+        topPlate.rotation.y = Math.PI / 6
+        visual.add(topPlate)
+        addBoltRing(visual, 0.33, 6, 0.1, makeGlowMaterial({ color: 0x9aa6b2, emissiveIntensity: 0.04 }))
         const ring = new THREE.Mesh(
           new THREE.TorusGeometry(0.47, 0.025, 8, 56),
           makeGlowMaterial({ color: nodeColor, emissiveIntensity: 0.3 }),
@@ -443,19 +666,29 @@ export default function QuantScene({
           new THREE.OctahedronGeometry(0.19, 0),
           makeGlowMaterial({ color: nodeColor, emissiveIntensity: 0.36 }),
         )
-        core.position.y = 0.18
+        core.position.y = 0.22
         visual.add(core)
         spinner = ring
       }
 
       if (definition.id === "execution") {
-        core = new THREE.Mesh(
-          new THREE.ConeGeometry(0.3, 0.55, 4),
-          makeGlowMaterial({ color: nodeColor, emissiveIntensity: 0.32 }),
-        )
-        core.rotation.y = Math.PI / 4
+        core = makeNozzle(makeGlowMaterial({ color: nodeColor, emissiveIntensity: 0.25, roughness: 0.3 }))
+        core.material.side = THREE.DoubleSide
         core.castShadow = true
         visual.add(core)
+        const silver = makeGlowMaterial({ color: 0xc3ccd5, emissiveIntensity: 0.06 })
+        const throat = new THREE.Mesh(new THREE.TorusGeometry(0.1, 0.014, 8, 32), silver)
+        throat.rotation.x = Math.PI / 2
+        throat.position.y = 0.3
+        visual.add(throat)
+        const mouth = new THREE.Mesh(
+          new THREE.TorusGeometry(0.3, 0.018, 8, 40),
+          makeGlowMaterial({ color: nodeColor, emissiveIntensity: 0.4 }),
+        )
+        mouth.rotation.x = Math.PI / 2
+        mouth.position.y = -0.28
+        visual.add(mouth)
+        addFins(visual, 0.26, 4, -0.1, silver, 0.03, 0.2, 0.14)
         for (let index = 0; index < 3; index += 1) {
           const packet = new THREE.Mesh(
             new THREE.BoxGeometry(0.16, 0.1, 0.16),
@@ -488,6 +721,13 @@ export default function QuantScene({
         )
         inner.rotation.x = Math.PI / 2
         spinner.add(inner)
+        addTickRing(spinner, 0.42, 24, 0, makeGlowMaterial({ color: 0x9fb3b0, emissiveIntensity: 0.06 }), 6)
+        const tilted = new THREE.Mesh(
+          new THREE.TorusGeometry(0.5, 0.008, 6, 64),
+          new THREE.MeshBasicMaterial({ color: nodeColor, transparent: true, opacity: 0.3 }),
+        )
+        tilted.rotation.set(Math.PI / 3, 0.4, 0)
+        spinner.add(tilted)
         satellite = new THREE.Mesh(
           new THREE.SphereGeometry(0.075, 16, 12),
           makeGlowMaterial({ color: nodeColor, emissiveIntensity: 0.62 }),
@@ -763,6 +1003,7 @@ export default function QuantScene({
       materials.forEach((material) => material.dispose())
       textures.forEach((texture) => texture.dispose())
       glowTexture.dispose()
+      environment.dispose()
       renderer.dispose()
     }
   }, [reduced])

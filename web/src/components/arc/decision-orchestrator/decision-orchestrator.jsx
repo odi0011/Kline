@@ -1,6 +1,5 @@
 import { useMemo } from "react"
 import { motion, useReducedMotion } from "motion/react"
-import { Cpu } from "lucide-react"
 import { LiquidGlass } from "@/components/ui/liquid-glass"
 import QuantScene from "./quant-scene"
 import styles from "./decision-orchestrator.module.css"
@@ -111,12 +110,6 @@ export default function DecisionOrchestrator({
         contentClassName={styles.systemGlassInner}
         aria-label="量化机制与系统参数"
       >
-        <header className={styles.systemHead}>
-          <span className={styles.systemTitle}><Cpu size={13} strokeWidth={1.8} />量化引擎</span>
-          <span className={styles.runningState} data-state={enabled == null ? "pending" : enabled ? "running" : "paused"}>
-            <i />{runningLabel}
-          </span>
-        </header>
         <div className={styles.paramsGrid}>
           {systemParams.map((item) => (
             <div className={styles.param} key={item.label}>

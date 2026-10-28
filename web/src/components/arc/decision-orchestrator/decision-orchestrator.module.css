@@ -6,13 +6,9 @@
   min-height: 0;
   overflow: hidden;
   isolation: isolate;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel, 12px);
-  background:
-    radial-gradient(circle at 52% 48%, color-mix(in srgb, var(--accent) 3.5%, transparent), transparent 52%),
-    var(--surface);
+  border: none;
+  background: transparent;
   color: var(--foreground);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--foreground) 4%, transparent);
   container-type: size;
 }
 
@@ -102,72 +98,10 @@
   background: rgb(255 255 255 / 0.34);
 }
 
-.systemHead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.systemTitle {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--foreground);
-  font-size: 11px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.systemTitle svg {
-  color: var(--text-secondary);
-}
-
-.runningState {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--text-muted);
-  font-size: 8px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.runningState i {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--border-strong);
-}
-
-.runningState[data-state="running"] {
-  color: color-mix(in srgb, var(--success) 72%, var(--foreground));
-}
-
-.runningState[data-state="running"] i {
-  background: var(--success);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 10%, transparent);
-  animation: runningDot 2.4s ease-in-out infinite;
-}
-
-.runningState[data-state="paused"] {
-  color: var(--warning);
-}
-
-.runningState[data-state="paused"] i {
-  background: var(--warning);
-}
-
-@keyframes runningDot {
-  0%, 100% { opacity: 0.55; }
-  50% { opacity: 1; }
-}
-
 .paramsGrid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 7px 12px;
-  margin-top: 8px;
 }
 
 .param {
@@ -233,7 +167,6 @@
   }
 
   .paramsGrid {
-    margin-top: 7px;
     gap: 6px 10px;
   }
 
@@ -243,8 +176,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .intakeImpact,
-  .runningState[data-state="running"] i {
+  .intakeImpact {
     animation: none;
   }
 }
