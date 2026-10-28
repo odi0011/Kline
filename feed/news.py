@@ -449,6 +449,10 @@ def fetch_article(item: dict, proxy: str | None = None) -> dict:
             content, partial = _extract_article(html)
             if not content:
                 raise _ArticleError("未能提取正文（可能需要登录、订阅或动态加载）")
+            # A fragment shorter than the RSS summary is page chrome or a
+            # teaser, not the article; show the longer summary and say so.
+            if summary and len(content) < 300 and len(summary) > len(content):
+                content, partial = summary, True
             compact = lambda text: re.sub(r"\s+", "", text)
             if summary and compact(content) in (compact(summary),
                     compact(str(item.get("title") or "")) + compact(summary)):

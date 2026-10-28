@@ -282,6 +282,13 @@ class ArticleParsingTests(unittest.TestCase):
         self.assertTrue(result["partial"])
         self.assertIn("并非全文", result["error"])
 
+    def test_short_fragment_prefers_longer_summary(self):
+        summary = "这是一条完整的 RSS 摘要，包含比页面碎片更多的正文信息。" * 6
+        result = self.fetch("<article><p>Cookie notice</p></article>", desc=summary)
+        self.assertEqual(result["content"], summary)
+        self.assertTrue(result["partial"])
+        self.assertIn("并非全文", result["error"])
+
     def test_title_plus_summary_is_still_partial(self):
         result = self.fetch("<main><h1>Headline</h1><p>Only a teaser.</p></main>",
                             title="Headline", desc="Only a teaser.")
