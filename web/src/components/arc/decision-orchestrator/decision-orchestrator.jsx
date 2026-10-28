@@ -1,7 +1,7 @@
 /* 中间 50% 槽位：亮色轨道星云。
-   左上角小玻璃盒是策略概览（不再放总资金）。
+   左上角策略概览贴齐槽位边缘。
    每个币只有一张玻璃胶囊：图标 + 代码 + 分数，方向写在同一行。
-   飞线落点是星云上的随机小节点，不是画面正中。 */
+   飞线落在该币自己的椭圆环节点上。 */
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useReducedMotion } from "motion/react"
 import CoinAvatar from "@/components/ui/coin-avatar"
@@ -15,6 +15,7 @@ const number = (value, fallback = null) => {
 }
 
 const RATE_KEYS = new Set(["winrate", "hitrate", "win_rate", "hit_rate"])
+const SUMMARY_CLEAR = { right: 168, bottom: 116 }
 
 function hash(text) {
   let value = 0
@@ -78,15 +79,13 @@ function directionLabel(direction) {
   return ""
 }
 
-const SUMMARY_CLEAR = { right: 180, bottom: 124 }
-
 function placePill(x, y, bounds) {
   const halfW = 62
   const halfH = 22
   let nx = x
   let ny = y
-  const overlaps = nx - halfW < SUMMARY_CLEAR.right && nx + halfW > 8
-    && ny - halfH < SUMMARY_CLEAR.bottom && ny + halfH > 8
+  const overlaps = nx - halfW < SUMMARY_CLEAR.right && nx + halfW > 0
+    && ny - halfH < SUMMARY_CLEAR.bottom && ny + halfH > 0
   if (overlaps) {
     const right = { x: SUMMARY_CLEAR.right + halfW + 8, y }
     const below = { x, y: SUMMARY_CLEAR.bottom + halfH + 8 }
@@ -234,7 +233,7 @@ export default function DecisionOrchestrator({
     >
       <div ref={hostRef} className={styles.viewport} />
 
-      {/* 可见性闸门用星云软包围盒。真正落点是下面的 data-metric-node；还没有节点时才退回这个盒子的中心。 */}
+      {/* 可见性闸门用星云软包围盒。真正落点是下面带 data-symbol 的环节点。 */}
       <div className={styles.intake} data-metric-intake="" aria-hidden />
 
       {intakeTargets.map((target) => (
@@ -242,6 +241,8 @@ export default function DecisionOrchestrator({
           key={target.id}
           className={styles.metricNode}
           data-metric-node=""
+          data-symbol={target.symbol}
+          data-node-id={target.id}
           style={{ left: `${target.x}px`, top: `${target.y}px` }}
           aria-hidden
         />
@@ -256,7 +257,9 @@ export default function DecisionOrchestrator({
         tint={0.46}
         className={styles.summary}
         contentClassName={styles.summaryInner}
+        data-strategy-summary=""
         aria-label="策略概览"
+        style={{ position: "absolute", top: 0, left: 0, margin: 0 }}
       >
         <span className={styles.summaryKicker}>策略概览</span>
         <span className={styles.summaryRow}>
@@ -291,6 +294,7 @@ export default function DecisionOrchestrator({
             tint={0.46}
             className={styles.node}
             contentClassName={styles.nodeIn}
+            data-symbol={node.id}
             data-tone={node.score == null ? "idle" : node.score >= 55 ? "good" : node.score >= 45 ? "mid" : "weak"}
             style={{
               position: "absolute",

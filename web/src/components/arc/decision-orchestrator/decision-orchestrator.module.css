@@ -34,6 +34,7 @@
   top: 6%;
   width: 92%;
   height: 88%;
+  margin: 0;
   pointer-events: none;
 }
 
@@ -42,6 +43,7 @@
   z-index: 2;
   width: 10px;
   height: 10px;
+  margin: 0;
   transform: translate(-50%, -50%);
   pointer-events: none;
   opacity: 0;
@@ -50,8 +52,9 @@
 .summary {
   position: absolute;
   z-index: 28;
-  top: 12px;
-  left: 12px;
+  top: 0;
+  left: 0;
+  margin: 0;
   width: 148px;
   pointer-events: none;
   color: var(--foreground);
@@ -63,6 +66,7 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
+  margin: 0;
   padding: 8px 10px 9px;
   border-radius: 15px;
   background: color-mix(in srgb, #ffffff 78%, transparent);
