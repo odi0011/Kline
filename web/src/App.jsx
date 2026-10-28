@@ -278,8 +278,31 @@ export default function App() {
         return [...list, { ...ev, id: key }]
       })
     })
+    // 后台标签页期间 _emitKey 被暂停（避免 motion 帧调度队列无限累积）；
+    // 回到前台时从仓库全量重同步，图表与面板一次性补齐隐藏期间的数据。
+    const offResume = live.on('resume', () => {
+      if (live.meta) {
+        setMeta(live.meta)
+        setStats((s) => ({ ...s, mode: live.meta.mode }))
+      }
+      setPatternStats(live.patternStats || {})
+      setAccounts(live.accounts || [])
+      const s = live.settings || {}
+      if (s.ui) setUi((prev) => ({ ...prev, ...s.ui }))
+      if (s.patterns) {
+        if (Array.isArray(s.patterns.enabled)) setPatternsEnabled(s.patterns.enabled)
+        if (typeof s.patterns.live_preview === 'boolean') setLivePreview(s.patterns.live_preview)
+      }
+      if (Array.isArray(s.accounts)) setSrvAccounts(s.accounts)
+      if (s.ai) setAiCfg(s.ai)
+      if (live.quant) setQuantSnap((current) => mergeQuantSnapshot(current, live.quant))
+      setQuantEvents(live.quantEvents || [])
+      setQuantTrades(live.quantTrades || [])
+      setNewsItems(live.news || [])
+      setStructureVersion((v) => v + 1)
+    })
     live.connect()
-    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offStructureInit(); offStructure(); offQEvent(); offTrades(); offTrade(); offNews(); offAiModels(); offAiTest(); live.close() }
+    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offStructureInit(); offStructure(); offQEvent(); offTrades(); offTrade(); offNews(); offAiModels(); offAiTest(); offResume(); live.close() }
   }, [])
 
   // ==================== 命中动画：串行队列 ====================

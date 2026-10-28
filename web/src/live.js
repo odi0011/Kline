@@ -20,6 +20,14 @@ export class LiveClient {
     this.listeners = { meta: [], stats: [], status: [] }
     this._retry = 0
     this._closed = false
+    this._lastStatus = 'reconnecting'
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden || this._closed) return
+        this._emitStatus(this._lastStatus)
+        this._emitKey('resume', {})
+      })
+    }
   }
 
   connect() {
@@ -74,7 +82,7 @@ export class LiveClient {
         }
       }
       this.meta = m
-      this.listeners.meta.forEach((f) => f(m))
+      if (typeof document === 'undefined' || !document.hidden) this.listeners.meta.forEach((f) => f(m))
       this._emitKey('init', m)
     } else if (m.type === 'structure') {
       const sym = m.symbol
@@ -138,7 +146,7 @@ export class LiveClient {
     } else if (m.type === 'quant_event') {
       this._emitKey('quant_event', m.event)
     } else if (m.type === 'stats') {
-      this.listeners.stats.forEach((f) => f(m))
+      if (typeof document === 'undefined' || !document.hidden) this.listeners.stats.forEach((f) => f(m))
     }
   }
 
@@ -191,12 +199,15 @@ export class LiveClient {
   }
 
   _emitKey(key, payload) {
+    if (typeof document !== 'undefined' && document.hidden) return
     this.subs.get(key)?.forEach((f) => {
       try { f(payload) } catch (e) { console.error(e) }
     })
   }
 
   _emitStatus(s) {
+    this._lastStatus = s
+    if (typeof document !== 'undefined' && document.hidden) return
     this.listeners.status.forEach((f) => f(s))
   }
 }

@@ -121,6 +121,7 @@ export function LiquidGlass({
       if (typeof window !== "undefined") {
         window.__lgBuilds = window.__lgBuilds || [];
         window.__lgBuilds.push({ w: size.w, h: size.h, ms: Math.round(performance.now() - t0) });
+        if (window.__lgBuilds.length > 50) window.__lgBuilds.splice(0, window.__lgBuilds.length - 50);
       }
     })();
 

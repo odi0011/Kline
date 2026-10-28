@@ -217,6 +217,12 @@ export default function MetricFlights({ pulses, onDone }) {
 
   useEffect(() => {
     if (!pulses.length) return
+    // doneRef 只用于区分同一批脉冲是否播过；脉冲被移除后其 id 永久失效，
+    // 定期清掉不在当前批次里的 id，避免长开页面集合无限增长。
+    const alive = new Set(pulses.map((pulse) => pulse.id))
+    for (const id of doneRef.current) {
+      if (!alive.has(id)) doneRef.current.delete(id)
+    }
     const canvas = canvasRef.current
     if (!canvas) return
     const targetEl = document.querySelector("[data-metric-intake]")

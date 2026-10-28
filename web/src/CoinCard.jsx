@@ -216,6 +216,14 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
     offs.push(live.on('init', () => {
       setStructure(live.structures[symbol]?.[intervalRef.current] || null)
     }))
+    // 后台标签页期间数据只进仓库、不发订阅；回前台后按最新快照重画
+    offs.push(live.on('resume', () => {
+      setData()
+      setDepth(live.depths[symbol] || null)
+      setStructure(live.structures[symbol]?.[intervalRef.current] || null)
+      prevCloseRef.current = null
+      updateHeader()
+    }))
 
     // 悬停K线：记录位置与时间，去抖后向服务端查询该根的存储记录
     let lastT = 0, lastQ = 0
