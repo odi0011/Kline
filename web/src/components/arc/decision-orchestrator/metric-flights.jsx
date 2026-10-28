@@ -1,9 +1,6 @@
-/* 高频指标飞线：左侧指标条 → 同一币种椭圆环上的随机节点。
-   独立 canvas，细线加长拖尾。路径是带种子噪声的不规则三次曲线
-   （偶尔两段），横向要弯得出来，不再整圈打转后拉一条直线。
-   头部落到环上时，通知星云把那一环加速或反向约 1 秒。 */
+/* 高频指标飞线：左侧指标条 → 右侧数据接收节点。
+   独立 canvas 与 K 线命中飞线分离，使用细线、长拖尾、多曲率和随机回环。 */
 import { useEffect, useRef } from "react"
-import { nudgeRing } from "./nebula-scene"
 import styles from "./metric-flights.module.css"
 
 const FADE_MS = 680
@@ -14,16 +11,10 @@ const hash = (text) => {
   return value
 }
 
-const coinKey = (symbol) => String(symbol || "")
-  .toLowerCase()
-  .replace(/[^a-z0-9]/g, "")
-  .replace(/usdt$/, "")
-
 const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 const clamp01 = (value) => Math.min(1, Math.max(0, value))
-const clamp = (value, low, high) => Math.min(high, Math.max(low, value))
+const lineSegment = (p0, p3) => ({ p0, c1: p0, c2: p3, p3 })
 const cubicSegment = (p0, c1, c2, p3) => ({ p0, c1, c2, p3 })
-const noise01 = (seed, shift) => ((seed >>> shift) & 1023) / 1023
 
 const pointInSegment = (segment, t) => {
   const mt = 1 - t
@@ -56,42 +47,120 @@ const pointOnPath = (path, t) => {
   return path.p3
 }
 
+const circleSegments = (center, radius, startAngle, sweep, steps = 22) => {
+  const points = []
+  for (let index = 0; index <= steps; index += 1) {
+    const angle = startAngle + sweep * index / steps
+    points.push({
+      x: center.x + Math.cos(angle) * radius,
+      y: center.y + Math.sin(angle) * radius,
+    })
+  }
+  return points.slice(1).map((point, index) => lineSegment(points[index], point))
+}
+
+const roundedPolyline = (points, radius = 18) => {
+  if (points.length < 2) return []
+  const segments = []
+  let cursor = points[0]
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const corner = points[index]
+    const previous = points[index - 1]
+    const next = points[index + 1]
+    const inLength = Math.hypot(corner.x - previous.x, corner.y - previous.y) || 1
+    const outLength = Math.hypot(next.x - corner.x, next.y - corner.y) || 1
+    const inUnit = { x: (corner.x - previous.x) / inLength, y: (corner.y - previous.y) / inLength }
+    const outUnit = { x: (next.x - corner.x) / outLength, y: (next.y - corner.y) / outLength }
+    const inRadius = Math.min(radius, inLength * 0.32)
+    const outRadius = Math.min(radius, outLength * 0.32)
+    const start = { x: corner.x - inUnit.x * inRadius, y: corner.y - inUnit.y * inRadius }
+    const end = { x: corner.x + outUnit.x * outRadius, y: corner.y + outUnit.y * outRadius }
+    if (Math.hypot(start.x - cursor.x, start.y - cursor.y) > 0.1) {
+      segments.push(lineSegment(cursor, start))
+    }
+    segments.push(cubicSegment(
+      start,
+      { x: start.x + (corner.x - start.x) * 0.67, y: start.y + (corner.y - start.y) * 0.67 },
+      { x: end.x + (corner.x - end.x) * 0.67, y: end.y + (corner.y - end.y) * 0.67 },
+      end,
+    ))
+    cursor = end
+  }
+  const last = points[points.length - 1]
+  if (Math.hypot(last.x - cursor.x, last.y - cursor.y) > 0.1) {
+    segments.push(lineSegment(cursor, last))
+  }
+  return segments
+}
+
 function makeCurve(from, to, pulse) {
   const dx = to.x - from.x
   const dy = to.y - from.y
   const distance = Math.hypot(dx, dy) || 1
   const ux = dx / distance
   const uy = dy / distance
-  const nx = -uy
-  const ny = ux
-  const seed = hash(String(pulse?.id ?? "pulse"))
-  const sign = (seed & 1) ? 1 : -1
-  const n = (shift) => noise01(seed, shift)
-  // 弯曲跟距离走，长途不会被收成一条近直线，短途也不会甩成圆。
-  const minBend = distance * 0.28
-  const maxBend = distance * 0.46
-  const mag = (shift, floor) => minBend * floor + n(shift) * (maxBend - minBend * floor)
-  const at = (along, side) => ({
-    x: from.x + ux * along + nx * side,
-    y: from.y + uy * along + ny * side,
-  })
+  const nx = -dy / distance
+  const ny = dx / distance
+  const seed = hash(pulse.id)
+  const sign = seed % 2 ? 1 : -1
+  const bend = Math.min(210, 72 + distance * 0.19) * sign
+  const variant = seed % 6
 
-  // 约两成拆成两段，其余一段。控制点沿飞行方向往前排，并待在弦线同一侧，
-  // 收尾的控制点还要再往外偏，避免弯完之后剩一截直线。
-  const split = (seed % 5) === 0
-  if (split) {
-    const side = sign * mag(3, 0.86)
-    const midAlong = distance * (0.38 + n(6) * 0.12)
-    const endSpan = distance - midAlong
-    const s = Math.abs(side)
-    const c1Along = distance * (0.1 + n(8) * 0.08)
-    const c2Along = clamp(midAlong - distance * (0.08 + n(10) * 0.05), c1Along + distance * 0.06, midAlong - distance * 0.04)
-    const f3 = 0.22 + n(12) * 0.12
-    const f4 = 0.58 + n(14) * 0.16
-    const c3Along = midAlong + endSpan * f3
-    const c4Along = midAlong + endSpan * Math.max(f4, f3 + 0.18)
-    const bulge = s * (0.22 + n(20) * 0.16)
-    const w1 = clamp(midAlong / distance, 0.36, 0.56)
+  if (variant === 2 || variant === 5) {
+    // 出发后绕圈，再拐向接收节点。
+    const radius = variant === 2
+      ? Math.min(70, 32 + distance * 0.055)
+      : Math.min(42, 21 + distance * 0.025)
+    const center = {
+      x: from.x + ux * radius * (variant === 2 ? 0.22 : 0.16) + nx * radius,
+      y: from.y + uy * radius * (variant === 2 ? 0.22 : 0.16) + ny * radius,
+    }
+    const startAngle = Math.atan2(from.y - center.y, from.x - center.x)
+    const sweep = sign * Math.PI * (variant === 2 ? 2.08 : 2.65)
+    const loop = circleSegments(center, radius, startAngle, sweep)
+    const loopEnd = loop[loop.length - 1].p3
+    return {
+      p0: from,
+      p3: to,
+      parts: [
+        { segments: loop, weight: variant === 2 ? 0.4 : 0.29 },
+        {
+          segments: [cubicSegment(
+            loopEnd,
+            { x: loopEnd.x + ux * distance * 0.2 + nx * bend * 0.2, y: loopEnd.y + uy * distance * 0.2 + ny * bend * 0.2 },
+            { x: to.x - ux * distance * 0.12 + nx * bend * 0.08, y: to.y - uy * distance * 0.12 + ny * bend * 0.08 },
+            to,
+          )],
+          weight: variant === 2 ? 0.6 : 0.71,
+        },
+      ],
+    }
+  }
+
+  if (variant === 3) {
+    // 故意拐错的折线路线，所有转角都做圆滑过渡。
+    const gateX = from.x + dx * (0.3 + ((seed >>> 8) % 16) / 100)
+    const dropY = to.y + dy * (((seed >>> 14) % 18) - 4) / 100
+    const points = [
+      from,
+      { x: gateX, y: from.y },
+      { x: gateX, y: dropY },
+      { x: to.x, y: dropY },
+      to,
+    ]
+    return {
+      p0: from,
+      p3: to,
+      parts: [{ segments: roundedPolyline(points, 20), weight: 1 }],
+    }
+  }
+
+  if (variant === 4) {
+    // 先飞过节点，再掉头回来。
+    const overshoot = {
+      x: to.x + ux * (34 + seed % 36) + nx * (((seed >>> 9) % 17) - 8),
+      y: to.y + uy * (34 + seed % 36) + ny * (((seed >>> 9) % 17) - 8),
+    }
     return {
       p0: from,
       p3: to,
@@ -99,38 +168,38 @@ function makeCurve(from, to, pulse) {
         {
           segments: [cubicSegment(
             from,
-            at(c1Along, sign * s * (0.48 + n(16) * 0.24)),
-            at(c2Along, sign * s * (0.8 + n(18) * 0.18)),
-            at(midAlong, side),
+            { x: from.x + dx * 0.32 + nx * bend * 0.45, y: from.y + dy * 0.32 + ny * bend * 0.45 },
+            { x: overshoot.x - dx * 0.2 + nx * bend * 0.18, y: overshoot.y - dy * 0.2 + ny * bend * 0.18 },
+            overshoot,
           )],
-          weight: w1,
+          weight: 0.76,
         },
         {
           segments: [cubicSegment(
-            at(midAlong, side),
-            at(c3Along, side * (1 - f3) + sign * bulge),
-            at(c4Along, side * (1 - Math.max(f4, f3 + 0.18)) + sign * bulge * (0.65 + n(22) * 0.4)),
+            overshoot,
+            { x: overshoot.x - ux * 10 + nx * 8, y: overshoot.y - uy * 10 + ny * 8 },
+            { x: to.x + ux * 10 - nx * 8, y: to.y + uy * 10 - ny * 8 },
             to,
           )],
-          weight: 1 - w1,
+          weight: 0.24,
         },
       ],
     }
   }
 
-  const bow1 = sign * mag(3, 0.94)
-  const bow2 = sign * Math.abs(bow1) * (0.58 + n(15) * 0.38)
-  const t1 = 0.18 + n(5) * 0.16
-  const t2 = 0.56 + n(7) * 0.22
-  const shear = (n(19) - 0.5) * distance * 0.05
   return {
     p0: from,
     p3: to,
     parts: [{
       segments: [cubicSegment(
         from,
-        at(clamp(distance * t1 + shear, distance * 0.08, distance * 0.42), bow1),
-        at(clamp(distance * t2 - shear * 0.35, distance * 0.5, distance * 0.86), bow2),
+        { x: from.x + dx * (0.18 + ((seed >>> 3) % 15) / 100) + nx * bend, y: from.y + dy * (0.18 + ((seed >>> 7) % 15) / 100) + ny * bend },
+        {
+          x: from.x + dx * (0.68 + ((seed >>> 11) % 12) / 100)
+            + nx * bend * (variant === 1 ? -0.85 : 0.28),
+          y: from.y + dy * (0.68 + ((seed >>> 11) % 12) / 100)
+            + ny * bend * (variant === 1 ? -0.85 : 0.28),
+        },
         to,
       )],
       weight: 1,
@@ -138,60 +207,11 @@ function makeCurve(from, to, pulse) {
   }
 }
 
-function pickTarget(pulse) {
-  const want = coinKey(pulse?.symbol)
-  if (!want) return null
-  const summary = document.querySelector("[data-strategy-summary]")
-  const box = summary?.getBoundingClientRect()
-  const nodes = document.querySelectorAll("[data-metric-node][data-symbol]")
-  const matched = []
-  for (const el of nodes) {
-    if (coinKey(el.getAttribute("data-symbol")) !== want) continue
-    const rect = el.getBoundingClientRect()
-    const x = rect.left + rect.width / 2
-    const y = rect.top + rect.height / 2
-    if (rect.width < 2 || rect.height < 2) continue
-    if (x < 4 || y < 4 || x > window.innerWidth - 4 || y > window.innerHeight - 4) continue
-    if (box && x >= box.left - 6 && x <= box.right + 10 && y >= box.top - 6 && y <= box.bottom + 10) continue
-    matched.push({ x, y, id: el.getAttribute("data-node-id") || "" })
-  }
-  if (!matched.length) return null
-  matched.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-  return matched[hash(String(pulse?.id ?? "x")) % matched.length]
-}
-
-function readNode(id) {
-  if (!id) return null
-  const nodes = document.querySelectorAll("[data-metric-node]")
-  for (const el of nodes) {
-    if (el.getAttribute("data-node-id") !== id) continue
-    const rect = el.getBoundingClientRect()
-    if (rect.width < 2 || rect.height < 2) return null
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-  }
-  return null
-}
-
-function retarget(curve, point) {
-  curve.p3 = point
-  const part = curve.parts[curve.parts.length - 1]
-  const segment = part?.segments?.[part.segments.length - 1]
-  if (segment) segment.p3 = point
-}
-
-function nudgeForPulse(pulse) {
-  const reverse = (hash(`${pulse.id}:ring`) & 1) === 1
-  nudgeRing(pulse.symbol, reverse
-    ? { reverse: true, durationMs: 1000 }
-    : { boost: true, durationMs: 1000 })
-}
-
 export default function MetricFlights({ pulses, onDone }) {
   const canvasRef = useRef(null)
   const startedRef = useRef(new Map())
   const curvesRef = useRef(new Map())
   const doneRef = useRef(new Set())
-  const arrivedRef = useRef(new Set())
   const onDoneRef = useRef(onDone)
   onDoneRef.current = onDone
 
@@ -199,6 +219,13 @@ export default function MetricFlights({ pulses, onDone }) {
     if (!pulses.length) return
     const canvas = canvasRef.current
     if (!canvas) return
+    const targetEl = document.querySelector("[data-metric-intake]")
+    const targetRect = targetEl?.getBoundingClientRect()
+    const target = targetRect
+      ? { x: targetRect.left + targetRect.width / 2, y: targetRect.top + targetRect.height / 2 }
+      : null
+    if (!target) return
+
     const dpr = Math.min(window.devicePixelRatio || 1, 2)
     const W = window.innerWidth
     const H = window.innerHeight
@@ -210,30 +237,19 @@ export default function MetricFlights({ pulses, onDone }) {
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
+    for (const pulse of pulses) {
+      if (doneRef.current.has(pulse.id)) continue
+      if (!startedRef.current.has(pulse.id)) {
+        startedRef.current.set(pulse.id, performance.now() + (pulse.delay || 0))
+        curvesRef.current.set(pulse.id, makeCurve(pulse.source, target, pulse))
+      }
+    }
+
     let raf = 0
     const draw = (now) => {
       ctx.clearRect(0, 0, W, H)
       let alive = false
       for (const pulse of pulses) {
-        if (doneRef.current.has(pulse.id)) continue
-        if (!startedRef.current.has(pulse.id)) {
-          const target = pickTarget(pulse)
-          if (!target) {
-            const age = Date.now() - (pulse.ts || Date.now())
-            if (age > 4000) {
-              doneRef.current.add(pulse.id)
-              onDoneRef.current?.(pulse.id)
-              continue
-            }
-            alive = true
-            continue
-          }
-          const curve = makeCurve(pulse.source, target, pulse)
-          curve.nodeId = target.id
-          startedRef.current.set(pulse.id, performance.now() + (pulse.delay || 0))
-          curvesRef.current.set(pulse.id, curve)
-        }
-
         const curve = curvesRef.current.get(pulse.id)
         const start = startedRef.current.get(pulse.id)
         if (!curve || start == null) continue
@@ -245,15 +261,6 @@ export default function MetricFlights({ pulses, onDone }) {
         const spawn = pulse.spawn ?? 170
         const duration = Math.max(1, pulse.duration || 1400)
         const travelElapsed = elapsed - spawn
-
-        if (!arrivedRef.current.has(pulse.id)) {
-          const live = readNode(curve.nodeId)
-          if (live) retarget(curve, live)
-        }
-        if (travelElapsed >= duration && !arrivedRef.current.has(pulse.id)) {
-          arrivedRef.current.add(pulse.id)
-          nudgeForPulse(pulse)
-        }
 
         if (travelElapsed < 0) {
           const p = Math.min(1, elapsed / Math.max(1, spawn))
@@ -339,7 +346,6 @@ export default function MetricFlights({ pulses, onDone }) {
         }
         startedRef.current.delete(pulse.id)
         curvesRef.current.delete(pulse.id)
-        arrivedRef.current.delete(pulse.id)
       }
       if (alive) raf = requestAnimationFrame(draw)
       else ctx.clearRect(0, 0, W, H)
