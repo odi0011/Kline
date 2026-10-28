@@ -49,55 +49,125 @@
   opacity: 0;
 }
 
+/* 左上策略概览：与币种胶囊同一套液态玻璃，金色描边，不另铺白底。 */
 .summary {
   position: absolute;
   z-index: 28;
   top: 0;
   left: 0;
   margin: 0;
-  width: 148px;
+  width: 252px;
+  max-width: 100%;
   pointer-events: none;
   color: var(--foreground);
-  border: 1px solid color-mix(in srgb, var(--border-strong) 75%, transparent);
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--foreground) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, #f0b90b) 62%, rgba(255, 255, 255, 0.72));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 244, 214, 0.92),
+    inset 0 0 18px color-mix(in srgb, var(--accent, #f0b90b) 18%, transparent),
+    0 10px 24px rgba(90, 62, 0, 0.12);
 }
 
-.summaryInner {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin: 0;
-  padding: 8px 10px 9px;
-  border-radius: 15px;
-  background: color-mix(in srgb, #ffffff 78%, transparent);
+.summaryIn {
+  background: transparent;
 }
 
-.summaryKicker {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  color: color-mix(in srgb, var(--foreground) 48%, transparent);
+.summaryStage {
+  display: grid;
+  padding: 7px 10px 4px;
+}
+
+.summaryStage[data-fade] {
+  min-height: 80px;
+}
+
+.summaryPage {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-auto-rows: 20px;
+  column-gap: 12px;
+  align-content: start;
+}
+
+.summaryStage[data-fade] .summaryPage {
+  grid-area: 1 / 1;
+  opacity: 0;
+  transition: opacity 480ms ease;
+}
+
+.summaryStage[data-fade] .summaryPage[data-on] {
+  opacity: 1;
 }
 
 .summaryRow {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
+  height: 20px;
+}
+
+.summaryRow[data-wide] {
+  grid-column: 1 / -1;
 }
 
 .summaryRow em {
+  flex: none;
   font-style: normal;
   font-size: 10px;
-  font-weight: 650;
-  color: color-mix(in srgb, var(--foreground) 52%, transparent);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--accent-deep, #8a6508);
+  white-space: nowrap;
 }
 
 .summaryRow strong {
-  font-size: 13px;
+  min-width: 0;
+  font-size: 12px;
   font-weight: 750;
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
   color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.summaryRow[data-tone="good"] strong { color: #15803d; }
+.summaryRow[data-tone="mid"] strong { color: var(--accent-deep, #8a6508); }
+.summaryRow[data-tone="weak"] strong { color: #dc2626; }
+.summaryRow[data-tone="idle"] strong { color: color-mix(in srgb, var(--foreground) 68%, transparent); }
+
+.summaryFoot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 7px;
+}
+
+.summaryFoot > em {
+  font-style: normal;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--accent-deep, #8a6508);
+}
+
+.summaryDots {
+  display: flex;
+  margin-left: auto;
+  gap: 3px;
+}
+
+.summaryDots i {
+  width: 9px;
+  height: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--accent, #f0b90b) 38%, transparent);
+}
+
+.summaryDots i[data-on] {
+  background: var(--accent, #f0b90b);
 }
 
 .node {
@@ -170,6 +240,11 @@
 }
 
 @container (max-width: 420px) {
-  .summary { width: 132px; }
-  .summaryRow strong { font-size: 12px; }
+  .summary { width: min(252px, 100%); }
+  .summaryRow em { font-size: 9px; }
+  .summaryRow strong { font-size: 11px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .summaryStage[data-fade] .summaryPage { transition: none; }
 }

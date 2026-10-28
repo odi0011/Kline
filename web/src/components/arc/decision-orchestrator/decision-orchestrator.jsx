@@ -1,6 +1,6 @@
 /* 中间 50% 槽位：亮色轨道星云。
-   左上角策略概览贴齐槽位边缘。
-   每个币只有一张玻璃胶囊：图标 + 代码 + 分数，方向写在同一行。
+   左上角策略概览是液态玻璃数据牌，贴齐槽位左上角，多组指标交叉淡入。
+   每个币只有一张玻璃胶囊：图标 + 代码 + 评分与方向。玻璃底不改。
    飞线落在该币自己的椭圆环节点上。 */
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useReducedMotion } from "motion/react"
@@ -15,7 +15,7 @@ const number = (value, fallback = null) => {
 }
 
 const RATE_KEYS = new Set(["winrate", "hitrate", "win_rate", "hit_rate"])
-const SUMMARY_CLEAR = { right: 168, bottom: 116 }
+const SUMMARY_CLEAR = { right: 252, bottom: 120 }
 
 function hash(text) {
   let value = 0
@@ -65,22 +65,184 @@ function findWinRate(value, depth = 0) {
   return null
 }
 
-function scoreText(node) {
-  if (node.pct == null) return "—"
-  const digits = node.score == null ? 2 : 0
-  const sign = node.pct >= 0 && node.score == null ? "+" : ""
-  const unit = node.score == null ? "%" : ""
-  return `${sign}${Number(node.pct).toFixed(digits)}${unit}`
-}
-
 function directionLabel(direction) {
   if (direction === "bullish") return "看涨"
   if (direction === "bearish") return "看跌"
+  if (direction === "neutral") return "中性"
   return ""
 }
 
+function fmtInt(value) {
+  const n = number(value)
+  return n == null ? "—" : String(Math.round(n))
+}
+
+function fmtSigned(value) {
+  const n = number(value)
+  if (n == null) return "—"
+  const rounded = Math.round(n)
+  return rounded > 0 ? `+${rounded}` : String(rounded)
+}
+
+function meanOf(values) {
+  const nums = values.map((value) => number(value)).filter((value) => value != null)
+  if (!nums.length) return null
+  return nums.reduce((sum, value) => sum + value, 0) / nums.length
+}
+
+function lookupSymbol(map, symbol) {
+  if (!map || symbol == null) return null
+  const key = String(symbol)
+  return map[key] || map[key.toLowerCase()] || map[key.toUpperCase()] || null
+}
+
+function toneForScore(score) {
+  if (score == null) return "idle"
+  if (score >= 55) return "good"
+  if (score >= 45) return "mid"
+  return "weak"
+}
+
+/** 币种胶囊文案。只改文字，玻璃底仍由外层 LiquidGlass 负责。 */
+function pillCaption(live, overlay) {
+  const score = number(live?.score) ?? number(overlay?.score)
+  if (score != null) {
+    const dir = directionLabel(live?.direction)
+    const text = `评分 ${Math.round(score)}`
+    return dir ? `${text} · ${dir}` : text
+  }
+  const pct = number(live?.pct) ?? number(overlay?.pct)
+  if (pct == null) return "评分 —"
+  const sign = pct > 0 ? "+" : ""
+  return `涨跌 ${sign}${pct.toFixed(2)}%`
+}
+
+const SUMMARY_PAGE_SLOTS = 8
+
+function packSummaryPages(cells) {
+  const pages = []
+  let page = []
+  let slots = 0
+  const flush = () => {
+    if (!page.length) return
+    pages.push(page)
+    page = []
+    slots = 0
+  }
+  for (const cell of cells) {
+    const span = cell.wide ? 2 : 1
+    if (slots + span > SUMMARY_PAGE_SLOTS) flush()
+    page.push(cell)
+    slots += span
+  }
+  flush()
+  return pages
+}
+
+function buildStrategyCells({ nodes, ordered, symbolStates, liveEvaluations, analysis, winRateText }) {
+  const scored = nodes.filter((node) => node.score != null)
+  const meanScore = meanOf(scored.map((node) => node.score))
+  const hot = scored.filter((node) => node.score >= 55).length
+  const bias = scored.length ? Math.round((hot / scored.length) * 100) : null
+  const bulls = nodes.filter((node) => node.direction === "bullish").length
+  const bears = nodes.filter((node) => node.direction === "bearish").length
+  const ranked = [...scored].sort((a, b) => b.score - a.score)
+  const lead = ranked[0] || null
+  const lag = ranked.length > 1 ? ranked[ranked.length - 1] : null
+
+  const evals = ordered.map((symbol) => lookupSymbol(liveEvaluations, symbol)).filter(Boolean)
+  const confidence = meanOf(evals.map((item) => item.confidence))
+  const gap = meanOf(evals.map((item) => item.gap))
+  const bullScore = meanOf(evals.map((item) => item.bull))
+  const bearScore = meanOf(evals.map((item) => item.bear))
+  const grades = { strong: 0, weak: 0 }
+  let vetoes = 0
+  for (const item of evals) {
+    if (item.grade === "strong") grades.strong += 1
+    if (item.grade === "weak" || item.grade === "none") grades.weak += 1
+    if (Array.isArray(item.vetoes) && item.vetoes.length) vetoes += 1
+  }
+
+  const regimes = { trend: 0, range: 0, mixed: 0 }
+  let squeeze = 0
+  let highVol = 0
+  for (const symbol of ordered) {
+    const state = lookupSymbol(symbolStates, symbol)
+    if (!state) continue
+    if (regimes[state.regime] != null) regimes[state.regime] += 1
+    if (state.squeeze || (number(state.bwPct) != null && state.bwPct < 15)) squeeze += 1
+    if (state.volState === "high") highVol += 1
+  }
+
+  const drawdown = analysis?.drawdown || null
+  const drift = analysis?.drift || null
+  const plans = Array.isArray(analysis?.positionPlans) ? analysis.positionPlans : []
+  const longs = plans.filter((plan) => plan?.side === "BUY").length
+  const shorts = plans.filter((plan) => plan?.side === "SELL").length
+  const blocked = Array.isArray(analysis?.gateLog) ? analysis.gateLog.length : 0
+  const confidenceText = confidence == null
+    ? "—"
+    : `${Math.round(confidence <= 1 ? confidence * 100 : confidence)}%`
+
+  const cells = [
+    { id: "mean", label: "平均评分", value: fmtInt(meanScore), tone: toneForScore(meanScore) },
+    { id: "scored", label: "已评分", value: `${scored.length}/${Math.max(ordered.length, 0)}` },
+    {
+      id: "bias",
+      label: "偏多占比",
+      value: bias == null ? "—" : `${bias}%`,
+      tone: bias == null ? "idle" : bias >= 60 ? "good" : bias <= 40 ? "weak" : "mid",
+    },
+    { id: "bulls", label: "看涨", value: String(bulls), tone: bulls ? "good" : "idle" },
+    { id: "bears", label: "看跌", value: String(bears), tone: bears ? "weak" : "idle" },
+    { id: "lead", label: "领先", value: lead ? `${lead.label} ${Math.round(lead.score)}` : "—" },
+    { id: "lag", label: "落后", value: lag ? `${lag.label} ${Math.round(lag.score)}` : "—" },
+    { id: "gap-count", label: "多空差", value: fmtSigned(bulls - bears), tone: bulls === bears ? "idle" : bulls > bears ? "good" : "weak" },
+    ...(winRateText ? [{ id: "win", label: "胜率", value: winRateText, tone: "good" }] : []),
+    { id: "conf", label: "置信", value: confidenceText, tone: toneForScore(confidence == null ? null : (confidence <= 1 ? confidence * 100 : confidence)) },
+    { id: "sep", label: "分离度", value: fmtSigned(gap), tone: gap == null ? "idle" : gap >= 8 ? "good" : gap <= 0 ? "weak" : "mid" },
+    { id: "bull-score", label: "多方", value: fmtInt(bullScore), tone: toneForScore(bullScore) },
+    { id: "bear-score", label: "空方", value: fmtInt(bearScore), tone: bearScore == null ? "idle" : bearScore >= 55 ? "weak" : "mid" },
+    { id: "strong", label: "强评级", value: String(grades.strong), tone: grades.strong ? "good" : "idle" },
+    { id: "weak", label: "弱评级", value: String(grades.weak), tone: grades.weak ? "weak" : "idle" },
+    { id: "veto", label: "否决", value: String(vetoes), tone: vetoes ? "weak" : "idle" },
+    { id: "blocked", label: "拦截", value: String(blocked), tone: blocked ? "weak" : "idle" },
+    {
+      id: "dd",
+      label: "回撤",
+      value: number(drawdown?.current) == null ? "—" : `${Number(drawdown.current).toFixed(2)}%`,
+      tone: drawdown?.paused ? "weak" : "idle",
+    },
+    { id: "halt", label: "熔断", value: drawdown?.paused ? "暂停" : "正常", tone: drawdown?.paused ? "weak" : "good" },
+    {
+      id: "drift",
+      label: "漂移",
+      value: drift?.shadow ? "影子" : drift?.caution ? "谨慎" : "正常",
+      tone: drift?.shadow || drift?.caution ? "mid" : "good",
+    },
+    { id: "trend", label: "趋势", value: String(regimes.trend) },
+    { id: "range", label: "震荡", value: String(regimes.range) },
+    { id: "squeeze", label: "挤压", value: String(squeeze), tone: squeeze ? "mid" : "idle" },
+    { id: "vol", label: "高波", value: String(highVol), tone: highVol ? "weak" : "idle" },
+    { id: "pos", label: "持仓", value: `多${longs} 空${shorts}`, tone: longs || shorts ? "mid" : "idle" },
+  ]
+
+  for (const node of ranked) {
+    const dir = directionLabel(node.direction)
+    cells.push({
+      id: `sym:${node.id}`,
+      label: node.label,
+      value: dir ? `评分 ${Math.round(node.score)} · ${dir}` : `评分 ${Math.round(node.score)}`,
+      tone: toneForScore(node.score),
+      wide: true,
+    })
+  }
+
+  return cells
+}
+
 function placePill(x, y, bounds) {
-  const halfW = 62
+  const halfW = 72
   const halfH = 22
   let nx = x
   let ny = y
@@ -186,9 +348,27 @@ export default function DecisionOrchestrator({
     return { mean, bias, scored: scored.length }
   }, [nodes])
 
-  const thirdLabel = winRateText ? "胜率" : "偏多占比"
-  const thirdValue = winRateText || (summary.bias == null ? "—" : `${summary.bias}%`)
-  const meanText = summary.mean == null ? "—" : String(Math.round(summary.mean))
+  const summaryCells = useMemo(() => buildStrategyCells({
+    nodes,
+    ordered,
+    symbolStates,
+    liveEvaluations,
+    analysis,
+    winRateText,
+  }), [nodes, ordered, symbolStates, liveEvaluations, analysis, winRateText])
+
+  const summaryPages = useMemo(() => packSummaryPages(summaryCells), [summaryCells])
+  const [summaryPage, setSummaryPage] = useState(0)
+  const summaryFade = reduced !== true && summaryPages.length > 1
+  const summaryIndex = summaryPages.length ? summaryPage % summaryPages.length : 0
+
+  useEffect(() => {
+    if (!summaryFade) return undefined
+    const timer = setInterval(() => {
+      setSummaryPage((value) => value + 1)
+    }, 3400)
+    return () => clearInterval(timer)
+  }, [summaryFade, summaryPages.length])
 
   useEffect(() => {
     const host = hostRef.current
@@ -250,38 +430,53 @@ export default function DecisionOrchestrator({
 
       <LiquidGlass
         radius={16}
-        bevelDepth={12}
-        scale={24}
+        bevelDepth={10}
+        scale={16}
         aberration={0}
-        frost={2.4}
-        tint={0.46}
+        frost={1.6}
+        tint={0.34}
         className={styles.summary}
-        contentClassName={styles.summaryInner}
-        data-strategy-summary=""
+        contentClassName={styles.summaryIn}
+        role="region"
         aria-label="策略概览"
         style={{ position: "absolute", top: 0, left: 0, margin: 0 }}
       >
-        <span className={styles.summaryKicker}>策略概览</span>
-        <span className={styles.summaryRow}>
-          <em>平均评分</em>
-          <strong>{meanText}</strong>
-        </span>
-        <span className={styles.summaryRow}>
-          <em>已评分</em>
-          <strong>{summary.scored}/{ordered.length}</strong>
-        </span>
-        <span
-          className={styles.summaryRow}
-          title={winRateText ? "分析数据中的胜率" : "评分不低于 55 的币种占比，不是胜率"}
-        >
-          <em>{thirdLabel}</em>
-          <strong>{thirdValue}</strong>
+        <div className={styles.summaryStage} data-fade={summaryFade || undefined} data-page={summaryIndex}>
+          {summaryPages.map((page, index) => (
+            <div
+              key={page.map((cell) => cell.id).join("|")}
+              className={styles.summaryPage}
+              data-on={!summaryFade || index === summaryIndex || undefined}
+              aria-hidden={summaryFade && index !== summaryIndex ? true : undefined}
+            >
+              {page.map((cell) => (
+                <span
+                  key={cell.id}
+                  className={styles.summaryRow}
+                  data-tone={cell.tone || undefined}
+                  data-wide={cell.wide || undefined}
+                >
+                  <em>{cell.label}</em>
+                  <strong>{cell.value}</strong>
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+        <span className={styles.summaryFoot}>
+          <em>策略概览</em>
+          {summaryFade && (
+            <span className={styles.summaryDots} aria-hidden>
+              {summaryPages.map((page, index) => (
+                <i key={page[0]?.id || index} data-on={index === summaryIndex || undefined} />
+              ))}
+            </span>
+          )}
         </span>
       </LiquidGlass>
 
       {overlayNodes.filter((node) => node.visible).map((node) => {
         const live = nodeById.get(node.id)
-        const status = directionLabel(live?.direction)
         const placed = placePill(node.x, node.y, frameBox)
         return (
           <LiquidGlass
@@ -307,17 +502,14 @@ export default function DecisionOrchestrator({
             <CoinAvatar symbol={node.id} size={18} className={styles.nodeIcon} />
             <div>
               <b>{node.label}</b>
-              <span>
-                {scoreText(node)}
-                {status ? <i>{status}</i> : null}
-              </span>
+              <span>{pillCaption(live, node)}</span>
             </div>
           </LiquidGlass>
         )
       })}
 
       <span className={styles.srOnly} role="status" aria-live="polite">
-        {`${ordered.length} 个币种在星图轨道上运行，已完成 ${summary.scored} 个评分，平均评分 ${meanText}，${thirdLabel} ${thirdValue}。`}
+        {`${ordered.length} 个币种在星图轨道上运行，已完成 ${summary.scored} 个评分。平均评分 ${summaryCells.find((cell) => cell.id === "mean")?.value || "—"}，偏多占比 ${summaryCells.find((cell) => cell.id === "bias")?.value || "—"}（评分不低于 55 的币种）。`}
       </span>
     </section>
   )
