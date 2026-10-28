@@ -218,13 +218,13 @@ function makeSpecs(count) {
     const tilt = tilts[index % tilts.length]
     const sign = index % 2 === 0 ? 1 : -1
     return {
-      radius: 1.02 + index * gap,
+      radius: 1.28 + index * gap,
       tiltX: tilt[0],
       tiltZ: tilt[1],
       speed: sign * (0.18 + (index % 3) * 0.05),
       hold: 0.4 * index,
       slot: slots[index % slots.length],
-      tube: 0.04 + (index % 2) * 0.008,
+      tube: 0.058 + (index % 2) * 0.012,
     }
   })
 }
@@ -279,14 +279,14 @@ function buildCore(palette) {
   const color = palette.accent.clone()
   const map = makePlanetTexture(color)
   const body = new THREE.Mesh(
-    new THREE.SphereGeometry(0.46, 48, 32),
+    new THREE.SphereGeometry(0.7, 64, 40),
     new THREE.MeshStandardMaterial({
-      color,
+      color: color.clone().lerp(new THREE.Color("#6a4a00"), 0.28),
       map,
       emissive: color,
-      emissiveIntensity: 0.18,
-      metalness: 0.58,
-      roughness: 0.36,
+      emissiveIntensity: 0.06,
+      metalness: 0.42,
+      roughness: 0.48,
     }),
   )
   body.name = "core-body"
@@ -294,7 +294,7 @@ function buildCore(palette) {
   group.add(body)
 
   const atmosphere = new THREE.Mesh(
-    new THREE.SphereGeometry(0.6, 32, 24),
+    new THREE.SphereGeometry(0.86, 32, 24),
     new THREE.MeshBasicMaterial({
       color,
       transparent: true,
@@ -306,7 +306,7 @@ function buildCore(palette) {
   group.add(atmosphere)
 
   const equator = new THREE.Mesh(
-    new THREE.TorusGeometry(0.78, 0.016, 8, 80),
+    new THREE.TorusGeometry(0.98, 0.02, 10, 96),
     new THREE.MeshStandardMaterial({
       color,
       emissive: color,
@@ -584,15 +584,15 @@ export function createNebulaScene(host, options = {}) {
   renderer.domElement.style.pointerEvents = "none"
   host.appendChild(renderer.domElement)
 
-  scene.add(new THREE.AmbientLight(0xfff8ee, 0.22))
-  scene.add(new THREE.HemisphereLight(0xfff4dc, 0xd5deea, 0.2))
-  const key = new THREE.DirectionalLight(0xffffff, 3.3)
+  scene.add(new THREE.AmbientLight(0xfff8ee, 0.16))
+  scene.add(new THREE.HemisphereLight(0xfff4dc, 0xc5d0e0, 0.28))
+  const key = new THREE.DirectionalLight(0xffffff, 3.6)
   key.position.set(4.2, 6.4, 3.6)
   scene.add(key)
   const rim = new THREE.DirectionalLight(0xb7d7ff, 0.9)
   rim.position.set(-5.2, 1.4, -3.8)
   scene.add(rim)
-  const coreLight = new THREE.PointLight(0xf0b90b, 8, 16, 2)
+  const coreLight = new THREE.PointLight(0xf0b90b, 4.5, 14, 2)
   scene.add(coreLight)
 
   let core = buildCore(palette)

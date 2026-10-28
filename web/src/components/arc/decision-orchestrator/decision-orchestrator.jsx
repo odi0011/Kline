@@ -126,6 +126,18 @@ function placePill(x, y, bounds) {
   const halfH = 22
   let nx = x
   let ny = y
+  const cx = (bounds.width || 0) / 2
+  const cy = (bounds.height || 0) / 2
+  if (cx > 0 && cy > 0) {
+    const dx = nx - cx
+    const dy = ny - cy
+    const dist = Math.hypot(dx, dy) || 1
+    const coreR = Math.min(bounds.width, bounds.height) * 0.2
+    if (dist < coreR) {
+      nx = cx + (dx / dist) * coreR
+      ny = cy + (dy / dist) * coreR
+    }
+  }
   const overlaps = nx - halfW < SUMMARY_CLEAR.right && nx + halfW > 0
     && ny - halfH < SUMMARY_CLEAR.bottom && ny + halfH > 0
   if (overlaps) {
