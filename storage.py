@@ -116,6 +116,24 @@ class Storage:
             except Exception:
                 pass
         # 量化决策流水：引擎的每个决策/思考都落库，按账户隔离，重启不清空
+        # 新闻存档：入库即保存正文，前端点开只读库，不再实时爬源站（避免 429）。
+        # content 是正文（RSS 全文或后台抓取的正文），summary 是 RSS 摘要。
+        self._q("""CREATE TABLE IF NOT EXISTS news(
+            url VARCHAR(512) NOT NULL,
+            source VARCHAR(64), cat VARCHAR(32), title VARCHAR(600),
+            ts BIGINT, summary TEXT, content MEDIUMTEXT,
+            partial TINYINT DEFAULT 1, content_state VARCHAR(16) DEFAULT 'pending',
+            fetched_ts BIGINT DEFAULT 0, sentiment DOUBLE DEFAULT 0,
+            PRIMARY KEY(url), INDEX idx_news_ts(ts)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        for column, ddl in (
+            ("content_state", "ALTER TABLE news ADD COLUMN content_state VARCHAR(16) DEFAULT 'pending'"),
+            ("fetched_ts", "ALTER TABLE news ADD COLUMN fetched_ts BIGINT DEFAULT 0"),
+            ("sentiment", "ALTER TABLE news ADD COLUMN sentiment DOUBLE DEFAULT 0"),
+        ):
+            try:
+                self._q(ddl)
+            except Exception:
+                pass
         self._q("""CREATE TABLE IF NOT EXISTS quant_events(
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             ts BIGINT, kind VARCHAR(16), acct VARCHAR(64), symbol VARCHAR(16),
@@ -495,6 +513,98 @@ class Storage:
         return {r[0]: {"count": int(r[1]), "wins": int(r[2] or 0), "losses": int(r[3] or 0)}
                 for r in rows}
 
+    # ---- 新闻存档 ----
+
+    def save_news(self, items: list[dict]) -> int:
+        """把一批抓到的新闻写入/更新存档（按 url 去重）。
+
+        只写「比库里更新」的字段：正文抓到了就保留，不会被后续轮询的
+        摘要覆盖；标题/摘要/时间则总是跟随最新一次 RSS。
+        """
+        if not self.enabled or not items:
+            return 0
+        rows = []
+        for item in items:
+            url = str(item.get("url") or "")[:512]
+            if not url:
+                continue
+            content = item.get("content")
+            content = content[:2_000_000] if isinstance(content, str) else None
+            summary = str(item.get("desc") or "")[:8000]
+            rows.append((
+                url, str(item.get("source") or "")[:64], str(item.get("cat") or "")[:32],
+                str(item.get("title") or "")[:600], int(item.get("ts") or 0),
+                summary, content,
+                0 if content is not None and item.get("contentPartial") is False else 1,
+                "done" if content else "pending",
+                int(time.time() * 1000) if content else 0,
+                float(item.get("sentiment") or 0),
+            ))
+        if not rows:
+            return 0
+        with self._lock:
+            self._conn.ping(reconnect=True)
+            with self._conn.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO news(url,source,cat,title,ts,summary,content,partial,"
+                    "content_state,fetched_ts,sentiment) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                    "ON DUPLICATE KEY UPDATE source=VALUES(source), cat=VALUES(cat), "
+                    "title=VALUES(title), ts=VALUES(ts), summary=VALUES(summary), "
+                    "sentiment=VALUES(sentiment), "
+                    # 正文只在拿到时覆盖，不会被空值冲掉
+                    "content=IF(VALUES(content) IS NULL, content, VALUES(content)), "
+                    "partial=IF(VALUES(content) IS NULL, partial, VALUES(partial)), "
+                    "content_state=IF(VALUES(content) IS NULL, content_state, VALUES(content_state)), "
+                    "fetched_ts=IF(VALUES(content) IS NULL, fetched_ts, VALUES(fetched_ts))",
+                    rows)
+        return len(rows)
+
+    def save_news_content(self, url: str, content: str, partial: bool) -> None:
+        """后台预取回写。
+
+        拿到全文 → content_state='done'，以后不再抓；
+        只拿到摘要/失败 → 保留 'pending'，只更新 fetched_ts（30 分钟后可重试），
+        否则一条抓不到正文的新闻会被永久跳过。
+        """
+        if not self.enabled or not url:
+            return
+        content = (content or "")[:2_000_000]
+        state = "done" if content and not partial else "pending"
+        self._q("UPDATE news SET content=COALESCE(NULLIF(%s,''), content), partial=%s, "
+                "content_state=%s, fetched_ts=%s WHERE url=%s",
+                (content, 0 if not partial else 1, state,
+                 int(time.time() * 1000), url[:512]))
+
+    def news_full(self, url: str) -> dict | None:
+        """读一条新闻的完整存档（含正文）。前端点开时只走这里。"""
+        rows = self._qall(
+            "SELECT url,source,cat,title,ts,summary,content,partial,content_state,fetched_ts "
+            "FROM news WHERE url=%s", (url[:512],))
+        if not rows:
+            return None
+        r = rows[0]
+        return {"url": r[0], "source": r[1], "cat": r[2], "title": r[3], "ts": r[4],
+                "desc": r[5] or "", "content": r[6], "partial": bool(r[7]),
+                "contentState": r[8], "fetchedTs": r[9]}
+
+    def news_pending(self, limit: int = 12) -> list[dict]:
+        """还没抓到正文、且最近没试失败过的新闻（供后台预取队列）。"""
+        cutoff = int(time.time() * 1000) - 30 * 60 * 1000
+        rows = self._qall(
+            "SELECT url,source,cat,title,ts,summary FROM news "
+            "WHERE content_state='pending' AND fetched_ts < %s "
+            "ORDER BY ts DESC LIMIT %s", (cutoff, min(int(limit), 50)))
+        return [{"url": r[0], "source": r[1], "cat": r[2], "title": r[3],
+                 "ts": r[4], "desc": r[5] or ""} for r in rows]
+
+    def news_recent(self, limit: int = 300) -> list[dict]:
+        """最近新闻（不含正文，用于首屏快照）。"""
+        rows = self._qall(
+            "SELECT url,source,cat,title,ts,summary,content IS NOT NULL "
+            "FROM news ORDER BY ts DESC LIMIT %s", (min(int(limit), 1000),))
+        return [{"url": r[0], "source": r[1], "cat": r[2], "title": r[3],
+                 "ts": r[4], "desc": r[5] or "", "hasContent": bool(r[6])} for r in rows]
+
     def prune(self, now_ms: int) -> None:
         if now_ms - self._last_prune < 60_000:
             return
@@ -507,3 +617,5 @@ class Storage:
         self._q("DELETE FROM quant_events WHERE ts < %s", (now_ms - 3 * 86400_000,))
         # 仓位历史保留 7 天
         self._q("DELETE FROM quant_trades WHERE ts < %s", (now_ms - 7 * 86400_000,))
+        # 新闻存档保留 3 天
+        self._q("DELETE FROM news WHERE ts < %s", (now_ms - 3 * 86400_000,))

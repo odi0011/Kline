@@ -29,10 +29,13 @@ export function readResult(result, summary = "") {
   const hasContent = typeof result?.content === "string" && Boolean(result.content.trim())
   const content = hasContent ? result.content : summary
   const partial = !result?.ok || result?.partial !== false || !hasContent
+  // pending = 正文还在后台抓，不是错误。用户看到的是"抓取中"，不是一次失败。
+  const pending = result?.pending === true
   return {
-    content, partial,
-    error: typeof result?.error === "string" && result.error
-      ? result.error : (!result?.ok || !content ? "正文读取失败；有摘要时仅显示摘要。" : ""),
+    content, partial, pending,
+    error: pending ? ""
+      : typeof result?.error === "string" && result.error
+        ? result.error : (!result?.ok || !content ? "正文读取失败；有摘要时仅显示摘要。" : ""),
   }
 }
 

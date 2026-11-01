@@ -104,6 +104,8 @@
 .article, .result { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.85; }
 .article { margin: 16px 0 22px; }
 .partial { border-left: 3px solid #d97706; background: #fff8e8; color: #925700; padding: 10px 12px; line-height: 1.65; }
+/* 正文后台抓取中：中性提示，不是错误（红色会让用户以为坏了） */
+.pendingBody { border-left: 3px solid #94a3b8; background: #f6f8fb; color: #526070; padding: 10px 12px; line-height: 1.65; }
 .error { color: #b42318; margin: 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .close:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 .analysis { margin-top: 24px; padding-top: 15px; border-top: 1px solid #e9edf3; }

@@ -37,7 +37,7 @@ export default function ArticleModal({ item, onRead, onAnalyze, entries, tasks, 
   const titleId = useId()
   const metaId = useId()
   const [retry, setRetry] = useState(0)
-  const [reading, setReading] = useState({ loading: true, content: "", partial: true, error: "" })
+  const [reading, setReading] = useState({ loading: true, content: "", partial: true, pending: false, error: "" })
   const backdropDown = useRef(false)
 
   useLayoutEffect(() => {
@@ -60,7 +60,7 @@ export default function ArticleModal({ item, onRead, onAnalyze, entries, tasks, 
 
   useEffect(() => {
     let active = true
-    setReading({ loading: true, content: "", partial: true, error: "" })
+    setReading({ loading: true, content: "", partial: true, pending: false, error: "" })
     Promise.resolve().then(() => {
       if (!active) return
       if (typeof readRef.current !== "function") throw new Error("正文阅读接口尚未接入")
@@ -106,10 +106,12 @@ export default function ArticleModal({ item, onRead, onAnalyze, entries, tasks, 
       <ScrollArea orientation="vertical" fade={20} scrollbars="auto" label="新闻正文"
         className={styles.modalScroll} viewportClassName={styles.modalBody}>
         {reading.loading ? <p role="status">正在读取正文…</p> : <>
-          {reading.partial && <p className={styles.partial}>仅摘要 / 部分正文，并非全文。AI 将基于有限内容分析。</p>}
+          {reading.pending
+            ? <p className={styles.pendingBody}>正文正在后台抓取，先显示 RSS 摘要；稍后重新打开即可看到全文。</p>
+            : reading.partial && <p className={styles.partial}>仅摘要 / 部分正文，并非全文。AI 将基于有限内容分析。</p>}
           {reading.error && <div className={styles.error} role="alert">{reading.error}</div>}
           {reading.content && <div className={styles.article}>{reading.content}</div>}
-          {(reading.error || reading.partial) && (
+          {(reading.error || (reading.partial && !reading.pending)) && (
             <Button variant="secondary" size="small" className={styles.retry}
               onClick={() => setRetry((n) => n + 1)}>重新读取</Button>
           )}

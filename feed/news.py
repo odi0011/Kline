@@ -162,6 +162,10 @@ class _ArticleError(ValueError):
     pass
 
 
+class _RateLimitError(_ArticleError):
+    """源站限流（429/503）：预取器要整体退避，而不是只跳过这一条。"""
+
+
 def _validate_article_url(url: str) -> str:
     if not isinstance(url, str) or not url or re.search(r"[\s\\\x00-\x1f\x7f]", url):
         raise _ArticleError("不安全的新闻地址")
@@ -269,6 +273,8 @@ def _request_article(url, host, address, proxy, timeout):
             headers = response.headers
             if response.status in (301, 302, 303, 307, 308):
                 return response.status, headers, b""
+            if response.status in (429, 503):
+                raise _RateLimitError(f"新闻源限流 HTTP {response.status}，稍后重试")
             if response.status != 200:
                 raise _ArticleError(f"新闻源返回 HTTP {response.status}")
             if headers.get("Content-Encoding", "identity").lower() not in ("identity", ""):

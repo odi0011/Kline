@@ -660,7 +660,22 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                        "accountsAvailable": len(hub.last_accounts or [])},
         }
 
-    hub.news_article_fn = lambda item: fetch_article(item, proxy_cfg or None)
+    # 新闻正文：入库时/后台预取时抓取并落库，前端点开只读库（不再实时爬源站）。
+    hub.news_lookup_fn = storage.news_full
+
+    # 正文预取队列：去重 + 单线程串行 + 间隔，避免对源站高频请求触发 429。
+    article_queue: dict[str, dict] = {}
+    article_busy = set()
+
+    def enqueue_article(url: str) -> None:
+        url = str(url or "")[:512]
+        if not url or url in article_busy or url in article_queue:
+            return
+        item = next((it for it in hub.news if it.get("url") == url), None)
+        if item:
+            article_queue[url] = item
+
+    hub.news_enqueue_fn = enqueue_article
 
     agent = AgentManager(
         lambda: cfg.get("ai", {}) or {},
@@ -882,9 +897,18 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                     print(f"[backfill] 重试失败 {sym} {iv}: {e}")
             await asyncio.sleep(90)
 
-    # 交易所公告（币安/OKX）：10 分钟拉一次，缓存给所有客户端
+    # 新闻：RSS 每 60 秒拉一次（策略的情绪分直接吃这批数据，10 分钟太钝），
+    # 入库时连带保存已有正文；缺正文的交给后台预取队列慢慢补。
     async def news_poller():
         await asyncio.sleep(3)      # 等其它任务先起来
+        # 启动时先把库里的存档补进 hub：重启后前端不会空着等第一次 RSS
+        try:
+            recent = await asyncio.to_thread(storage.news_recent, 300)
+            if recent:
+                hub.news = recent
+                print(f"[news] 从存档恢复 {len(recent)} 条")
+        except Exception as e:
+            print(f"[news] 存档读取失败: {e}")
         while True:
             try:
                 # 传入当前展示的币种：相关的新闻排前面（交易所公告 + 加密媒体 + 综合财经）
@@ -894,14 +918,69 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 if items:
                     hub.news = items
                     await hub.broadcast({"type": "news", "items": items})
+                    saved = 0
+                    try:
+                        saved = await asyncio.to_thread(storage.save_news, items)
+                    except Exception as e:
+                        print(f"[news] 存档失败: {e}")
+                    # RSS 里没带全文的，排进预取队列
+                    for it in items:
+                        if not it.get("content"):
+                            enqueue_article(it.get("url"))
                     srcs = {}
                     for it in items:
                         srcs[it.get("source", "?")] = srcs.get(it.get("source", "?"), 0) + 1
-                    print(f"[news] 已更新 {len(items)} 条：" +
+                    with_content = sum(1 for it in items if it.get("content"))
+                    print(f"[news] 已更新 {len(items)} 条（入库 {saved}，含全文 {with_content}）：" +
                           ", ".join(f"{k}×{v}" for k, v in sorted(srcs.items(), key=lambda x: -x[1])))
             except Exception as e:
                 print(f"[news] 拉取失败: {e}")
-            await asyncio.sleep(600)
+            await asyncio.sleep(60)
+
+    async def article_prefetcher():
+        """后台抓正文：一次一条、间隔 4 秒，失败退避，绝不并发轰炸源站。
+
+        RSS 自带全文的源不用抓；只有确实缺正文的才发请求，且同一 URL
+        只试一次（记录在 fetched_ts，30 分钟内不再重试）。
+        """
+        await asyncio.sleep(20)
+        while True:
+            if not article_queue:
+                try:
+                    for row in await asyncio.to_thread(storage.news_pending, 8):
+                        article_queue.setdefault(row["url"], row)
+                except Exception:
+                    pass
+            if not article_queue:
+                await asyncio.sleep(15)
+                continue
+            url, item = article_queue.popitem()
+            if url in article_busy:
+                continue
+            article_busy.add(url)
+            limited = False
+            try:
+                res = await asyncio.to_thread(fetch_article, item, proxy_cfg or None)
+                content = res.get("content") or ""
+                error = str(res.get("error") or "")
+                if res.get("ok") and content and not res.get("partial"):
+                    await asyncio.to_thread(storage.save_news_content, url, content, False)
+                    print(f"[news] 正文已入库 {item.get('source', '?')}: {url[:60]}")
+                else:
+                    limited = "429" in error or "限流" in error
+                    # 只拿到摘要/失败：也回写一次，避免 30 分钟内反复重试
+                    await asyncio.to_thread(storage.save_news_content, url, content, True)
+            except Exception as e:
+                print(f"[news] 正文预取失败: {e}")
+                limited = "429" in str(e)
+            finally:
+                article_busy.discard(url)
+            # 被限流就整体冷却一轮：先清空队列，等一段时间再从库里挑待办
+            if limited:
+                article_queue.clear()
+                print("[news] 源站限流，正文预取冷却 5 分钟")
+                await asyncio.sleep(300)
+            await asyncio.sleep(4)
 
     async def pool_auditor():
         """Daily advisory audit; never changes the live symbol pool."""
@@ -994,7 +1073,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     try:
         await asyncio.gather(supervisor(), sweep(), accounts_poller(),
-                             news_poller(), backfill_retry(), pool_auditor(),
+                             news_poller(), article_prefetcher(), backfill_retry(), pool_auditor(),
                              market_list_poller(), leverage_poller(),
                              derivatives_poller(), market_feature_poller())
     finally:

@@ -65,10 +65,21 @@ test("removed anchors and a shrinking list clamp without negative windows", () =
 })
 
 test("summary fallback cannot be labeled full, malformed response is safe", () => {
-  assert.deepEqual(readResult({ ok: false, error: "offline" }, "summary"), { content: "summary", partial: true, error: "offline" })
+  assert.deepEqual(readResult({ ok: false, error: "offline" }, "summary"),
+    { content: "summary", partial: true, pending: false, error: "offline" })
   assert.equal(readResult({ ok: true, content: "", partial: false }, "summary").partial, true)
   assert.equal(readResult({ ok: true, content: 123, partial: false }, "summary").partial, true)
   assert.equal(readResult({ ok: true, content: "body", partial: false }).partial, false)
+})
+
+test("正文还在后台抓取时是 pending，不是错误", () => {
+  // 服务端只回了摘要并标记 pending：界面应显示"抓取中"，不能报错也不能提示重试
+  const out = readResult({ ok: true, content: "摘要", partial: true, pending: true, error: "正文仍在后台抓取" }, "摘要")
+  assert.equal(out.pending, true)
+  assert.equal(out.error, "")
+  assert.equal(out.partial, true)
+  // 非 pending 的部分正文仍然要报出限制原因
+  assert.equal(readResult({ ok: true, content: "摘要", partial: true, error: "仅摘要" }, "").error, "仅摘要")
 })
 
 test("AI is deduplicated synchronously before the first response", async () => {
