@@ -14,6 +14,8 @@ export class LiveClient {
     this.store = {}          // symbol -> interval -> { bars: [] }
     this.structures = {}     // symbol -> interval -> 结构分析
     this.depths = {}         // symbol -> 订单簿深度快照（真实挂单）
+    this.derivatives = {}    // symbol -> 币安衍生品指标快照
+    this.derivativesTs = 0
     this.meta = null
     this.hits = []
     this.subs = new Map()    // key -> Set<fn>
@@ -189,6 +191,10 @@ export class LiveClient {
     } else if (m.type === 'quant_trade') {
       this.quantTrades = [m.trade, ...(this.quantTrades || [])].slice(0, 500)
       this._emitKey('quant_trade', m.trade)
+    } else if (m.type === 'derivatives') {
+      this.derivatives = m.rows || {}
+      this.derivativesTs = m.ts || 0
+      this._emitKey('derivatives', m)
     } else if (m.type === 'news') {
       this.news = m.items || []
       this._emitKey('news', m)

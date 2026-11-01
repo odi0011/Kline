@@ -1,0 +1,70 @@
+/* 衍生品指标：裸列表，无边框无阴影。
+   行结构与决策流水一致（22px 高、圆角 5px hover），滚动交给 ScrollArea。
+   本栏约 190px 宽，每行只放「结论 + OI」两列。 */
+
+.root {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 2px;
+  overflow: hidden;
+}
+
+.scroll { flex: 1 1 0; min-height: 0; }
+.viewport { padding-top: 2px; }
+.viewport { padding-right: 2px; }
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(40px, auto);
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 22px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.row:hover { background: rgba(28, 35, 51, 0.05); }
+.row:focus-visible { outline: 2px solid var(--accent, #2563eb); outline-offset: -1px; }
+
+.symCell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: #1c2333;
+}
+.symCell b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.verdict {
+  font-size: 9.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.oi {
+  font-size: 9.5px;
+  font-weight: 600;
+  text-align: right;
+  white-space: nowrap;
+  color: rgba(28, 35, 51, 0.55);
+}
+
+.empty {
+  margin: 0;
+  padding: 14px 4px;
+  font-size: 10px;
+  color: var(--text-muted, #8b949e);
+  text-align: center;
+}

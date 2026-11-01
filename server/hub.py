@@ -72,6 +72,8 @@ class BroadcastHub:
         self.trades_fn = None                  # 仓位历史查询（main 注入）：(acct, limit) -> list
         self.news: list[dict] = []             # 交易所公告缓存（main 定时刷新）
         self.structures: dict[tuple, dict] = {}   # (sym, iv) -> 最近一次结构分析
+        self.derivatives: dict[str, dict] = {}    # symbol -> 币安衍生品指标快照
+        self.derivatives_ts = 0                   # 该批快照的采集时刻
 
     # ---- 聚合器回调（与 PatternEngine 并联） ----
 
@@ -210,6 +212,10 @@ class BroadcastHub:
                     }, separators=(",", ":")))
                 except Exception:
                     pass
+            if self.derivatives:
+                await ws.send(json.dumps({"type": "derivatives", "rows": self.derivatives,
+                                          "ts": self.derivatives_ts},
+                                         separators=(",", ":")))
             if self.news:
                 await ws.send(json.dumps({"type": "news", "items": self.news},
                                          separators=(",", ":")))

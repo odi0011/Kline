@@ -15,9 +15,10 @@ import SettingsDialog from '@/components/arc/settings-dialog/settings-dialog'
 import QuantPanel from '@/components/arc/quant-panel/quant-panel'
 import PositionHistory from '@/components/arc/position-history/position-history'
 import NewsFeed from '@/components/arc/news-feed/news-feed'
+import QuantMetrics from '@/components/arc/quant-metrics/quant-metrics'
+import SymbolPicker from '@/components/arc/symbol-picker/symbol-picker'
 import StrategyPanel from '@/components/arc/strategy-panel/strategy-panel' 
 import DecisionOrchestrator from '@/components/arc/decision-orchestrator/decision-orchestrator'
-import AgentPanel from '@/components/beautiful/agent/agent-panel'
 import HitFlight from './HitFlight.jsx'
 import { hexHue } from './lib/account-theme'
 import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins, Settings } from 'lucide-react'
@@ -140,10 +141,8 @@ export default function App() {
   const [quantTrades, setQuantTrades] = useState([])            // 仓位历史（MySQL，7 天）
   const [newsItems, setNewsItems] = useState([])                // 交易所公告
   const [agentTasks, setAgentTasks] = useState([])              // ODDD 后台与定时任务
-  const [agentChat, setAgentChat] = useState([])                // ODDD 持久化会话
-  const [agentReadOnly, setAgentReadOnly] = useState(false)
-  const [agentStateError, setAgentStateError] = useState("")
   const [agentNotice, setAgentNotice] = useState("")
+  const [derivatives, setDerivatives] = useState({})          // 币安衍生品指标快照
   const [structureVersion, setStructureVersion] = useState(0)   // 结构位更新触发决策流刷新
   const liveRef = useRef(null)
   const cardsViewportRef = useRef(null)
@@ -274,11 +273,9 @@ export default function App() {
       setQuantTrades((cur) => [t, ...(cur || [])].slice(0, 500))
     })
     const offNews = live.on('news', (m) => setNewsItems(m.items || []))
+    const offDeriv = live.on('derivatives', (m) => setDerivatives(m.rows || {}))
     const offAgent = live.on('agent_state', (m) => {
       setAgentTasks(m.tasks || [])
-      setAgentChat(m.chat || [])
-      setAgentReadOnly(m.readOnly === true)
-      setAgentStateError(m.persistenceError || '')
     })
     const offAgentAck = live.on('agent_ack', (m) => {
       if (!m.requestId && m.result?.ok === false) setAgentNotice(m.result.error || '操作失败')
@@ -314,14 +311,12 @@ export default function App() {
       setQuantEvents(live.quantEvents || [])
       setQuantTrades(live.quantTrades || [])
       setNewsItems(live.news || [])
+      setDerivatives(live.derivatives || {})
       setAgentTasks(live.agentTasks || [])
-      setAgentChat(live.agentChat || [])
-      setAgentReadOnly(live.agentReadOnly === true)
-      setAgentStateError(live.agentPersistenceError || '')
       setStructureVersion((v) => v + 1)
     })
     live.connect()
-    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offStructureInit(); offStructure(); offQEvent(); offTrades(); offTrade(); offNews(); offAgent(); offAgentAck(); offAiModels(); offAiTest(); offResume(); live.close() }
+    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offStructureInit(); offStructure(); offQEvent(); offTrades(); offTrade(); offNews(); offDeriv(); offAgent(); offAgentAck(); offAiModels(); offAiTest(); offResume(); live.close() }
   }, [])
 
   // ==================== 命中动画：串行队列 ====================
@@ -844,9 +839,13 @@ export default function App() {
             symbols={orderedSymbols} events={visibleEvents} />
         </div>
         <div className="row2-reserved">
-          <AgentPanel tasks={agentTasks} chat={agentChat} models={aiCfg.models || []}
-            connected={connected} readOnly={agentReadOnly} error={agentStateError}
-            onSend={agentRequest} />
+          <div className="reserved-stack">
+            <QuantMetrics rows={derivatives} symbols={orderedSymbols}
+              chartColors={chartColors} selected={shownSymbols} onToggle={toggleSymbol} />
+            <SymbolPicker pool={pool} selected={shownSymbols}
+              maxSymbols={MAX_SYMBOLS} minSymbols={MIN_SYMBOLS}
+              metrics={derivatives} chartColors={chartColors} onToggle={toggleSymbol} />
+          </div>
         </div>
       </div>
       {/* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3） */}

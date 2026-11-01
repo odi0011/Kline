@@ -169,3 +169,100 @@ def usdt_perpetuals(proxy: str | None = None) -> list[str]:
             continue
     return sorted(set(out))
 
+
+def _first_row(path: str, params: dict, proxy: str | None) -> dict | None:
+    rows = _get_json(path, params, proxy)
+    if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+        return rows[0]
+    return None
+
+
+def _ratio(long_side, short_side):
+    """多空账户比：交易所给的是两侧占比，这里换算成 多/空 比值。"""
+    try:
+        long_side = float(long_side)
+        short_side = float(short_side)
+    except (TypeError, ValueError):
+        return None
+    if short_side <= 0:
+        return None
+    return round(long_side / short_side, 3)
+
+
+def derivatives_snapshot(symbol: str, period: str = "5m",
+                         proxy: str | None = None) -> dict:
+    """单个合约的真实衍生品指标（币安 /futures/data 公开接口）。
+
+    这个板块替代了币安 App 的「量化策略」——那套策略数据是 App 专有的
+    登录态接口，网页端拿不到。这里给的是同一市场里可公开验证的仓位与
+    成交结构数据，全部逐项来自交易所，不含任何推算。
+    """
+    sym = symbol.upper()
+    out: dict = {"symbol": sym.lower(), "ts": int(time.time() * 1000), "period": period}
+
+    row = _first_row("/futures/data/globalLongShortAccountRatio",
+                     {"symbol": sym, "period": period, "limit": 1}, proxy)
+    if row:
+        out["accountLongShort"] = _ratio(row.get("longAccount"), row.get("shortAccount"))
+        out["accountLongPct"] = round(float(row.get("longAccount") or 0) * 100, 2)
+
+    row = _first_row("/futures/data/topLongShortPositionRatio",
+                     {"symbol": sym, "period": period, "limit": 1}, proxy)
+    if row:
+        out["topPositionLongShort"] = _ratio(row.get("longAccount"), row.get("shortAccount"))
+        out["topPositionLongPct"] = round(float(row.get("longAccount") or 0) * 100, 2)
+
+    row = _first_row("/futures/data/topLongShortAccountRatio",
+                     {"symbol": sym, "period": period, "limit": 1}, proxy)
+    if row:
+        out["topAccountLongShort"] = _ratio(row.get("longAccount"), row.get("shortAccount"))
+
+    row = _first_row("/futures/data/takerlongshortRatio",
+                     {"symbol": sym, "period": period, "limit": 1}, proxy)
+    if row:
+        try:
+            out["takerBuySellRatio"] = round(float(row.get("buySellRatio") or 0), 3)
+            buy_vol = float(row.get("buyVol") or 0)
+            sell_vol = float(row.get("sellVol") or 0)
+            total = buy_vol + sell_vol
+            if total > 0:
+                out["takerBuyPct"] = round(buy_vol / total * 100, 2)
+        except (TypeError, ValueError):
+            pass
+
+    row = _get_json("/fapi/v1/openInterest", {"symbol": sym}, proxy)
+    if isinstance(row, dict):
+        try:
+            out["openInterest"] = float(row.get("openInterest") or 0)
+        except (TypeError, ValueError):
+            pass
+
+    oi_hist = _get_json("/futures/data/openInterestHist",
+                        {"symbol": sym, "period": period, "limit": 12}, proxy)
+    if isinstance(oi_hist, list) and len(oi_hist) >= 2:
+        try:
+            values = [float(r.get("sumOpenInterest") or 0) for r in oi_hist]
+            if values[0] > 0:
+                out["oiChangePct"] = round((values[-1] - values[0]) / values[0] * 100, 2)
+        except (TypeError, ValueError):
+            pass
+
+    row = _get_json("/fapi/v1/premiumIndex", {"symbol": sym}, proxy)
+    if isinstance(row, dict):
+        try:
+            out["fundingRate"] = float(row.get("lastFundingRate") or 0)
+            out["nextFundingMs"] = int(row.get("nextFundingTime") or 0)
+        except (TypeError, ValueError):
+            pass
+
+    row = _get_json("/fapi/v1/ticker/24hr", {"symbol": sym}, proxy)
+    if isinstance(row, dict):
+        try:
+            out["price"] = float(row.get("lastPrice") or 0)
+            out["changePct"] = round(float(row.get("priceChangePercent") or 0), 2)
+            out["quoteVolume"] = float(row.get("quoteVolume") or 0)
+        except (TypeError, ValueError):
+            pass
+    return out
+
+

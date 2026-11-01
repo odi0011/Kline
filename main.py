@@ -25,7 +25,7 @@ from feed.depth import DepthStream
 from feed.liquidation import LiquidationStream
 from feed.market_data import (
     funding_snapshot, onboard_dates, open_interest_history, ticker_24h,
-    usdt_perpetuals, max_leverage_map,
+    usdt_perpetuals, max_leverage_map, derivatives_snapshot,
 )
 from feed.news import fetch_all as fetch_news, fetch_article
 from feed.source import BinanceFuturesStream
@@ -953,6 +953,32 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 print(f"[market] 市池获取失败: {e}")
             await asyncio.sleep(3600)
 
+    # 衍生品指标（多空比 / 大户持仓 / 主动买卖 / OI / 资金费率）：
+    # 币安 App 的「量化策略」是登录态专有接口，网页端拿不到；这里改用
+    # /futures/data 公开接口，给同一市场里可验证的仓位与成交结构。
+    async def derivatives_poller():
+        await asyncio.sleep(6)
+        while True:
+            active = list(quant.symbol_filter or symbols)
+            try:
+                rows = await asyncio.gather(*[
+                    asyncio.to_thread(derivatives_snapshot, sym, "5m", proxy_cfg or None)
+                    for sym in active
+                ], return_exceptions=True)
+                snap = {}
+                for sym, row in zip(active, rows):
+                    if isinstance(row, dict) and row.get("price") is not None:
+                        snap[sym] = row
+                if snap:
+                    hub.derivatives = snap
+                    hub.derivatives_ts = KlineAggregator.now_ms()
+                    await hub.broadcast({"type": "derivatives", "rows": snap,
+                                         "ts": hub.derivatives_ts})
+                    print(f"[deriv] 衍生品指标已更新 {len(snap)} 个币")
+            except Exception as e:
+                print(f"[deriv] 指标刷新失败: {e}")
+            await asyncio.sleep(60)
+
     async def market_feature_poller():
         """Prefetch OI/funding without blocking the quant decision lock."""
         await asyncio.sleep(4)
@@ -970,7 +996,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         await asyncio.gather(supervisor(), sweep(), accounts_poller(),
                              news_poller(), backfill_retry(), pool_auditor(),
                              market_list_poller(), leverage_poller(),
-                             market_feature_poller())
+                             derivatives_poller(), market_feature_poller())
     finally:
         await agent.stop()
 
