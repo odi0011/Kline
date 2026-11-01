@@ -170,7 +170,7 @@ export default function NewsFeed({ items = EMPTY, onRead, onAnalyze, tasks = EMP
           </div>
         )}
       </ScrollArea>
-      {!follow && total > 0 && <JumpLatest onClick={jumpLatest} withIcon />}
+      {!follow && total > 0 && <JumpLatest onClick={jumpLatest} />}
       {selected && <ArticleModal key={newsKey(selected)} item={selected} onRead={onRead} onAnalyze={analyze}
         entries={entries} tasks={tasks || EMPTY} onClose={close} fallbackFocus={viewportRef} />}
     </section>
