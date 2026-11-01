@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
-import secrets
+import re
 import sys
 import threading
 import uuid
@@ -24,6 +25,7 @@ from feed.depth import DepthStream
 from feed.liquidation import LiquidationStream
 from feed.market_data import (
     funding_snapshot, onboard_dates, open_interest_history, ticker_24h,
+    usdt_perpetuals,
 )
 from feed.news import fetch_all as fetch_news, fetch_article
 from feed.source import BinanceFuturesStream
@@ -160,6 +162,9 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             watch_aggs[(sym, iv)] = KlineAggregator(sym, iv, None, None)
 
     hub = BroadcastHub(aggs, symbols, intervals, port=int(cfg.get("ws_port", 8765)))
+    # 全市场币种清单：前端「选择币种」菜单用它列出全部可交易 U 本位永续，
+    # 不必先在 config.yaml 里预先配置。取不到时留空，前端只用 config 池。
+    hub.market = list(symbols)
 
     def _set_detect(iv):
         iv = iv if iv in intervals else None
@@ -499,10 +504,79 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     quant.broadcast_fn = lambda obj: _loop.call_soon_threadsafe(
         lambda: asyncio.create_task(hub.broadcast(obj)))
     hub.quant_fn = quant.snapshot
+
+    # ---- 运行时按需订阅：前端可选全市场 U 本位永续 ----
+    # 配置里的 symbols 只是「启动即订阅」的初始集合；用户临时加看池外币种时，
+    # 在这里补齐聚合器（历史回补 + 实时流 + 深度/强平），不改 config.yaml。
+    _subs_lock = threading.Lock()
+
+    def ensure_symbol(sym: str) -> str | None:
+        """注册一个币种的全部聚合器；已存在则直接返回。"""
+        sym = str(sym or "").lower()
+        if not sym:
+            return None
+        with _subs_lock:
+            if sym in symbols:
+                return sym
+            # 只接受真实的交易对形态，避免把任意字符串灌进订阅 URL
+            if not re.fullmatch(r"[a-z0-9]{2,20}usdt", sym):
+                return None
+            symbols.append(sym)
+            by_symbol[sym] = []
+            for iv in intervals:
+                agg = KlineAggregator(sym, iv, None, None)
+                agg.on_update = on_evt
+                agg.on_close = on_evt
+                aggs[(sym, iv)] = agg
+                by_symbol[sym].append(agg)
+            for iv in watch_intervals:
+                watch_aggs[(sym, iv)] = KlineAggregator(sym, iv, None, None)
+            for agg in watch_aggs.values():
+                agg.on_update = lambda *args, **kwargs: None
+                agg.on_close = lambda *args, **kwargs: None
+        hub.symbols = symbols
+        hub.aggs = aggs
+        print(f"[feed] 按需订阅 {sym}（当前 {len(symbols)} 个币）")
+        # 历史回补 + 实时订阅 + 深度/强平：都放后台，别卡住 WS 消息处理
+        asyncio.create_task(_warm_symbol(sym))
+        return sym
+
+    async def _warm_symbol(sym: str) -> None:
+        for iv in intervals:
+            agg = aggs.get((sym, iv))
+            if not agg:
+                continue
+            try:
+                candles = await asyncio.to_thread(fetch_klines, sym, iv, limit, proxy_cfg or None)
+                if candles:
+                    agg.seed(candles)
+                    if (sym, iv) in aggs:
+                        try:
+                            hub.structures[(sym, iv)] = analyze_structure(list(agg.history)[-160:])
+                        except Exception:
+                            pass
+                    print(f"[backfill] 按需 {sym} {iv}: {len(candles)} 根")
+            except Exception as e:
+                print(f"[backfill] 按需 {sym} {iv} 失败: {e}")
+        feed = feed_box.get("feed")
+        if feed is not None and hasattr(feed, "subscribe"):
+            feed.subscribe(symbols)
+        if mode != "demo":
+            if depth_box["stream"]:
+                depth_box["stream"].subscribe(symbols)
+            if liq_box["stream"]:
+                liq_box["stream"].subscribe(symbols)
+        # 补发历史：新卡片直接有K线，而不是从一根实时K线开始累积
+        try:
+            await hub.broadcast(json.loads(hub.symbol_snapshot(sym)))
+        except Exception:
+            pass
+
     # 量化交易范围跟随前端实际展示的币种：避免在用户没看K线的币上开仓。
     # 空列表不做限制（前端还没连上时保持原有行为）。
+    # 前端可选全市场币种，因此这里收到配置外的币时会走 ensure_symbol() 按需订阅。
     def _set_quant_symbols(syms):
-        valid = [s for s in syms if s in symbols]
+        valid = [s for s in (ensure_symbol(x) for x in syms) if s]
         if valid:
             quant.symbol_filter = set(valid)
             print(f"[quant] 交易范围更新: {', '.join(valid)}")
@@ -566,19 +640,6 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                        "accountsAvailable": len(hub.last_accounts or [])},
         }
 
-    token_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "agent-access-token")
-    try:
-        with open(token_path, encoding="utf-8") as handle:
-            hub.agent_token = handle.read().strip()
-        os.chmod(token_path, 0o600)
-    except FileNotFoundError:
-        token = secrets.token_urlsafe(32)
-        fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(token)
-        hub.agent_token = token
-    if len(hub.agent_token) < 32:
-        raise ValueError("Agent 访问令牌无效，需至少 32 字符")
     hub.news_article_fn = lambda item: fetch_article(item, proxy_cfg or None)
 
     agent = AgentManager(
@@ -859,6 +920,19 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 print(f"[pool] 审计失败: {e}")
             await asyncio.sleep(86400)
 
+    async def market_list_poller():
+        """市池清单：启动即取一次（前端菜单要马上有），之后每小时刷新一次。"""
+        while True:
+            try:
+                listed = await asyncio.to_thread(usdt_perpetuals, proxy_cfg or None)
+                if listed:
+                    hub.market = sorted(set(listed) | set(symbols))
+                    await hub.broadcast({"type": "market", "market": hub.market})
+                    print(f"[market] 可交易 U 本位永续 {len(hub.market)} 个")
+            except Exception as e:
+                print(f"[market] 市池获取失败: {e}")
+            await asyncio.sleep(3600)
+
     async def market_feature_poller():
         """Prefetch OI/funding without blocking the quant decision lock."""
         await asyncio.sleep(4)
@@ -875,7 +949,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     try:
         await asyncio.gather(supervisor(), sweep(), accounts_poller(),
                              news_poller(), backfill_retry(), pool_auditor(),
-                             market_feature_poller())
+                             market_list_poller(), market_feature_poller())
     finally:
         await agent.stop()
 

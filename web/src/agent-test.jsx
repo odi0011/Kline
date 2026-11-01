@@ -30,7 +30,6 @@ function Harness() {
   const [chat, setChat] = useState(scenario === "empty" ? [] : scenario === "long-chat" ? Array.from({ length: 20 }, (_, i) => ({ id: `long-${i}`, role: i % 2 ? "assistant" : "user", content: `第 ${i + 1} 条分析\n${"行情波动需要关注仓位与风险。".repeat(8)}`, status: "succeeded" })) : initialChat)
   const [models, setModels] = useState(["no-model", "models-loading", "models-error"].includes(scenario) ? [] : configuredModels)
   const [connected, setConnected] = useState(scenario !== "offline")
-  const [locked, setLocked] = useState(scenario === "locked")
   const requests = useRef([])
   const timers = useRef(new Set())
   const later = (callback, ms) => {
@@ -39,7 +38,7 @@ function Harness() {
   }
   useEffect(() => {
     // Fixture-only hooks for browser regression tests; never imported by App.
-    window.__agentFixture = { requests: requests.current, setTasks, setChat, setModels, setConnected, setLocked }
+    window.__agentFixture = { requests: requests.current, setTasks, setChat, setModels, setConnected }
     return () => { timers.current.forEach(clearTimeout); delete window.__agentFixture }
   }, [])
   const finishTask = (id) => later(() => setTasks((current) => current.map((item) => {
@@ -53,7 +52,7 @@ function Harness() {
     await wait(Number(params.get("ackDelay")) || 180)
     if (params.get("reject") === action) throw new Error("测试：连接中断")
     if (params.get("fail") === action) return { ok: false, error: "测试：服务端拒绝，请重试" }
-    if (!connected || locked) return { ok: false, error: "连接不可用" }
+    if (!connected) return { ok: false, error: "连接不可用" }
     if (action === "chat") {
       const id = `a${Date.now()}`
       setChat((current) => [...current, { id: `u${Date.now()}`, role: "user", content: payload.prompt }, { id, role: "assistant", content: "", status: "running", steps: [steps[0]], progress: { phase: "model", round: 1, maxRounds: 8, toolCalls: 1 } }])
@@ -88,17 +87,10 @@ function Harness() {
     if (action === "run") finishTask(payload.id)
     return { ok: true, id: payload.id }
   }
-  const onUnlock = async (token) => {
-    await wait(180)
-    if (params.get("fail") === "unlock" || token !== "fixture-token") return { ok: false, error: "令牌无效" }
-    sessionStorage.setItem("oddd-fixture-session-token", token)
-    setLocked(false)
-    return { ok: true }
-  }
   const width = Number(params.get("width")) || 230
   const height = Number(params.get("height")) || 520
   return <div style={{ width, height, padding: 12, background: "#f4f6fa", boxSizing: "border-box" }}>
-    <AgentPanel tasks={tasks} chat={chat} models={models} onSend={onSend} onUnlock={onUnlock} locked={locked} connected={connected}
+    <AgentPanel tasks={tasks} chat={chat} models={models} onSend={onSend} connected={connected}
       modelsLoading={scenario === "models-loading"} modelsError={scenario === "models-error" ? "模型获取失败" : ""}
       loading={scenario === "loading"} error={scenario === "error" ? "状态加载失败" : ""} />
   </div>

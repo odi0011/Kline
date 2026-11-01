@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import secrets
 import time
 
 import websockets
@@ -40,6 +39,7 @@ class BroadcastHub:
         self.aggs = aggs                  # (symbol, interval) -> KlineAggregator
         self.symbols = symbols
         self.intervals = intervals
+        self.market: list[str] = []       # 币安全部可交易 U 本位永续（前端币种菜单用）
         self.port = port
         self.clients: set = set()
         self.latest: dict[tuple, list] = {}
@@ -60,8 +60,6 @@ class BroadcastHub:
         self.ai_fn = None                 # AI 辅助（main 注入）：("list"|"test"|"guess", arg1, arg2) -> dict
         self.agent_state_fn = None        # ODDD 任务与会话快照（main 注入）
         self.agent_fn = None              # ODDD 异步动作：(action, payload) -> dict
-        self.agent_token = None
-        self.agent_clients: set = set()
         self.news_article_fn = None
         self._article_cache: dict = {}
         self._article_slots = asyncio.Semaphore(2)
@@ -154,12 +152,31 @@ class BroadcastHub:
                     structures[sym][iv] = st
         return json.dumps({
             "type": "init", "mode": self.mode, "symbols": self.symbols,
-            "intervals": self.intervals, "history": history, "structures": structures,
+            "market": self.market, "intervals": self.intervals,
+            "history": history, "structures": structures,
+        }, separators=(",", ":"))
+
+    def symbol_snapshot(self, sym: str) -> str:
+        """单个币种的历史快照。运行时新增订阅后补发给所有客户端，
+        让新卡片直接有历史K线，而不是从一根实时K线开始累积。"""
+        history = {}
+        structures = {}
+        for iv in self.intervals:
+            agg = self.aggs.get((sym, iv))
+            bars = [self._bar(c) for c in list(agg.history)[-HISTORY_BARS:]] if agg else []
+            if agg and agg.current is not None:
+                bars.append(self._bar(agg.current))
+            history[iv] = bars
+            st = self.structures.get((sym, iv))
+            if st:
+                structures[iv] = st
+        return json.dumps({
+            "type": "bars", "symbol": sym, "intervals": self.intervals,
+            "history": history, "structures": structures, "market": self.market,
         }, separators=(",", ":"))
 
     async def _handler(self, ws) -> None:
         self.clients.add(ws)
-        last_auth = 0.0
         last_article = 0.0
         print(f"[ws] 客户端接入 ({len(self.clients)} 个在线)")
         try:
@@ -183,7 +200,7 @@ class BroadcastHub:
                 await ws.send(json.dumps({"type": "quant", "snapshot": self.quant_fn()},
                                          separators=(",", ":")))
             if self.agent_state_fn:
-                await ws.send(json.dumps({"type": "agent_access", "locked": True},
+                await ws.send(json.dumps({"type": "agent_state", **self.agent_state_fn()},
                                          separators=(",", ":")))
             if self.trades_fn:
                 try:
@@ -213,29 +230,10 @@ class BroadcastHub:
                         continue
                     mtype = msg.get("type")
                     request_id = str(msg.get("requestId") or "")[:80]
-                    if mtype == "agent_auth":
-                        token = msg.get("token")
-                        allowed = (time.monotonic() - last_auth >= 1 and self._same_origin(ws)
-                                   and isinstance(token, str) and token.isascii()
-                                   and len(token) <= 256
-                                   and bool(self.agent_token)
-                                   and secrets.compare_digest(token, self.agent_token))
-                        last_auth = time.monotonic()
-                        if allowed:
-                            self.agent_clients.add(ws)
-                        result = {"ok": bool(allowed)}
-                        if not allowed:
-                            result["error"] = "访问令牌无效，或请求过于频繁"
-                        await ws.send(json.dumps({"type": "agent_auth_ack", "requestId": request_id,
-                                                 "result": result}, separators=(",", ":")))
-                        if allowed and self.agent_state_fn:
-                            await ws.send(json.dumps({"type": "agent_state", **self.agent_state_fn()},
-                                                     separators=(",", ":")))
-                        continue
                     if mtype in ("agent_action", "ai_list_models", "ai_test_model", "ai_guess_meta"):
-                        if ws not in self.agent_clients or not self._same_origin(ws):
+                        if not self._same_origin(ws):
                             await ws.send(json.dumps({"type": "agent_ack", "requestId": request_id,
-                                                     "result": {"ok": False, "error": "请先解锁 ODDD"}},
+                                                     "result": {"ok": False, "error": "拒绝跨源请求"}},
                                                     separators=(",", ":")))
                             continue
                     if mtype == "set_detect_interval" and self.on_detect:
@@ -252,10 +250,6 @@ class BroadcastHub:
                             continue
                         settings = msg.get("settings") or {}
                         if not isinstance(settings, dict):
-                            continue
-                        if ("ai" in settings or "accounts" in settings) and ws not in self.agent_clients:
-                            await ws.send(json.dumps({"type": "agent_ack", "requestId": request_id,
-                                                     "result": {"ok": False, "error": "修改账户或 AI 配置前请先解锁 ODDD"}}))
                             continue
                         print("[settings] 收到设置更新")
                         new_settings = self.on_settings(settings)
@@ -352,7 +346,6 @@ class BroadcastHub:
                 traceback.print_exc()
         finally:
             self.clients.discard(ws)
-            self.agent_clients.discard(ws)
             print(f"[ws] 客户端断开 ({len(self.clients)} 个在线)")
 
     async def _flusher(self) -> None:
@@ -402,9 +395,8 @@ class BroadcastHub:
         if not self.clients:
             return
         data = json.dumps(obj, separators=(",", ":"))
-        clients = self.agent_clients if obj.get("type") == "agent_state" else self.clients
         results = await asyncio.gather(
-            *(c.send(data) for c in list(clients)), return_exceptions=True)
+            *(c.send(data) for c in list(self.clients)), return_exceptions=True)
         for r in results:
             if isinstance(r, Exception):
                 pass

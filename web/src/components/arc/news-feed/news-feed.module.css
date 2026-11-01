@@ -80,13 +80,6 @@
 }
 
 .row:focus-visible { outline: 2px solid #2563eb; outline-offset: -2px; }
-.latest {
-  position: absolute; bottom: 9px; left: 50%; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 4px;
-  border: 1px solid #d6dce6; border-radius: 20px; padding: 5px 12px;
-  background: #fff; color: #1d4ed8; font-family: inherit; font-size: 11px; cursor: pointer;
-  box-shadow: 0 2px 9px #0002;
-}
 .dialog {
   position: fixed; inset: 0; margin: auto; padding: 0;
   width: min(760px, calc(100vw - 32px)); max-width: calc(100vw - 32px);
@@ -111,7 +104,7 @@
 .error { color: #b42318; margin: 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .action { padding: 7px 12px; border: 1px solid #d7dfec; border-radius: 7px; background: #f8faff; color: #1d4ed8; font: inherit; cursor: pointer; }
 .action:disabled { opacity: .5; cursor: not-allowed; }
-.action:focus-visible, .close:focus-visible, .latest:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.action:focus-visible, .close:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
 .analysis { margin-top: 24px; padding-top: 15px; border-top: 1px solid #e9edf3; }
 .analysis h3 { font-size: 14px; margin: 0 0 6px; }
 .analysisMode { margin-top: 14px; }

@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { TrendingDown, TrendingUp } from "lucide-react"
 import CoinAvatar from "@/components/ui/coin-avatar"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
+import JumpLatest from "@/components/arc/jump-latest/jump-latest"
 import styles from "./position-history.module.css"
 
 const ROW_H = 22
@@ -170,13 +171,10 @@ export default function PositionHistory({ trades: pushed, chartColors, streamRef
         )}
       </ScrollArea>
       {follow && (
-        <button type="button" className={styles.jump}
-          onClick={() => {
-            const el = viewportRef.current
-            if (el) { el.scrollTo({ top: 0, behavior: "smooth" }); setFollow(false) }
-          }}>
-          最新
-        </button>
+        <JumpLatest onClick={() => {
+          const el = viewportRef.current
+          if (el) { el.scrollTo({ top: 0, behavior: "smooth" }); setFollow(false) }
+        }} />
       )}
     </section>
   )

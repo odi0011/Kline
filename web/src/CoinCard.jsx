@@ -200,6 +200,12 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
       }))
     // WS 重连后的新 init 快照：仓库被重建，图表按快照重置
     offs.push(live.on('init', () => { setData(); prevCloseRef.current = null; updateHeader() }))
+    // 运行时新订阅的币：服务端补发该币历史后重画（不必等重连的整包 init）
+    offs.push(live.on(`bars|${symbol}`, () => {
+      setData(); prevCloseRef.current = null; updateHeader()
+      setStructure(live.structures[symbol]?.[intervalRef.current] || null)
+      setDepth(live.depths[symbol] || null)
+    }))
     offs.push(live.on(`bar_detail|${symbol}`, (m) => {
       setBarDetail(m)
       // 悬停到有形态记录的K线 → 右侧图鉴滚动到对应形态并触发渐变效果

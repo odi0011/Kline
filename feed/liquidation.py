@@ -30,12 +30,24 @@ class LiquidationStream:
         self.last_message_ms = 0
         self.connected = False
         self.cooldown_until: dict[str, int] = {}
+        self._force = asyncio.Event()
+
+    def subscribe(self, symbols: list[str]) -> None:
+        """热更新订阅列表：组合流 URL 固定，改动后让当前连接重连生效。"""
+        wanted = sorted({s.lower() for s in symbols if s})
+        if not wanted or wanted == self.symbols:
+            return
+        for symbol in wanted:
+            self.events.setdefault(symbol, deque(maxlen=200))
+        self.symbols = wanted
+        self._force.set()
 
     async def run(self) -> None:
-        streams = "/".join(f"{symbol}@forceOrder" for symbol in self.symbols)
-        url = f"{WS_URL}?streams={streams}"
         backoff = 1.0
         while True:
+            streams = "/".join(f"{symbol}@forceOrder" for symbol in self.symbols)
+            url = f"{WS_URL}?streams={streams}"
+            self._force.clear()
             try:
                 async with websockets.connect(
                     url, ping_interval=20, ping_timeout=20,
@@ -46,6 +58,10 @@ class LiquidationStream:
                     async for raw in ws:
                         self.last_message_ms = int(time.time() * 1000)
                         self._handle(raw)
+                        if self._force.is_set():
+                            print("[liquidation] 订阅列表变化，重连生效")
+                            self.connected = False
+                            break
             except asyncio.CancelledError:
                 raise
             except Exception:

@@ -21,7 +21,6 @@ export class LiveClient {
     this._retry = 0
     this._closed = false
     this._lastStatus = 'reconnecting'
-    this.agentLocked = true
     this.agentReadOnly = false
     this.agentPersistenceError = ''
     this.requests = new Map()
@@ -48,10 +47,6 @@ export class LiveClient {
     this.ws.onopen = () => {
       this._retry = 0
       this._emitStatus('connected')
-      this.agentLocked = true
-      let token = ''
-      try { token = sessionStorage.getItem('oddd-access') || '' } catch {}
-      if (token) this.unlockAgent(token)
       if (this.detectInterval) this.setDetectInterval(this.detectInterval)   // 重连后重新下发检测周期
       if (this.quantSymbols) this.setQuantSymbols(this.quantSymbols)         // 重连后重新下发量化范围
     }
@@ -60,8 +55,6 @@ export class LiveClient {
     }
     this.ws.onclose = () => {
       this._rejectRequests('连接已断开，请重试')
-      this.agentLocked = true
-      this._emitKey('agent_access', { locked: true })
       if (this._closed) return
       this._emitStatus('reconnecting')
       this._scheduleRetry()
@@ -92,10 +85,7 @@ export class LiveClient {
       this.requests.delete(m.requestId)
       pending.resolve(m.result || { ok: false, error: '无效响应' })
     }
-    if (m.type === 'agent_access') {
-      this.agentLocked = m.locked !== false
-      this._emitKey('agent_access', m)
-    } else if (m.type === 'init') {
+    if (m.type === 'init') {
       for (const sym of m.symbols) {
         const cell = (this.store[sym] ||= {})
         for (const iv of m.intervals) {
@@ -113,6 +103,33 @@ export class LiveClient {
       this.meta = m
       if (typeof document === 'undefined' || !document.hidden) this.listeners.meta.forEach((f) => f(m))
       this._emitKey('init', m)
+    } else if (m.type === 'market') {
+      if (Array.isArray(m.market) && this.meta) {
+        // 市池清单晚于 init 到达：并入 meta 后重新通知，币种菜单据此展开全市场
+        this.meta = { ...this.meta, market: m.market }
+        this.listeners.meta.forEach((f) => f(this.meta))
+      }
+      this._emitKey('market', m)
+    } else if (m.type === 'bars') {
+      // 运行时新增订阅：单个币种的历史快照补发（不重建其它币的仓库）
+      const sym = m.symbol
+      const cell = (this.store[sym] ||= {})
+      for (const iv of m.intervals || []) {
+        cell[iv] = { bars: (m.history?.[iv] || []).map(toBar) }
+      }
+      if (m.structures) {
+        this.structures[sym] = { ...(this.structures[sym] || {}) }
+        for (const [iv, st] of Object.entries(m.structures)) {
+          this.structures[sym][iv] = { ...st, __bars: (cell[iv]?.bars || []).map((b) => ({ time: b.time })) }
+        }
+      }
+      this._emitKey(`bars|${sym}`, m)
+      for (const iv of m.intervals || []) {
+        const st = this.structures[sym]?.[iv]
+        if (!st) continue
+        this._emitKey(`structure|${sym}|${iv}`, st)
+        this._emitKey(`structure|${sym}`, st)
+      }
     } else if (m.type === 'structure') {
       const sym = m.symbol
       const iv = m.interval
@@ -257,17 +274,6 @@ export class LiveClient {
       this.requests.set(requestId, { resolve, timer })
       if (!this.send({ ...msg, requestId })) this._rejectRequests('连接已断开')
     })
-  }
-
-  async unlockAgent(token) {
-    const result = await this.request({ type: 'agent_auth', token })
-    this.agentLocked = !result.ok
-    try {
-      if (result.ok) sessionStorage.setItem('oddd-access', token)
-      else sessionStorage.removeItem('oddd-access')
-    } catch {}
-    this._emitKey('agent_access', { locked: this.agentLocked })
-    return result
   }
 
   _rejectRequests(error) {

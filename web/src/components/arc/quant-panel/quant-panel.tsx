@@ -9,7 +9,7 @@ import {
   Search, XCircle,
 } from "lucide-react"
 import CoinAvatar from "@/components/ui/coin-avatar"
-import { LiquidGlass } from "@/components/ui/liquid-glass"
+import JumpLatest from "@/components/arc/jump-latest/jump-latest"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import styles from "./quant-panel.module.css"
 
@@ -336,19 +336,11 @@ export default function QuantPanel({ snapshot, events: pushedEvents, chartColors
       </ScrollArea>
 
       {!follow && total > 0 && (
-        <div className={styles.jumpWrap}>
-          <LiquidGlass radius={999} scale={22} aberration={0} frost={2} tint={0.14}
-            className={styles.jumpGlass}>
-            <button type="button" className={styles.jumpBtn}
-              onClick={() => {
-                setFollow(true)
-                const el = viewportRef.current
-                if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
-              }}>
-              最新
-            </button>
-          </LiquidGlass>
-        </div>
+        <JumpLatest onClick={() => {
+          setFollow(true)
+          const el = viewportRef.current
+          if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+        }} />
       )}
     </section>
   )

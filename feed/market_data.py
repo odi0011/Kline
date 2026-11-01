@@ -102,3 +102,28 @@ def onboard_dates(symbols: list[str], proxy: str | None = None) -> dict[str, int
         except (TypeError, ValueError):
             continue
     return out
+
+
+def usdt_perpetuals(proxy: str | None = None) -> list[str]:
+    """全部可交易的 USDT 本位永续合约（含 TradFi 标的，如 XAUUSDT/TSLAUSDT）。
+
+    前端币种菜单用它列出整个市池，让用户能选到配置里没预先订阅的币。
+    """
+    data = _get_json("/fapi/v1/exchangeInfo", {}, proxy)
+    if not isinstance(data, dict):
+        return []
+    out = []
+    for row in data.get("symbols") or []:
+        try:
+            symbol = str(row.get("symbol") or "").upper()
+            if not symbol.endswith("USDT"):
+                continue
+            if str(row.get("contractType") or "PERPETUAL") != "PERPETUAL":
+                continue
+            if str(row.get("status") or "TRADING") != "TRADING":
+                continue
+            out.append(symbol.lower())
+        except (AttributeError, TypeError):
+            continue
+    return sorted(set(out))
+

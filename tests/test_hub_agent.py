@@ -13,11 +13,10 @@ async def receive_type(ws, kind):
             return message
 
 
-def test_agent_requires_token_and_keeps_state_private():
+def test_agent_state_is_pushed_and_actions_run_without_token():
     async def scenario():
         hub = BroadcastHub({}, [], [])
-        hub.agent_token = "test-token-" + "x" * 40
-        hub.agent_state_fn = lambda: {"tasks": [{"id": "private"}], "chat": []}
+        hub.agent_state_fn = lambda: {"tasks": [{"id": "visible"}], "chat": []}
         calls = []
 
         async def action(kind, payload):
@@ -27,24 +26,14 @@ def test_agent_requires_token_and_keeps_state_private():
         hub.agent_fn = action
         async with websockets.serve(hub._handler, "127.0.0.1", 0) as server:
             port = server.sockets[0].getsockname()[1]
-            async with websockets.connect(f"ws://127.0.0.1:{port}") as owner:
-                assert (await receive_type(owner, "agent_access"))["locked"]
-                await owner.send(json.dumps({"type": "agent_action", "action": "create", "requestId": "1"}))
-                denied = await receive_type(owner, "agent_ack")
-                assert not denied["result"]["ok"] and denied["requestId"] == "1"
-                assert calls == []
-                await owner.send(json.dumps({"type": "agent_auth", "token": hub.agent_token, "requestId": "2"}))
-                assert (await receive_type(owner, "agent_auth_ack"))["result"]["ok"]
-                assert (await receive_type(owner, "agent_state"))["tasks"][0]["id"] == "private"
-                async with websockets.connect(f"ws://127.0.0.1:{port}") as visitor:
-                    await receive_type(visitor, "agent_access")
-                    await hub.broadcast({"type": "agent_state", "tasks": [{"id": "updated"}], "chat": []})
-                    assert (await receive_type(owner, "agent_state"))["tasks"][0]["id"] == "updated"
-                    await visitor.send(json.dumps({"type": "query_news"}))
-                    assert json.loads(await visitor.recv())["type"] == "news"
-                await owner.send(json.dumps({"type": "agent_action", "action": "create", "requestId": "3", "payload": {}}))
-                assert (await receive_type(owner, "agent_ack"))["result"]["ok"]
+            async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+                assert (await receive_type(ws, "agent_state"))["tasks"][0]["id"] == "visible"
+                await ws.send(json.dumps({"type": "agent_action", "action": "create", "requestId": "1", "payload": {}}))
+                ack = await receive_type(ws, "agent_ack")
+                assert ack["result"]["ok"] and ack["requestId"] == "1"
                 assert calls == ["create"]
+                await hub.broadcast({"type": "agent_state", "tasks": [{"id": "updated"}], "chat": []})
+                assert (await receive_type(ws, "agent_state"))["tasks"][0]["id"] == "updated"
     asyncio.run(scenario())
 
 
@@ -75,15 +64,22 @@ def test_article_only_fetches_known_source_and_caches():
     asyncio.run(scenario())
 
 
-def test_cross_origin_token_is_rejected():
+def test_cross_origin_agent_action_is_rejected():
     async def scenario():
         hub = BroadcastHub({}, [], [])
-        hub.agent_token = "x" * 40
         hub.agent_state_fn = lambda: {"tasks": [], "chat": []}
+        calls = []
+
+        async def action(kind, payload):
+            calls.append(kind)
+            return {"ok": True}
+
+        hub.agent_fn = action
         async with websockets.serve(hub._handler, "127.0.0.1", 0) as server:
             port = server.sockets[0].getsockname()[1]
             async with websockets.connect(f"ws://127.0.0.1:{port}", origin="https://untrusted.invalid") as ws:
-                await receive_type(ws, "agent_access")
-                await ws.send(json.dumps({"type": "agent_auth", "token": hub.agent_token}))
-                assert not (await receive_type(ws, "agent_auth_ack"))["result"]["ok"]
+                await receive_type(ws, "agent_state")
+                await ws.send(json.dumps({"type": "agent_action", "action": "create", "requestId": "x"}))
+                assert not (await receive_type(ws, "agent_ack"))["result"]["ok"]
+                assert calls == []
     asyncio.run(scenario())

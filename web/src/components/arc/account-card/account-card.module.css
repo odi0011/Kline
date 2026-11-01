@@ -185,17 +185,17 @@
   color: #526070; font-size: 9px; line-height: 1.15;
   font-variant-numeric: tabular-nums;
 }
-.heatHead { display: flex; align-items: center; gap: 8px; height: 16px; flex: none; }
-.heatHead b { color: #384253; font-size: 10px; font-weight: 600; }
-.heatHead select {
-  margin-left: auto; max-width: 80px; height: 16px; padding: 0 2px;
-  border: 1px solid hsl(var(--h) 30% 84%); border-radius: 4px;
-  background: #ffffffb3; color: #465264; font: inherit; cursor: pointer;
+/* 年份切换：复用 MorphSelect（触发器高 18px，跟热力图的 9px 字号对齐） */
+.heatHead {
+  display: flex; align-items: center; justify-content: flex-end;
+  height: 18px; flex: none; --ms-h: 18px;
 }
-.heatHead select:focus-visible { outline: 2px solid hsl(var(--h) 50% 35%); outline-offset: 1px; }
-.heatMissing { display: inline-flex; align-items: center; gap: 3px; color: #75808d; }
-.heatMissing i { width: 6px; height: 6px; background: #edf0f3; border: 1px solid #dce1e7; border-radius: 2px; }
-.heatSince { color: #75808d; font-size: 8.5px; flex: none; }
+.heatYear { --ms-h: 18px; font-size: 9px; }
+.heatYear [class*="trigger"] { padding: 0 18px 0 7px; font-size: 9px; font-weight: 600; }
+.heatYear [class*="chevron"] { right: 4px; width: 12px; height: 12px; margin-top: -6px; }
+.heatYear [class*="chevron"] svg { width: 12px; height: 12px; }
+.heatYear [class*="option"] { min-height: 26px; font-size: 10px; }
+.heatYear [class*="listFace"] { padding: 0 4px 4px; }
 .heatScroll {
   flex: 1 1 auto; min-height: 66px; overflow-x: auto; overflow-y: hidden;
   scrollbar-width: thin; scrollbar-color: #ccd2da transparent;
@@ -216,7 +216,6 @@
 .heatDay:hover, .heatDay:focus-visible {
   outline: 1px solid #384253; outline-offset: -1px; box-shadow: inset 0 0 0 2px #ffffff80;
 }
-.heatWaiting { flex: 1; display: grid; place-items: center; color: #87919e; }
 .heatDetail {
   display: flex; align-items: center; gap: 4px; flex: none; min-height: 11px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #617083; font-size: 8.5px;

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react"
+import MorphSelect from "@/components/arc/morph-select/morph-select"
 import styles from "./account-card.module.css"
 
 const DAY = 86400000
@@ -31,6 +32,10 @@ export default function EquityHeatmap({ history }) {
   const firstYear = first ? Number(first.slice(0, 4)) : currentYear
   const year = selectedYear >= firstYear && selectedYear <= currentYear ? selectedYear : currentYear
   const years = Array.from({ length: currentYear - firstYear + 1 }, (_, i) => currentYear - i)
+  const yearOptions = useMemo(
+    () => years.map((y) => ({ value: String(y), label: `${y} 年` })),
+    [years.join(",")],
+  )
   const values = [...records.values()].map((r) => r.close)
   // 所有年份共用绝对权益刻度；零值/负值有效，单值使用中间色阶。
   const min = values.length ? Math.min(...values) : 0
@@ -51,7 +56,7 @@ export default function EquityHeatmap({ history }) {
   })
   const describe = (date) => {
     const row = records.get(date)
-    return `${date} · ${row ? `${date === today ? "最新" : "日末"}总权益 ${money(row.close)} USDT` : "无数据"}`
+    return `${date} · ${row ? `${money(row.close)} USDT` : "无数据"}`
   }
   const active = hovered || focused
 
@@ -68,18 +73,15 @@ export default function EquityHeatmap({ history }) {
 
   return (
     <div className={styles.heatmap} role="group" aria-label="UTC 每日总权益热力图">
-      <div className={styles.heatHead}>
-        <b title="颜色表示日末总权益的绝对值，不代表收益；今日为最新采样">日末总权益</b>
-        <span className={styles.heatMissing}><i />无数据</span>
-        <select aria-label="权益年份" value={year} onChange={(e) => {
-          setSelectedYear(Number(e.target.value)); setHovered(null); setFocused(null)
-        }}>
-          {years.map((y) => <option value={y} key={y}>{y} 年</option>)}
-        </select>
-      </div>
-      <div className={styles.heatSince} title="首次记录是现存档案的起点，不一定是账户接入日；已删除历史无法恢复，缺失日不补值。">
-        {first ? `首次记录 ${first} · UTC` : "暂无每日权益记录 · UTC"}
-      </div>
+      {years.length > 1 && (
+        <div className={styles.heatHead}>
+          <MorphSelect label="权益年份" hideLabel className={styles.heatYear}
+            items={yearOptions} value={String(year)} panelWidth={104} maxListHeight={180} align="end"
+            onValueChange={(next) => {
+              setSelectedYear(Number(next)); setHovered(null); setFocused(null)
+            }} />
+        </div>
+      )}
       {first ? (
         <div className={styles.heatScroll}>
           <div className={styles.heatCalendar} style={{ "--weeks": weeks }}>
@@ -104,15 +106,15 @@ export default function EquityHeatmap({ history }) {
             </div>
           </div>
         </div>
-      ) : <div className={styles.heatWaiting}>等待真实采样，不补造历史</div>}
+      ) : null}
       <div className={styles.heatDetail} aria-live="polite" aria-atomic="true" title={active ? describe(active) : "全历史统一色阶：绝对权益，非收益；单位 USDT"}>
         {active ? describe(active) : first ? <>
           <span>{money(min)}</span>
           <span className={styles.heatScale} aria-hidden="true">
             {[0, 0.25, 0.5, 0.75, 1].map((v) => <i key={v} style={{ backgroundColor: tint(v) }} />)}
           </span>
-          <span>{money(max)} USDT · 绝对值</span>
-        </> : "总权益 · USDT"}
+          <span>{money(max)} USDT</span>
+        </> : "—"}
       </div>
     </div>
   )

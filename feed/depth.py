@@ -46,6 +46,26 @@ class DepthStream:
                 t.cancel()
             raise
 
+    def subscribe(self, symbols: list[str]) -> None:
+        """热更新：只新增/移除单个币的连接，已连的币不动。"""
+        wanted = {s.lower() for s in symbols if s}
+        current = set(self.symbols)
+        if wanted == current:
+            return
+        for symbol in current - wanted:
+            self._cancel(symbol)
+        self.symbols = sorted(wanted)
+        for symbol in wanted - current:
+            self._tasks.append(asyncio.create_task(self._one(symbol)))
+        print(f"[depth] 订阅更新: {len(self.symbols)} 个币")
+
+    def _cancel(self, symbol: str) -> None:
+        index = next((i for i, s in enumerate(self.symbols) if s == symbol), -1)
+        if index < 0 or index >= len(self._tasks):
+            return
+        self._tasks.pop(index).cancel()
+        self.last_msg_ms.pop(symbol, None)
+
     async def _one(self, symbol: str) -> None:
         url = f"{DEPTH_URL}?streams={symbol}@depth{self.levels}@{self.speed_ms}ms"
         backoff = 1.0

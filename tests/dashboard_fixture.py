@@ -11,9 +11,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.candle import Candle
 from server.hub import BroadcastHub
 
-TOKEN = "local-browser-test-token-not-for-production"
-
-
 async def main():
     symbols = ["btcusdt", "ethusdt", "bnbusdt", "solusdt"]
     prices = [68420, 2480, 586, 171]
@@ -32,7 +29,6 @@ async def main():
                                       buy_vol=25, sell_vol=17))
             aggs[symbol, interval] = SimpleNamespace(history=history, current=None)
     hub = BroadcastHub(aggs, symbols, intervals)
-    hub.agent_token = TOKEN
     snapshot = {
         "enabled": True, "ts": timestamp, "stats": {"signals": 286, "opens": 42, "closes": 42},
         "events": [], "positions": [], "accounts": ["演示验证账户"],

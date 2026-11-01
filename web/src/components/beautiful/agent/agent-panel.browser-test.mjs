@@ -221,19 +221,6 @@ try {
     await frame()
     assert.equal(await evaluate("(() => {const el = document.querySelector('[class*=messageViewport]'); return el.scrollHeight - el.scrollTop - el.clientHeight < 2})()"), true)
   })
-  await check("locked token is session-only; failure never echoes it", async () => {
-    await navigate("scenario=locked&fail=unlock")
-    await set('input[type="password"]', "do-not-echo-this-token")
-    await clickText("解锁")
-    await waitFor("document.body.innerText.includes('解锁失败')")
-    assert.equal(await evaluate("document.body.innerText.includes('do-not-echo-this-token')"), false)
-    await navigate("scenario=locked")
-    await set('input[type="password"]', "fixture-token")
-    await clickText("解锁")
-    await waitFor("!!document.querySelector('[role=tab]')")
-    assert.equal(await evaluate("sessionStorage.getItem('oddd-fixture-session-token')"), "fixture-token")
-    assert.equal(await evaluate("localStorage.getItem('oddd-fixture-session-token')"), null)
-  })
   await check("160–220px column has no horizontal overflow", async () => {
     for (const width of [160, 180, 220]) {
       await navigate(`width=${width + 24}&height=520`)

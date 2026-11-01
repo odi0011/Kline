@@ -7,6 +7,9 @@ import { Check, ChevronLeft, Search } from "lucide-react"
 import { LiquidGlass } from "@/components/ui/liquid-glass"
 
 const spring = { type: "spring", stiffness: 520, damping: 40, mass: 0.8 }
+// 长列表（币种菜单有几百项）只渲染可视窗口，否则一次挂载几百个图标请求
+const ROW_H = 36
+const OVERSCAN = 6
 
 const pillStyle = {
   display: "grid",
@@ -36,6 +39,30 @@ const panelStyle = {
   overscrollBehavior: "contain",
 }
 
+/* 子菜单长列表：固定行高 + 只渲染可视窗口。币种菜单可能几百项，
+   全量挂载会同时触发几百个头像请求并拖慢菜单展开。 */
+function SubList({ rows, renderRow, searchable, scroll, viewH, listRef, onScroll }) {
+  const total = rows.length
+  const start = Math.max(0, Math.floor(scroll / ROW_H) - OVERSCAN)
+  const end = Math.min(total, Math.ceil((scroll + viewH) / ROW_H) + OVERSCAN)
+  if (searchable && total === 0) {
+    return <div style={{ padding: 10, fontSize: 12, color: "#a0a8b4", textAlign: "center" }}>无匹配</div>
+  }
+  if (total <= 40) return <>{rows.map(renderRow)}</>
+  return (
+    <div ref={listRef} onScroll={onScroll}
+      style={{ maxHeight: 320, overflowY: "auto", overscrollBehavior: "contain" }}>
+      <div style={{ position: "relative", height: total * ROW_H }}>
+        {rows.slice(start, end).map((item, i) => (
+          <div key={item.id} style={{ position: "absolute", top: (start + i) * ROW_H, left: 0, right: 0 }}>
+            {renderRow(item)}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function GlassMenu({
   label = "Actions",
   triggerLabel,
@@ -51,10 +78,13 @@ export function GlassMenu({
   const [hoverId, setHoverId] = useState(null)
   const [sub, setSub] = useState(null)          // 打开的子菜单父项
   const [subQuery, setSubQuery] = useState("")  // searchable 子菜单的搜索词
+  const [subScroll, setSubScroll] = useState(0)
+  const [subViewH] = useState(320)
   const rootRef = useRef(null)
+  const subListRef = useRef(null)
 
   useEffect(() => {
-    if (!open) { setSub(null); setHoverId(null); setSubQuery(""); return }
+    if (!open) { setSub(null); setHoverId(null); setSubQuery(""); setSubScroll(0); return }
     const onDoc = (e) => { if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false) }
     const onKey = (e) => { if (e.key === "Escape") setOpen(false) }
     document.addEventListener("pointerdown", onDoc)
@@ -67,7 +97,7 @@ export function GlassMenu({
 
   const rowClick = (item) => {
     if (item.disabled) return
-    if (item.items) { setSub(item); setSubQuery(""); return }
+    if (item.items) { setSub(item); setSubQuery(""); setSubScroll(0); return }
     onSelect?.(item.id, item)
     if (!item.keepOpen) setOpen(false)
   }
@@ -207,20 +237,12 @@ export function GlassMenu({
               </div>
             )}
             {sub && subItem ? (
-              (() => {
-                const q = subQuery.trim().toLowerCase()
-                const rows = q ? subItem.items.filter((it) => it.label.toLowerCase().includes(q)) : subItem.items
-                return (
-                  <>
-                    {rows.map(renderRow)}
-                    {subItem.searchable && rows.length === 0 && (
-                      <div style={{ padding: 10, fontSize: 12, color: "#a0a8b4", textAlign: "center" }}>
-                        无匹配
-                      </div>
-                    )}
-                  </>
-                )
-              })()
+              <SubList rows={subQuery.trim() ? subItem.items.filter((it) =>
+                it.label.toLowerCase().includes(subQuery.trim().toLowerCase())) : subItem.items}
+                renderRow={renderRow} searchable={subItem.searchable}
+                scroll={subScroll} viewH={subViewH} listRef={subListRef}
+                onScroll={(event) => setSubScroll(event.currentTarget.scrollTop)} />
+
             ) : (
               groups.map((g, gi) => (
                 <div key={g.id}>

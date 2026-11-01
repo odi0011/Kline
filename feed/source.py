@@ -38,6 +38,7 @@ class BinanceFuturesStream:
         self.last_trade_ms = 0
         self.connect_ms = 0
         self.stall_count = 0
+        self._force = asyncio.Event()
 
     @property
     def connected(self) -> bool:
@@ -54,13 +55,25 @@ class BinanceFuturesStream:
             "n": len(ls),
         }
 
+    def subscribe(self, symbols: list[str]) -> None:
+        """热更新订阅列表。币安组合流 URL 在连接时固定，只能重连生效。
+
+        调用方（main）负责建好新币的聚合器；这里只改订阅集并让当前连接让位，
+        run() 会立即用新 symbol 列表重连，不需要等 watchdog 超时。
+        """
+        wanted = sorted({s.lower() for s in symbols if s})
+        if not wanted or wanted == self.symbols:
+            return
+        self.symbols = wanted
+        self._force.set()
+
     async def run(self) -> None:
-        streams = "/".join(f"{s}@aggTrade" for s in self.symbols)
-        url = f"{WS_URL}?streams={streams}"
         backoff = 1.0
         watchdog = asyncio.create_task(self._watchdog())
         try:
             while True:
+                streams = "/".join(f"{s}@aggTrade" for s in self.symbols)
+                url = f"{WS_URL}?streams={streams}"
                 try:
                     async with websockets.connect(
                         url,
@@ -70,12 +83,16 @@ class BinanceFuturesStream:
                         max_size=2**22,
                     ) as ws:
                         backoff = 1.0
+                        self._force.clear()
                         self._ws = ws
                         self.connect_ms = int(time.time() * 1000)
                         self._connected.set()
                         print(f"[feed] 已连接 {url.split('?')[0]} streams={len(self.symbols)}")
                         async for raw in ws:
                             self._handle(raw)
+                            if self._force.is_set():
+                                print("[feed] 订阅列表变化，重连生效")
+                                break
                 except (websockets.ConnectionClosed, OSError, asyncio.CancelledError) as e:
                     if isinstance(e, asyncio.CancelledError):
                         raise
@@ -84,6 +101,9 @@ class BinanceFuturesStream:
                     print(f"[feed] 连接断开: {type(e).__name__}: {e}，{backoff:.0f}s 后重连")
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, 30)
+                finally:
+                    if self._force.is_set():
+                        self._connected.clear()
         finally:
             watchdog.cancel()
             self._connected.clear()

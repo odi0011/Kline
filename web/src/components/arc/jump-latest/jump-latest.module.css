@@ -1,0 +1,19 @@
+/* 统一「最新」跳转按钮：与决策流水同一套玻璃材质，三栏共用。 */
+.wrap {
+  position: absolute; left: 50%; bottom: 6px; z-index: 3;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.glass { height: 22px; border-radius: 999px; pointer-events: auto; }
+.btn {
+  display: flex; align-items: center; justify-content: center; gap: 3px;
+  height: 100%; padding: 0 10px;
+  border-radius: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.2);
+  color: var(--foreground, #1c2333);
+  font-size: 10px; font-weight: 600; cursor: pointer; font-family: inherit;
+  transition: background-color 140ms ease;
+}
+.btn:hover { background: rgba(255, 255, 255, 0.45); }
+.btn:focus-visible { outline: 2px solid var(--accent, #2563eb); outline-offset: 1px; }

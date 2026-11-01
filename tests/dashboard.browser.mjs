@@ -56,7 +56,7 @@ try {
       await delay(120)
     }
     console.log('Browser errors', errors)
-    console.log('Browser state', await evaluate(`({text:document.body.innerText.slice(0,1500),live:!!window.__live,locked:window.__live?.agentLocked,status:window.__live?._lastStatus,accounts:window.__live?.accounts?.length})`))
+    console.log('Browser state', await evaluate(`({text:document.body.innerText.slice(0,1500),live:!!window.__live,status:window.__live?._lastStatus,accounts:window.__live?.accounts?.length})`))
     throw new Error(`Timed out: ${expression}`)
   }
   const capture = async (name) => {
@@ -73,11 +73,10 @@ try {
     window.WebSocket = class extends NativeWebSocket {
       constructor(url, ...args) { super(String(url).replace(':8765', ':8877'), ...args); }
     };
-    sessionStorage.setItem('oddd-access', 'local-browser-test-token-not-for-production');
   ` })
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false })
   await cdp('Page.navigate', { url: 'http://127.0.0.1:5173/' })
-  await until(`window.__live?.accounts?.length && window.__live?.agentLocked === false`)
+  await until(`window.__live?.accounts?.length && window.__live?.agentChat !== undefined`)
   await delay(1200)
   await capture('dashboard-overview')
   const geometry = await evaluate(`(() => {

@@ -99,16 +99,3 @@
   .qty { font-size: 9px; }
   .pnl { min-width: 40px; font-size: 9.5px; }
 }
-
-/* 上翻后的"最新"（列表倒序，最新在顶部） */
-.jump {
-  position: absolute; left: 50%; bottom: 6px; z-index: 3;
-  transform: translateX(-50%);
-  height: 20px; padding: 0 9px; border-radius: 999px;
-  border: 1px solid rgba(28, 35, 51, 0.12);
-  background: rgba(255, 255, 255, 0.94);
-  color: var(--text-secondary, #5b6472);
-  font-size: 10px; font-weight: 600; cursor: pointer; font-family: inherit;
-  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.12);
-}
-.jump:hover { background: #fff; color: #1c2333; }

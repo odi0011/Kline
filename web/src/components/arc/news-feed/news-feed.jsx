@@ -1,7 +1,8 @@
 /* 新闻时间升序、贴底跟随、内置阅读与后台 AI 任务。 */
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowDown, BookOpen } from "lucide-react"
+import { BookOpen } from "lucide-react"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
+import JumpLatest from "@/components/arc/jump-latest/jump-latest"
 import ArticleModal from "./article-modal"
 import { ROW_H, createAnalysisTracker, newsKey, scrollAnchor, sortNews, syncViewport } from "./news-state"
 import styles from "./news-feed.module.css"
@@ -169,9 +170,7 @@ export default function NewsFeed({ items = EMPTY, onRead, onAnalyze, tasks = EMP
           </div>
         )}
       </ScrollArea>
-      {!follow && total > 0 && <button type="button" className={styles.latest} onClick={jumpLatest}>
-        <ArrowDown size={12} aria-hidden /> 最新
-      </button>}
+      {!follow && total > 0 && <JumpLatest onClick={jumpLatest} withIcon />}
       {selected && <ArticleModal key={newsKey(selected)} item={selected} onRead={onRead} onAnalyze={analyze}
         entries={entries} tasks={tasks || EMPTY} onClose={close} fallbackFocus={viewportRef} />}
     </section>
