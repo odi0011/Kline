@@ -196,23 +196,29 @@
 .heatYear [class*="chevron"] svg { width: 12px; height: 12px; }
 .heatYear [class*="option"] { min-height: 26px; font-size: 10px; }
 .heatYear [class*="listFace"] { padding: 0 4px 4px; }
+/* 整年日历铺满整宽：周列按容器均分，格子跟着变宽，不再固定 7px 导致两边留白 */
 .heatScroll {
-  flex: 1 1 auto; min-height: 66px; overflow-x: auto; overflow-y: hidden;
-  scrollbar-width: thin; scrollbar-color: #ccd2da transparent;
+  flex: 1 1 auto; min-height: 66px; overflow: hidden;
 }
-.heatScroll::-webkit-scrollbar { height: 3px; }
-.heatScroll::-webkit-scrollbar-thumb { background: #ccd2da; border-radius: 3px; }
-.heatCalendar { width: calc(var(--weeks) * 8px - 1px); }
-.heatMonths, .heatDays { display: grid; grid-template-columns: repeat(var(--weeks), 7px); column-gap: 1px; }
+.heatCalendar { width: 100%; }
+.heatMonths, .heatDays {
+  display: grid;
+  grid-template-columns: repeat(var(--weeks), minmax(0, 1fr));
+  column-gap: 1px;
+}
 .heatMonths { height: 9px; font-size: 8px; color: #75808d; }
-.heatMonths span { white-space: nowrap; }
+/* 月份标签可以越过自己那一列：整年 53 周均分后每列只有约 5px，
+   不放开就会把 "10月" 裁成 "1("。 */
+.heatMonths span { white-space: nowrap; overflow: visible; }
 .heatDays { grid-template-rows: repeat(7, 7px); grid-auto-flow: column; row-gap: 1px; }
 .heatDay {
   display: block; width: 100%; min-width: 0; height: 7px; padding: 0;
   appearance: none; border: 0; border-radius: 1.5px; cursor: crosshair;
-  background: #edf0f3; box-shadow: inset 0 0 0 0.5px #2634460d;
+  /* 没有记录的日期：纯白格子（不再用灰底，避免被误读成"低权益"） */
+  background: #fff;
+  box-shadow: inset 0 0 0 0.5px #e3e8ef;
 }
-.heatDay[data-missing] { box-shadow: inset 0 0 0 0.5px #dce1e7; }
+.heatDay[data-missing] { box-shadow: inset 0 0 0 0.5px #e8edf3; }
 .heatDay:hover, .heatDay:focus-visible {
   outline: 1px solid #384253; outline-offset: -1px; box-shadow: inset 0 0 0 2px #ffffff80;
 }

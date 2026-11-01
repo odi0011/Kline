@@ -41,7 +41,9 @@ export default function EquityHeatmap({ history }) {
   const min = values.length ? Math.min(...values) : 0
   const max = values.length ? Math.max(...values) : 0
   const level = (n) => max === min ? 0.55 : (n - min) / (max - min)
-  const start = first && first > `${year}-01-01` ? first : `${year}-01-01`
+  // 整年铺满：从当年 1 月 1 日画到今天（或年末），没有记录的日期留白。
+  // 只画"有数据的那几周"会让日历缩成窄窄一条，也看不出哪天缺记录。
+  const start = `${year}-01-01`
   const end = year === currentYear ? today : `${year}-12-31`
   const startMs = Date.parse(`${start}T00:00:00Z`)
   const count = Math.max(0, Math.round((Date.parse(`${end}T00:00:00Z`) - startMs) / DAY) + 1)
