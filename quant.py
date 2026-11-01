@@ -28,6 +28,7 @@ from accounts import (
     place_protective_order,
 )
 from analysis import indicators as IND
+from decision.advice import build_advice
 from decision.config import DecisionConfig
 from decision.drift import ADWIN
 from decision.features import (
@@ -151,6 +152,7 @@ class QuantEngine:
         self._manual_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "quant-manual.json")
         self._manual: set[tuple[str, str]] = set()   # (account, symbol) 手动仓位：引擎不干预止盈止损
         self._manual_mtime = 0.0
+        self.max_leverage_fn = None        # symbol -> 交易所该合约的最高杠杆
         self.depth_fn = None               # symbol -> depth snapshot
         self.market_data_fn = None         # symbol -> {oi, funding}
         self.news_fn = None                # () -> current news items
@@ -1875,6 +1877,34 @@ class QuantEngine:
                 "volState", "squeeze")
         return {k: st.get(k) for k in keys if k in st}
 
+    def _advice_map(self) -> dict:
+        """把评估结果 + 真实杠杆上限压成前端可直接展示的一句话建议。"""
+        out = {}
+        held = {}
+        for name in self.state:
+            for sym, pos in self._st(name)["positions"].items():
+                price = (self.price_fn or (lambda s: None))(sym) or pos.get("entry") or 0
+                hold_min = None
+                if pos.get("entryTs"):
+                    hold_min = max(0.0, (_now_ms() - pos["entryTs"]) / 60000)
+                held[sym] = {
+                    "side": pos.get("side"), "leverage": pos.get("leverage"),
+                    "sl": pos.get("sl"), "tp": pos.get("tp"),
+                    "slPct": pos.get("slPct"), "tpPct": pos.get("tpPct"),
+                    "holdMin": round(hold_min, 1) if hold_min is not None else None,
+                }
+        for sym, state in self.indicators.items():
+            try:
+                max_lev = int(self.max_leverage_fn(sym) or 0) if self.max_leverage_fn else 0
+            except Exception:
+                max_lev = 0
+            try:
+                out[sym] = build_advice(sym, state, self.live_evaluations.get(sym),
+                                        max_lev or None, held.get(sym))
+            except Exception:
+                continue
+        return out
+
     def snapshot(self) -> dict:
         positions = []
         for name in self.state:
@@ -1947,6 +1977,8 @@ class QuantEngine:
                     "zExtreme": IND.Z_EXTREME, "adxTrend": IND.ADX_TREND,
                     "adxRange": IND.ADX_RANGE, "squeezePct": IND.BW_SQUEEZE_PCT,
                 },
+                # 每币一句话建议（K线图右上角胶囊）：方向 / 杠杆 / 时长 / 止损止盈
+                "advice": self._advice_map(),
                 # 当前持仓的开仓依据（供"为什么开了这个仓"回看）
                 "positionPlans": [
                     {k: p.get(k) for k in ("symbol", "side", "entry", "sl", "tp", "slPct",

@@ -25,6 +25,8 @@ const COLORS = {
 }
 
 const FONT = '10px "Douyin Sans", "Microsoft YaHei", system-ui, sans-serif'
+// 顶部留给 CoinCard 右上角建议胶囊的高度（图例从这行往下画）
+const LEGEND_TOP = 30
 
 function measure(ctx, text) {
   const prev = ctx.font
@@ -267,12 +269,15 @@ export default function StructureOverlay({ chartRef, seriesRef, structure, inter
     }
 
     /* ---- 5. 右上角图例（说明画面里的线是什么） ---- */
+    // 该位置已被右上角的建议胶囊占用，图例整体下移一行并右对齐，
+    // 避免两层文字叠在一起看不清。
     const legend = []
     if ((st.levels || []).length) legend.push(['支撑/压力', COLORS.resistance])
     if ((st.trendlines || []).length) legend.push(['趋势线', COLORS.trendlineSupport])
     if ((st.zones || []).length) legend.push(['FVG/OB', 'rgba(59,130,246,0.7)'])
     if (p) legend.push([p.name_zh, p.direction === 'bearish' ? COLORS.patternDown : COLORS.patternUp])
     if (legend.length) {
+      const legendY = LEGEND_TOP + 6
       ctx.font = FONT
       ctx.textBaseline = 'middle'
       let lx = plotW - 6
@@ -281,9 +286,9 @@ export default function StructureOverlay({ chartRef, seriesRef, structure, inter
         const tw = ctx.measureText(text).width
         lx -= tw + 12
         ctx.fillStyle = color
-        ctx.fillRect(lx, 7, 8, 2)
+        ctx.fillRect(lx, legendY, 8, 2)
         ctx.fillStyle = 'rgba(28,35,51,0.55)'
-        ctx.fillText(text, lx + 11, 8)
+        ctx.fillText(text, lx + 11, legendY + 1)
       }
     }
   }, [chartRef, seriesRef, makeX])

@@ -1,0 +1,80 @@
+/* K线图右上角建议胶囊：半透明白底 + 发丝描边，压在图表之上但不抢蜡烛。
+   宽度自适应；窄卡片里靠容器查询丢掉次要项。
+   注意不要在 .pill 自身上设 container-type——那会让 max-width 里的 100%
+   指回胶囊自己，把内容压成一条线。容器是外层 .card（已在 styles.css 定义）。 */
+.pill {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid rgba(28, 35, 51, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(8px) saturate(140%);
+  -webkit-backdrop-filter: blur(8px) saturate(140%);
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.07);
+  color: rgba(28, 35, 51, 0.8);
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: auto;
+  user-select: none;
+}
+.pill[data-tone="long"] { border-color: rgba(22, 163, 74, 0.28); }
+.pill[data-tone="short"] { border-color: rgba(220, 38, 38, 0.28); }
+.pill[data-tone="hold"] { border-color: rgba(59, 130, 246, 0.26); }
+
+.side {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-weight: 700;
+  font-size: 10.5px;
+  color: rgba(28, 35, 51, 0.62);
+}
+.side i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.sep {
+  width: 1px;
+  height: 9px;
+  flex: none;
+  background: rgba(28, 35, 51, 0.13);
+}
+
+.item { flex: none; color: rgba(28, 35, 51, 0.58); }
+.item b { color: rgba(28, 35, 51, 0.88); font-weight: 700; font-size: 10.5px; }
+.item[data-tone="sl"] { color: rgba(220, 38, 38, 0.72); }
+.item[data-tone="tp"] { color: rgba(22, 163, 74, 0.78); }
+.item[data-tone="rr"] { color: rgba(28, 35, 51, 0.42); }
+
+.score {
+  flex: none;
+  min-width: 17px;
+  padding: 1.5px 4px;
+  border-radius: 999px;
+  background: rgba(28, 35, 51, 0.06);
+  color: rgba(28, 35, 51, 0.55);
+  font-size: 9px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.reason {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: rgba(28, 35, 51, 0.5);
+  font-size: 9.5px;
+}

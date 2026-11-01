@@ -771,6 +771,7 @@ export default function App() {
                 chartColors={chartColors}
                 account={account}
                 accountSeries={accountSeries}
+                advice={quantSnap?.analysis?.advice?.[s]}
                 registerAnchor={registerAnchor}
                 activeHit={hits.find((h) => h.symbol === s)}
                 onHoverHits={(hs, sym) => {

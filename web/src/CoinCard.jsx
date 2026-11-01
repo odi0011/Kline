@@ -4,6 +4,7 @@ import { AnimatedCounter } from '@/components/arc/animated-counter/animated-coun
 import CoinAvatar from '@/components/ui/coin-avatar'
 import StructureOverlay from './StructureOverlay.jsx'
 import ChartOverlay from '@/components/arc/chart-overlay/chart-overlay'
+import TradeAdvice from '@/components/arc/trade-advice/trade-advice'
 import { PATTERN_META } from './patterns_meta.js'
 
 const rgba = (hex, a) => {
@@ -21,7 +22,7 @@ const fmtCross = (t) => {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
 }
 
-export default function CoinCard({ symbol, intervals, settings, live, chartColors, activeHit, onHoverHits, account, accountSeries, registerAnchor }) {
+export default function CoinCard({ symbol, intervals, settings, live, chartColors, activeHit, onHoverHits, account, accountSeries, registerAnchor, advice }) {
   const hitActive = !!activeHit
   const boxRef = useRef(null)
   const chgRef = useRef(null)
@@ -360,6 +361,7 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
         <span className="iv-label">{intervalRef.current}</span>
       </div>
       <div ref={boxRef} className="chart-box">
+        <TradeAdvice advice={advice} chartColors={chartColors} />
         <ChartOverlay symbol={symbol} bars={bars} depth={depth}
           account={account} series={accountSeries} chartColors={chartColors} />
         <StructureOverlay chartRef={chartRef} seriesRef={candleRef} structure={structure}

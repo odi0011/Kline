@@ -25,7 +25,7 @@ from feed.depth import DepthStream
 from feed.liquidation import LiquidationStream
 from feed.market_data import (
     funding_snapshot, onboard_dates, open_interest_history, ticker_24h,
-    usdt_perpetuals,
+    usdt_perpetuals, max_leverage_map,
 )
 from feed.news import fetch_all as fetch_news, fetch_article
 from feed.source import BinanceFuturesStream
@@ -442,6 +442,26 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     quant.watch_bars_fn = _watch_bars_for
     quant.depth_fn = lambda sym: hub.depths.get(sym)
+
+    # 交易所每个合约的真实杠杆上限（BTC 150x / TSLA 20x 这类差异来自分档表）
+    leverage_box: dict = {"map": {}}
+
+    def _max_leverage(sym: str):
+        return leverage_box["map"].get(str(sym).lower())
+
+    quant.max_leverage_fn = _max_leverage
+
+    async def leverage_poller():
+        """杠杆分档每天变一次即可；启动先拉，失败留空（前端显示"—"）。"""
+        while True:
+            try:
+                data = await asyncio.to_thread(max_leverage_map, proxy_cfg or None)
+                if data:
+                    leverage_box["map"] = data
+                    print(f"[leverage] 已加载 {len(data)} 个合约的杠杆上限")
+            except Exception as e:
+                print(f"[leverage] 杠杆分档拉取失败: {e}")
+            await asyncio.sleep(6 * 3600)
     quant.news_fn = lambda: hub.news
 
     market_feature_cache: dict[str, tuple[int, dict]] = {}
@@ -949,7 +969,8 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     try:
         await asyncio.gather(supervisor(), sweep(), accounts_poller(),
                              news_poller(), backfill_retry(), pool_auditor(),
-                             market_list_poller(), market_feature_poller())
+                             market_list_poller(), leverage_poller(),
+                             market_feature_poller())
     finally:
         await agent.stop()
 

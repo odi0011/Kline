@@ -33,6 +33,48 @@ def _get_json(path: str, params: dict, proxy: str | None = None):
         return None
 
 
+def _get_json_any(url: str, proxy: str | None = None):
+    """GET 任意 URL（非 fapi 主机上的公开接口用）。失败返回 None。"""
+    request = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
+    try:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        ) if proxy else urllib.request.build_opener()
+        with opener.open(request, timeout=TIMEOUT) as response:
+            return json.loads(response.read().decode("utf-8", "replace"))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+
+
+# 各合约的杠杆分档：fapi 的 leverageBracket 需要签名，这里用币安网页端
+# 公开的同一份数据（含每档 maxOpenPosLeverage）。
+BRACKETS_URL = "https://www.binance.com/bapi/futures/v1/friendly/future/common/brackets"
+
+
+def max_leverage_map(proxy: str | None = None) -> dict[str, int]:
+    """symbol -> 该合约允许的最高杠杆（真实分档上限，非猜测值）。
+
+    BTCUSDT=150、TSLAUSDT=20 这类差异就来自这里：取第一档的
+    maxOpenPosLeverage（最低名义规模对应的最高倍数）。
+    """
+    payload = _get_json_any(BRACKETS_URL, proxy)
+    data = payload.get("data") if isinstance(payload, dict) else None
+    out: dict[str, int] = {}
+    for row in (data or {}).get("brackets") or []:
+        try:
+            symbol = str(row.get("symbol") or "").upper()
+            brackets = row.get("riskBrackets") or []
+            if not symbol or not brackets:
+                continue
+            # 第一档 = 最小名义规模，对应最高可用杠杆
+            top = max(int(b.get("maxOpenPosLeverage") or 0) for b in brackets)
+            if top > 0:
+                out[symbol.lower()] = top
+        except (TypeError, ValueError, AttributeError):
+            continue
+    return out
+
+
 def open_interest_history(symbol: str, period: str = "5m", limit: int = 30,
                           proxy: str | None = None) -> dict | None:
     rows = _get_json("/futures/data/openInterestHist", {
