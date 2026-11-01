@@ -17,7 +17,6 @@ import PositionHistory from '@/components/arc/position-history/position-history'
 import NewsFeed from '@/components/arc/news-feed/news-feed'
 import StrategyPanel from '@/components/arc/strategy-panel/strategy-panel' 
 import DecisionOrchestrator from '@/components/arc/decision-orchestrator/decision-orchestrator'
-import MetricFlights from '@/components/arc/decision-orchestrator/metric-flights'
 import AgentPanel from '@/components/beautiful/agent/agent-panel'
 import HitFlight from './HitFlight.jsx'
 import { hexHue } from './lib/account-theme'
@@ -146,15 +145,7 @@ export default function App() {
   const [agentStateError, setAgentStateError] = useState("")
   const [agentNotice, setAgentNotice] = useState("")
   const [structureVersion, setStructureVersion] = useState(0)   // 结构位更新触发决策流刷新
-  const [metricPulses, setMetricPulses] = useState([])          // 指标条 → 计算网络的实时数据波
   const liveRef = useRef(null)
-  const pushMetricPulse = useCallback((pulse) => {
-    if (!pulse?.id) return
-    setMetricPulses((current) => [...current, pulse].slice(-48))
-  }, [])
-  const finishMetricPulse = useCallback((id) => {
-    setMetricPulses((current) => current.filter((pulse) => pulse.id !== id))
-  }, [])
   const cardsViewportRef = useRef(null)
   const settingsRef = useRef(settings)
   settingsRef.current = settings
@@ -845,11 +836,11 @@ export default function App() {
       <div className="row2">
         <div className="strategy-slot">
           <StrategyPanel analysis={quantSnap && quantSnap.analysis} symbols={orderedSymbols}
-            chartColors={chartColors} onMetricPulse={pushMetricPulse} />
+            chartColors={chartColors} />
         </div>
         <div className="orchestrator-slot">
           <DecisionOrchestrator analysis={quantSnap && quantSnap.analysis} snapshot={quantSnap}
-            symbols={orderedSymbols} events={visibleEvents} metricPulses={metricPulses} />
+            symbols={orderedSymbols} events={visibleEvents} />
         </div>
         <div className="row2-reserved">
           <AgentPanel tasks={agentTasks} chat={agentChat} models={aiCfg.models || []}
@@ -881,7 +872,6 @@ export default function App() {
 
       {/* 命中飞线：K线卡片 → 形态卡片，落地后触发卡片背景扩散 */}
       <HitFlight flight={flight} onLand={onFlightLand} onDone={onFlightDone} />
-      <MetricFlights pulses={metricPulses} onDone={finishMetricPulse} />
 
       {/* 形态信号通知：左上角 */}
       <NotificationViewport position="top-left">

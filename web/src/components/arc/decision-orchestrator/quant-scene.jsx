@@ -187,22 +187,22 @@ const format = (v, digits = 2) => numeric(v) == null ? "—" : Math.abs(Number(v
 const pct = (v) => numeric(v) == null ? "—" : `${format(v)}%`
 const shortSym = (symbol) => symbol ? symbol.toUpperCase() : "—"
 
-export default function QuantScene({ analysis, snapshot, symbols, events, newEvents = [], enabled, reduced, metricPulses = [] }) {
-  const hostRef = useRef(null), targetRef = useRef(null)
+export default function QuantScene({ analysis, snapshot, symbols, events, newEvents = [], enabled, reduced }) {
+  const hostRef = useRef(null)
   const inputs = useRef({})
   const syncRef = useRef(null)
   const [failed, setFailed] = useState(false)
-  inputs.current = { analysis, snapshot, symbols, events, newEvents, enabled, reduced, metricPulses }
-  useEffect(() => { syncRef.current?.() }, [analysis, snapshot, symbols, events, newEvents, enabled, reduced, metricPulses])
+  inputs.current = { analysis, snapshot, symbols, events, newEvents, enabled, reduced }
+  useEffect(() => { syncRef.current?.() }, [analysis, snapshot, symbols, events, newEvents, enabled, reduced])
 
   useEffect(() => {
-    const host = hostRef.current, target = targetRef.current
-    if (!host || !target) return
+    const host = hostRef.current
+    if (!host) return
     // A remount must never reuse a canvas whose context was force-lost in cleanup.
     const canvas = document.createElement("canvas")
     canvas.className = styles.sceneCanvas
     canvas.setAttribute("aria-label", "实时评分、风控、成交与权益回流三维量化电路")
-    host.insertBefore(canvas, target)
+    host.appendChild(canvas)
     let renderer
     try {
       renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: "low-power" })
@@ -343,7 +343,7 @@ export default function QuantScene({ analysis, snapshot, symbols, events, newEve
       const plane = mesh(holder, g, plaqueMaterial); plane.renderOrder = 8
       plaques.push(holder); return holder
     }
-    let receiver, decisionCore, decisionCage, nozzle, jet, feedbackRotor, intakeRotor
+    let decisionCore, decisionCage, nozzle, jet, feedbackRotor, intakeRotor
     const gimbals = []
     for (const [index, def] of STATIONS.entries()) {
       const node = group(world, def.position), visual = group(node)
@@ -374,7 +374,7 @@ export default function QuantScene({ analysis, snapshot, symbols, events, newEve
           rod(intakeRotor, [Math.cos(a) * 0.4, 0.22, Math.sin(a) * 0.4], [0, 0.43, 0], gold, 0.009)
         }
         disc(intakeRotor, dark, [0, 0.36, 0], 0.05, 0.12)
-        receiver = mesh(intakeRotor, sphere, teal, [0, 0.44, 0], [0.046, 0.046, 0.046])
+        mesh(intakeRotor, sphere, teal, [0, 0.44, 0], [0.046, 0.046, 0.046])
         fans.push(fan(visual, [-0.32, -0.11, -0.22], 0.09))
       }
       if (def.id === "features") {
@@ -538,14 +538,14 @@ export default function QuantScene({ analysis, snapshot, symbols, events, newEve
     }
     const particles = new THREE.InstancedMesh(sphere, mat(new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, depthWrite: false })), 32 * 5)
     instanceMeshes.add(particles); particles.instanceMatrix.setUsage(THREE.DynamicDrawUsage); particles.count = 0; particles.frustumCulled = false; world.add(particles)
-    const injected = [], pendingPulses = new Map(), handledEvents = new Map(), queue = []
+    const handledEvents = new Map(), queue = []
     const histories = new Map(), equityHistory = []
     let focus = "", activeEvent = null, episode = null, data = null, lastBatch = null
     let time = 0, lastFrame = 0, lastPaint = -Infinity, frame = 0, timer = 0, disposed = false
     let width = 1, height = 1, visible = true, running = false, lost = false, dirty = true, lastTexture = -Infinity, lastSignature = ""
     let lastShadow = -Infinity, lastTelemetry = null
     let azimuth = 0.72, elevation = 0.62, cameraStrength = 0
-    const projection = new THREE.Vector3(), cameraTarget = new THREE.Vector3(), scratch = new THREE.Vector3()
+    const cameraTarget = new THREE.Vector3(), scratch = new THREE.Vector3()
     const cameraGoal = { signal: [-0.24, 0.06], risk: [0.26, 0.035], open: [0.16, -0.055], feedback: [-0.16, 0.025] }
     const setCamera = (az, el) => {
       camera.position.set(Math.sin(az) * Math.cos(el) * 12, 0.7 + Math.sin(el) * 12, Math.cos(az) * Math.cos(el) * 12)
@@ -747,14 +747,7 @@ export default function QuantScene({ analysis, snapshot, symbols, events, newEve
         plot.line.geometry.setDrawRange(0, count)
         if (count && plot.count) plot.dot.position.fromBufferAttribute(plot.line.geometry.attributes.position, count - 1)
       }
-      for (let i = injected.length - 1; i >= 0; i--) if (time - injected[i].start > 8.4) injected.splice(i, 1)
       let count = 0
-      for (const packet of injected) for (let trail = 0; trail < 5; trail++) {
-        const progress = (time - packet.start) / 8.4 - trail * 0.006
-        if (progress < 0) continue
-        ringPoint(progress, dummy.position); dummy.scale.setScalar(0.04 - trail * 0.005)
-        dummy.rotation.set(0, 0, 0); dummy.updateMatrix(); particles.setMatrixAt(count, dummy.matrix); particles.setColorAt(count, ledColor.set(packet.color)); count++
-      }
       if (episode && count < 150) {
         const from = nodes.get(mode === "open" ? "execution" : mode === "feedback" ? "feedback" : mode === "risk" ? "risk" : "features").node.position
         const to = nodes.get("decision").node.position
@@ -772,10 +765,6 @@ export default function QuantScene({ analysis, snapshot, symbols, events, newEve
       paintTelemetry(now)
       plaques.forEach((p) => { p.quaternion.copy(camera.quaternion) })
       world.updateMatrixWorld(true)
-      receiver.getWorldPosition(projection); projection.project(camera)
-      target.style.left = `${(projection.x * 0.5 + 0.5) * width}px`
-      target.style.top = `${(-projection.y * 0.5 + 0.5) * height}px`
-      if (target.dataset.ready !== "true") target.dataset.ready = "true"
       if (now - lastShadow > 160) { renderer.shadowMap.needsUpdate = true; lastShadow = now }
       renderer.render(scene, camera)
       host.dataset.drawCalls = String(renderer.info.render.calls)
@@ -792,7 +781,6 @@ export default function QuantScene({ analysis, snapshot, symbols, events, newEve
     const updateMotion = () => {
       const next = canMove()
       host.dataset.motion = next ? "running" : "frozen"
-      target.dataset.motion = next ? "running" : "frozen"
       if (next !== running) {
         running = next; lastFrame = 0
         cancelAnimationFrame(frame); frame = 0
@@ -803,10 +791,7 @@ export default function QuantScene({ analysis, snapshot, symbols, events, newEve
     }
     const sync = () => {
       if (disposed) return
-      const value = inputs.current, alive = new Set(value.metricPulses.slice(-48).map((p) => p.id))
-      for (const id of pendingPulses.keys()) if (!alive.has(id)) pendingPulses.delete(id)
-      for (const pulse of value.metricPulses.slice(-48)) if (!pendingPulses.has(pulse.id)) pendingPulses.set(pulse.id, { color: pulse.color || "#24caba", arrived: false })
-      trimMap(pendingPulses, 48)
+      const value = inputs.current
       if (lastBatch !== value.newEvents) {
         lastBatch = value.newEvents
         for (const event of value.newEvents) {
@@ -821,28 +806,17 @@ export default function QuantScene({ analysis, snapshot, symbols, events, newEve
         trimMap(handledEvents, 128)
         if (queue.length > 6) queue.splice(0, queue.length - 6)
       }
-      if (!episode && value.metricPulses.length) {
-        const pulse = value.metricPulses[value.metricPulses.length - 1]
-        if (pulse.symbol) focus = symKey(pulse.symbol)
-      }
       refreshData(); updateMotion()
       clearTimeout(timer)
       // A reduced-motion scene still gets current numbers, at most one atlas upload / 300 ms.
       if (!running && visible && !document.hidden) timer = setTimeout(() => render(performance.now()), 310)
-    }
-    const arrival = (event) => {
-      const pending = pendingPulses.get(event.detail?.id)
-      if (!pending || pending.arrived || !canMove()) return
-      pending.arrived = true
-      injected.push({ start: time, color: pending.color }); if (injected.length > 28) injected.shift()
     }
     const resize = () => { fit(); render(performance.now()) }
     const resizeObserver = new ResizeObserver(resize); resizeObserver.observe(host)
     const intersection = new IntersectionObserver(([entry]) => { visible = entry.isIntersecting && entry.intersectionRatio > 0; updateMotion() }, { threshold: [0, 0.01] })
     intersection.observe(host)
     document.addEventListener("visibilitychange", updateMotion)
-    window.addEventListener("quant-metric-arrival", arrival)
-    const contextLost = (event) => { event.preventDefault(); lost = true; target.dataset.ready = "false"; updateMotion(); setFailed(true) }
+    const contextLost = (event) => { event.preventDefault(); lost = true; updateMotion(); setFailed(true) }
     const contextRestored = () => { lost = false; setFailed(false); dirty = true; lastSignature = ""; renderer.shadowMap.needsUpdate = true; updateMotion() }
     canvas.addEventListener("webglcontextlost", contextLost); canvas.addEventListener("webglcontextrestored", contextRestored)
     syncRef.current = sync
@@ -851,21 +825,20 @@ export default function QuantScene({ analysis, snapshot, symbols, events, newEve
       disposed = true; syncRef.current = null
       cancelAnimationFrame(frame); clearTimeout(timer)
       resizeObserver.disconnect(); intersection.disconnect()
-      document.removeEventListener("visibilitychange", updateMotion); window.removeEventListener("quant-metric-arrival", arrival)
+      document.removeEventListener("visibilitychange", updateMotion)
       canvas.removeEventListener("webglcontextlost", contextLost); canvas.removeEventListener("webglcontextrestored", contextRestored)
-      pendingPulses.clear(); handledEvents.clear(); histories.clear(); queue.length = 0; injected.length = 0; equityHistory.length = 0
+      handledEvents.clear(); histories.clear(); queue.length = 0; equityHistory.length = 0
       instanceMeshes.forEach((m) => m.dispose())
       geometries.forEach((g) => g.dispose()); materials.forEach((m) => m.dispose()); textures.forEach((t) => t.dispose())
       key.shadow.dispose(); environment.dispose(); scene.clear(); renderer.renderLists.dispose(); renderer.dispose(); renderer.forceContextLoss()
       canvas.remove()
-      delete target.dataset.ready; delete target.dataset.motion
+      delete host.dataset.motion
     }
   }, [])
 
   return (
     <div ref={hostRef} className={styles.scene}>
       {failed && <span className={styles.sceneFallback}>当前浏览器无法初始化 3D 场景</span>}
-      <span ref={targetRef} className={styles.intakeTarget} data-metric-intake="" aria-hidden="true" />
     </div>
   )
 }

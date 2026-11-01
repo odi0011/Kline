@@ -22,7 +22,6 @@ export default function DecisionOrchestrator({
   snapshot,
   symbols,
   events,
-  metricPulses = [],
 }) {
   const reduced = useReducedMotion()
   const params = analysis?.params || {}
@@ -66,7 +65,6 @@ export default function DecisionOrchestrator({
     <motion.section
       className={styles.root}
       aria-label="自动量化交易三维闭环"
-      data-ready={computedCount > 0 || undefined}
       data-enabled={enabled == null ? "unknown" : String(enabled)}
       initial={reduced ? false : { opacity: 0, scale: 0.985 }}
       animate={{ opacity: 1, scale: 1 }}
@@ -80,7 +78,6 @@ export default function DecisionOrchestrator({
         newEvents={newEvents}
         enabled={enabled}
         reduced={reduced}
-        metricPulses={metricPulses}
       />
 
       <LiquidGlass
