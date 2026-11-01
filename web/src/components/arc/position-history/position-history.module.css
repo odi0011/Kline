@@ -30,9 +30,9 @@
 }
 .row:hover { background: rgba(28, 35, 51, 0.05); }
 
+/* 图标列只放币种图标本身。方向已由旁边的「多/空」徽标表达，
+   不要再在图标左侧画色条——那圈 inset 阴影会贴着图标显示成一道边框。 */
 .lead { flex: none; display: inline-flex; align-items: center; }
-.lead[data-side="long"] { box-shadow: inset 2px 0 0 rgba(22, 163, 74, 0.8); border-radius: 2px; }
-.lead[data-side="short"] { box-shadow: inset 2px 0 0 rgba(220, 38, 38, 0.8); border-radius: 2px; }
 
 .time {
   flex: none;

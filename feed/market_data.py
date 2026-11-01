@@ -212,6 +212,24 @@ def derivatives_snapshot(symbol: str, period: str = "5m",
         out["topPositionLongShort"] = _ratio(row.get("longAccount"), row.get("shortAccount"))
         out["topPositionLongPct"] = round(float(row.get("longAccount") or 0) * 100, 2)
 
+    # 大户多头占比的近 24 小时走势：列表卡片用来判断"在加仓还是在减仓"
+    history = _get_json("/futures/data/topLongShortPositionRatio",
+                        {"symbol": sym, "period": "1h", "limit": 24}, proxy)
+    if isinstance(history, list) and len(history) >= 2:
+        series = []
+        for item in history:
+            try:
+                series.append({
+                    "ts": int(item.get("timestamp") or 0),
+                    "longPct": round(float(item.get("longAccount") or 0) * 100, 2),
+                })
+            except (TypeError, ValueError):
+                continue
+        if len(series) >= 2:
+            out["topLongSeries"] = series
+            first, last = series[0]["longPct"], series[-1]["longPct"]
+            out["topLongChange24h"] = round(last - first, 2)
+
     row = _first_row("/futures/data/topLongShortAccountRatio",
                      {"symbol": sym, "period": period, "limit": 1}, proxy)
     if row:

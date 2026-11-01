@@ -14,6 +14,7 @@ import CoinAvatar from '@/components/ui/coin-avatar'
 import SettingsDialog from '@/components/arc/settings-dialog/settings-dialog'
 import QuantPanel from '@/components/arc/quant-panel/quant-panel'
 import PositionHistory from '@/components/arc/position-history/position-history'
+import TopHolders from '@/components/arc/top-holders/top-holders'
 import NewsFeed from '@/components/arc/news-feed/news-feed'
 import QuantMetrics from '@/components/arc/quant-metrics/quant-metrics'
 import SymbolPicker from '@/components/arc/symbol-picker/symbol-picker'
@@ -853,7 +854,10 @@ export default function App() {
         <QuantPanel snapshot={quantSnap} events={visibleEvents} chartColors={chartColors}
           flashRow={flashRow} streamRef={streamRef}
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
-        <PositionHistory trades={quantTrades} chartColors={chartColors} />
+        <div className="row3-stack">
+          <TopHolders rows={derivatives} symbols={orderedSymbols} chartColors={chartColors} />
+          <PositionHistory trades={quantTrades} chartColors={chartColors} />
+        </div>
         <NewsFeed items={newsItems} tasks={agentTasks}
           onRead={(item) => agentRequest({ type: 'query_news_article', url: item.url })}
           onAnalyze={analyzeNews} />
