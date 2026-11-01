@@ -18,6 +18,7 @@ import TopHolders from '@/components/arc/top-holders/top-holders'
 import NewsFeed from '@/components/arc/news-feed/news-feed'
 import QuantMetrics from '@/components/arc/quant-metrics/quant-metrics'
 import SymbolPicker from '@/components/arc/symbol-picker/symbol-picker'
+import ChatDock from '@/components/arc/chat-dock/chat-dock'
 import StrategyPanel from '@/components/arc/strategy-panel/strategy-panel' 
 import DecisionOrchestrator from '@/components/arc/decision-orchestrator/decision-orchestrator'
 import HitFlight from './HitFlight.jsx'
@@ -142,6 +143,7 @@ export default function App() {
   const [quantTrades, setQuantTrades] = useState([])            // 仓位历史（MySQL，7 天）
   const [newsItems, setNewsItems] = useState([])                // 交易所公告
   const [agentTasks, setAgentTasks] = useState([])              // ODDD 后台与定时任务
+  const [agentChat, setAgentChat] = useState([])                // ODDD 会话（悬浮窗气泡）
   const [agentNotice, setAgentNotice] = useState("")
   const [derivatives, setDerivatives] = useState({})          // 币安衍生品指标快照
   const [structureVersion, setStructureVersion] = useState(0)   // 结构位更新触发决策流刷新
@@ -277,6 +279,7 @@ export default function App() {
     const offDeriv = live.on('derivatives', (m) => setDerivatives(m.rows || {}))
     const offAgent = live.on('agent_state', (m) => {
       setAgentTasks(m.tasks || [])
+      setAgentChat(m.chat || [])
     })
     const offAgentAck = live.on('agent_ack', (m) => {
       if (!m.requestId && m.result?.ok === false) setAgentNotice(m.result.error || '操作失败')
@@ -314,6 +317,7 @@ export default function App() {
       setNewsItems(live.news || [])
       setDerivatives(live.derivatives || {})
       setAgentTasks(live.agentTasks || [])
+      setAgentChat(live.agentChat || [])
       setStructureVersion((v) => v + 1)
     })
     live.connect()
@@ -639,6 +643,8 @@ export default function App() {
     if (!connected) { setAgentNotice('尚未连接服务端'); return }
     liveRef.current?.send(msg)
   }
+  const agentChatBusy = (agentChat || []).some(
+    (m) => m.role !== 'user' && (m.status === 'running' || m.status === 'queued'))
   const agentRequest = (msg) => liveRef.current?.request(msg)
     || Promise.resolve({ ok: false, error: '尚未连接服务端' })
   const analyzeNews = async (item, mode, content) => {
@@ -876,6 +882,14 @@ export default function App() {
 
       {/* 命中飞线：K线卡片 → 形态卡片，落地后触发卡片背景扩散 */}
       <HitFlight flight={flight} onLand={onFlightLand} onDone={onFlightDone} />
+
+      {/* ODDD 悬浮对话窗：可拖动、可折叠到左下角设置按钮上方 */}
+      <ChatDock messages={agentChat} connected={connected}
+        onSend={agentRequest} busy={agentChatBusy}
+        onCancel={() => {
+          const running = (agentChat || []).filter((m) => m.role !== 'user' && (m.status === 'running' || m.status === 'queued')).pop()
+          if (running) agentRequest({ type: 'agent_action', action: 'cancel_chat', payload: { id: running.id } })
+        }} />
 
       {/* 形态信号通知：左上角 */}
       <NotificationViewport position="top-left">
