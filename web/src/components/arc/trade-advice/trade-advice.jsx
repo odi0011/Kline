@@ -16,7 +16,6 @@ const fmt = (v, digits = 2) => {
 const ACTION = {
   long: { label: "做多", tone: "long" },
   short: { label: "做空", tone: "short" },
-  hold: { label: "持仓", tone: "hold" },
   wait: { label: "观望", tone: "wait" },
 }
 
@@ -30,10 +29,9 @@ export default function TradeAdvice({ advice, chartColors }) {
 
   if (!advice) return null
   const trade = advice.action === "long" || advice.action === "short"
-  const holding = advice.action === "hold"
   const price = advice.price
 
-  const label = trade || holding
+  const label = trade
     ? `建议${meta.label}：杠杆 ${advice.leverage ?? "--"} 倍，止损 ${fmt(advice.sl)}，止盈 ${fmt(advice.tp)}`
     : `建议${meta.label}${advice.reason ? `：${advice.reason}` : ""}`
 
@@ -45,10 +43,10 @@ export default function TradeAdvice({ advice, chartColors }) {
         <i style={tone ? { background: tone } : undefined} aria-hidden />
         {meta.label}
       </span>
-      {!trade && !holding && advice.reason && (
+      {!trade && advice.reason && (
         <span className={styles.reason}>{advice.reason}</span>
       )}
-      {(trade || holding) && <>
+      {trade && <>
         <span className={styles.sep} aria-hidden />
         <span className={styles.item} title={`交易所该合约最高 ${advice.maxLeverage ?? "?"}x`}>
           <b>{advice.leverage ?? "--"}</b>x

@@ -1878,21 +1878,12 @@ class QuantEngine:
         return {k: st.get(k) for k in keys if k in st}
 
     def _advice_map(self) -> dict:
-        """把评估结果 + 真实杠杆上限压成前端可直接展示的一句话建议。"""
+        """把评估结果 + 真实杠杆上限压成前端可直接展示的一句话建议。
+
+        永远给「现在该做多还是做空」的分析结论；有没有持仓不影响，
+        持仓状态由账户卡和仓位历史展示，不在这里重复。
+        """
         out = {}
-        held = {}
-        for name in self.state:
-            for sym, pos in self._st(name)["positions"].items():
-                price = (self.price_fn or (lambda s: None))(sym) or pos.get("entry") or 0
-                hold_min = None
-                if pos.get("entryTs"):
-                    hold_min = max(0.0, (_now_ms() - pos["entryTs"]) / 60000)
-                held[sym] = {
-                    "side": pos.get("side"), "leverage": pos.get("leverage"),
-                    "sl": pos.get("sl"), "tp": pos.get("tp"),
-                    "slPct": pos.get("slPct"), "tpPct": pos.get("tpPct"),
-                    "holdMin": round(hold_min, 1) if hold_min is not None else None,
-                }
         for sym, state in self.indicators.items():
             try:
                 max_lev = int(self.max_leverage_fn(sym) or 0) if self.max_leverage_fn else 0
@@ -1900,7 +1891,7 @@ class QuantEngine:
                 max_lev = 0
             try:
                 out[sym] = build_advice(sym, state, self.live_evaluations.get(sym),
-                                        max_lev or None, held.get(sym))
+                                        max_lev or None)
             except Exception:
                 continue
         return out

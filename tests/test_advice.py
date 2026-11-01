@@ -59,15 +59,15 @@ class AdviceTest(unittest.TestCase):
         self.assertNotIn("sl", out)
         self.assertEqual(out["maxLeverage"], 150)
 
-    def test_holding_reports_open_position_instead(self):
-        state = {"price": 78000.0, "atr": 600.0, "atrPct": 45.0}
-        holding = {"side": "BUY", "sl": 77000.0, "tp": 79500.0,
-                   "slPct": 1.2, "tpPct": 2.0, "holdMin": 12.5}
-        out = build_advice("btcusdt", state, evalof(), 150, holding)
-        self.assertEqual(out["action"], "hold")
-        self.assertEqual(out["side"], "long")
-        self.assertEqual(out["sl"], 77000.0)
-        self.assertEqual(out["holdMin"], 12.5)
+    def test_always_returns_a_direction_never_a_hold_state(self):
+        """建议只回答"该做多还是做空"；持仓状态不归这里管。"""
+        state = {"price": 78000.0, "atr": 600.0, "atrPct": 45.0, "regime": "trend"}
+        out = build_advice("btcusdt", state, evalof(), 150)
+        self.assertEqual(out["action"], "long")
+        self.assertNotIn("hold", {out["action"]})
+        # 反向信号同样给出明确方向
+        bear = build_advice("btcusdt", state, evalof(direction="bearish"), 150)
+        self.assertEqual(bear["action"], "short")
 
     def test_take_profit_is_never_inside_stop(self):
         # 低波动时 ATR 被夹到下限，止盈也必须按最低盈亏比拉开

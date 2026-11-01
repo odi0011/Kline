@@ -27,7 +27,6 @@
 }
 .pill[data-tone="long"] { border-color: rgba(22, 163, 74, 0.28); }
 .pill[data-tone="short"] { border-color: rgba(220, 38, 38, 0.28); }
-.pill[data-tone="hold"] { border-color: rgba(59, 130, 246, 0.26); }
 
 .side {
   display: inline-flex;

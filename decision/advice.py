@@ -128,27 +128,14 @@ def _hold_minutes(score: float, bullish: bool, regime: str | None,
     return int(max(8, min(MAX_HOLD_MIN, round(hold))))
 
 
-def build_advice(symbol: str, state: dict, evaluation: dict, max_leverage: int | None,
-                 holding: dict | None = None) -> dict:
-    """返回一个币的展示建议；数据不足时返回 readiness 说明而不是瞎猜。"""
-    advice = {"symbol": symbol, "maxLeverage": max_leverage}
-    if holding:
-        # 已有持仓：展示实际进场与挂着的止损止盈，而不是再给"该不该开"
-        return {
-            **advice,
-            "action": "hold",
-            "side": "long" if str(holding.get("side", "")).upper() == "BUY" else "short",
-            "confidence": None,
-            # 引擎下单不逐笔记录杠杆，持仓卡显示交易所该合约的上限更有参考价值
-            "leverage": holding.get("leverage") or max_leverage,
-            "sl": _num(holding.get("sl")),
-            "tp": _num(holding.get("tp")),
-            "slPct": _num(holding.get("slPct")),
-            "tpPct": _num(holding.get("tpPct")),
-            "holdMin": _num(holding.get("holdMin")),
-            "reason": "持仓中",
-        }
+def build_advice(symbol: str, state: dict, evaluation: dict,
+                 max_leverage: int | None) -> dict:
+    """返回一个币的实时交易方向建议；数据不足时给出明确的观望原因。
 
+    只回答一个问题：现在该做多、做空，还是不动、以及为什么。
+    持仓状态不属于这里（账户卡和仓位历史已经在展示）。
+    """
+    advice = {"symbol": symbol, "maxLeverage": max_leverage}
     price = _num(state.get("price"))
     atr = _num(state.get("atr"))
     atr_pct = _num(state.get("atrPct"))

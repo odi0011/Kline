@@ -221,7 +221,8 @@ def score_signal(
     if selected < config.minimum_score:
         vetoes.append(f"共鸣分 {selected:.0f} < {config.minimum_score:.0f}")
     if gap < config.minimum_score_gap:
-        vetoes.append(f"多空分离度 {gap:.0f} < {config.minimum_score_gap:.0f}")
+        # 保留一位小数：用 .0f 会把 14.6 < 15.2 显示成"15 < 15"，看着像 bug
+        vetoes.append(f"多空分离度 {gap:.1f} < {config.minimum_score_gap:.1f}")
     if selected >= config.strong_score and gap >= config.strong_score_gap:
         grade = "strong"
     elif selected >= config.minimum_score and gap >= config.minimum_score_gap:
