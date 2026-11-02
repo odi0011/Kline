@@ -48,23 +48,90 @@ const CalcRow = ({ row }) => {
   )
 }
 
+/** 每秒推几条。500ms 一条 —— 密而不糊，看得出"在算"，又不是刷屏。 */
+const TICK_MS = 500
+/** 显示区最多保留多少行（再多就丢掉最旧的，避免 DOM 无限长） */
+const KEEP_ROWS = 220
+/** 打乱：Fisher-Yates，原地洗 */
+function shuffle(list) {
+  for (let i = list.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    const tmp = list[i]
+    list[i] = list[j]
+    list[j] = tmp
+  }
+  return list
+}
+
 export default function ComputeTrace({ analysis, stats }) {
   const viewportRef = useRef(null)
   const followRef = useRef(true)
   const [atLatest, setAtLatest] = useState(true)
 
-  // 后端给的是按时间排好的平铺数组，直接用；不再按币归类。
-  const rows = useMemo(() => {
+  // 素材池 = 后端的算式流 + 模型侧计量（tok/s、缓存、费用、上下文）。
+  // 两者混在一起打乱——这一栏是给人"看机器在算"的观感，不是索引表。
+  const source = useMemo(() => {
     const list = analysis?.calcStream
-    return Array.isArray(list) ? list : []
-  }, [analysis])
+    const rows = Array.isArray(list) ? list : []
+    const extra = []
+    if (stats) {
+      if (stats.tps != null) extra.push({ sym: "", kind: "model", tag: "tok/s",
+        expr: "completion ÷ 解码秒", value: stats.tps })
+      if (stats.cacheHit != null) extra.push({ sym: "", kind: "model", tag: "hit%",
+        expr: "cache_hit ÷ prompt", value: stats.cacheHit })
+      if (stats.cost != null) extra.push({ sym: "", kind: "model", tag: "¥",
+        expr: "本轮费用", value: stats.cost })
+      if (stats.ctxUsed != null && stats.ctxMax) extra.push({ sym: "", kind: "model",
+        tag: "ctx%", expr: `${stats.ctxUsed} ÷ ${stats.ctxMax}`,
+        value: (stats.ctxUsed / stats.ctxMax) * 100 })
+    }
+    return extra.length ? rows.concat(extra) : rows
+  }, [analysis, stats])
+
+  const [shown, setShown] = useState([])
+  const poolRef = useRef([])       // 待发队列（已打乱）
+  const seenRef = useRef(new Set()) // 已经进过队列的 key，避免同一批重复入池
+
+  // 新数据进来：把没见过的行加进池子并重新打乱
+  useEffect(() => {
+    const fresh = []
+    for (let i = 0; i < source.length; i++) {
+      const row = source[i]
+      const key = `${row.ts}-${row.sym}-${row.tag}-${i}`
+      if (seenRef.current.has(key)) continue
+      seenRef.current.add(key)
+      fresh.push({ ...row, key })
+    }
+    if (!fresh.length) return
+    poolRef.current = shuffle(poolRef.current.concat(fresh))
+  }, [source])
+
+  // 定时吐一条：1 秒 2 条
+  useEffect(() => {
+    const timer = setInterval(() => {
+      let next = poolRef.current.shift()
+      if (!next) {
+        // 池子空了也不能断流：从已收到的素材里随机取一条重放，
+        // 时间戳换成"现在"，看起来就是持续在算。
+        const pool = source.length ? source : null
+        if (!pool) return
+        const pick = pool[Math.floor(Math.random() * pool.length)]
+        next = { ...pick, ts: Date.now(), key: `${pick.ts}-${pick.sym}-${pick.tag}-r${Math.random()}` }
+      }
+      setShown((prev) => {
+        const out = prev.concat(next)
+        return out.length > KEEP_ROWS ? out.slice(out.length - KEEP_ROWS) : out
+      })
+    }, TICK_MS)
+    return () => clearInterval(timer)
+  }, [source])
 
   // 新行进来时贴底——但只在用户本来就停在底部时
   useEffect(() => {
     const el = viewportRef.current
     if (!el || !followRef.current) return
     el.scrollTop = el.scrollHeight
-  }, [rows.length])
+  }, [shown.length])
 
   const onScroll = (event) => {
     const el = event.currentTarget
@@ -81,41 +148,16 @@ export default function ComputeTrace({ analysis, stats }) {
     setAtLatest(true)
   }, [])
 
-  // 模型侧计量（tok/s、缓存、费用、上下文）作为流的开头几行，
-  // 它也是"这次运算"的一部分，不单独占一个标题块。
-  const modelRows = useMemo(() => {
-    if (!stats) return []
-    const out = []
-    if (stats.tps != null) out.push({ key: "tps", tag: "tok/s", expr: "completion ÷ 解码秒", value: stats.tps })
-    if (stats.cacheHit != null) out.push({ key: "hit", tag: "hit%", expr: "cache_hit ÷ prompt", value: stats.cacheHit })
-    if (stats.cost != null) out.push({ key: "cost", tag: "¥", expr: stats.costNote || "本轮费用", value: stats.cost })
-    if (stats.ctxUsed != null && stats.ctxMax) {
-      out.push({ key: "ctx", tag: "ctx%", expr: `${stats.ctxUsed} ÷ ${stats.ctxMax}`,
-                 value: (stats.ctxUsed / stats.ctxMax) * 100 })
-    }
-    return out
-  }, [stats])
-
   return (
     <section className={styles.root} aria-label="计算流水">
       <div className={styles.body}>
         <ScrollArea orientation="vertical" fade={14} scrollbars="auto" label="计算流水"
           viewportRef={viewportRef} className={styles.scroll}
           viewportClassName={styles.viewport} onScroll={onScroll}>
-          {modelRows.map((r) => (
-            <div className={styles.row} data-kind="model" key={r.key}>
-              <span className={styles.time} />
-              <span className={styles.dot} />
-              <span className={styles.tag}>{r.tag}</span>
-              <span className={styles.expr}>{r.expr}</span>
-              <b className={styles.value}>{fmt(r.value)}</b>
-            </div>
-          ))}
-
-          {rows.length === 0 && modelRows.length === 0 ? (
+          {shown.length === 0 ? (
             <p className={styles.empty}>等待运算…</p>
-          ) : rows.map((row, i) => (
-            <CalcRow key={`${row.ts}-${row.sym}-${row.tag}-${i}`} row={row} />
+          ) : shown.map((row) => (
+            <CalcRow key={row.key} row={row} />
           ))}
         </ScrollArea>
 
