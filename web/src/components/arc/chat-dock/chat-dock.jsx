@@ -5,7 +5,7 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { motion, useReducedMotion } from "motion/react"
-import { ChevronDown, Loader2 } from "lucide-react"
+import { ChevronLeft, Loader2, MoreHorizontal } from "lucide-react"
 import ChatComposer from "./chat-composer"
 import styles from "./chat-dock.module.css"
 
@@ -89,9 +89,10 @@ const dayLabel = (ts) => {
   return `${d.getMonth() + 1}/${d.getDate()} ${hm}`
 }
 
-export default function ChatDock({ messages = [], onSend, connected = true, onCancel, busy = false }) {
+export default function ChatDock({ messages = [], onSend, connected = true, onCancel, busy = false, onClear }) {
   const reduced = useReducedMotion()
   const [open, setOpen] = useState(false)
+  const [menu, setMenu] = useState(false)
   const [pos, setPos] = useState(() => loadPos() || defaultPos())
   const scrollRef = useRef(null)
   const [launcherSpot, setLauncherSpot] = useState(() => ({ x: pos.x, y: pos.y }))
@@ -191,7 +192,18 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
   const collapse = () => {
     const spot = collapsedTarget()
     if (spot) setLauncherSpot(spot)
+    setMenu(false)
     setOpen(false)
+  }
+
+  const resetPosition = () => {
+    const spot = defaultPos()
+    commitPos(spot.x, spot.y)
+  }
+
+  // 清空只清本地的显示列表，服务端会话由 onClear 处理（没有就只关面板不谎称已清）
+  const clearChat = () => {
+    onClear?.()
   }
 
   // 折叠态：一个圆形玻璃按钮，落在设置按钮正上方
@@ -231,19 +243,41 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
       aria-label="ODDD 对话"
       data-dragging={draggingUi || undefined}>
       <div className={styles.shell}>
+        {/* 标题栏按截图布局：左侧圆形返回、中间胶囊（头像+绿点+名字）、右侧圆形菜单。
+           整条都可以拖动窗口；两个按钮自身不触发拖拽。 */}
         <header className={styles.header} title="拖动可移动窗口"
           onPointerDown={startDrag}>
-          <span className={styles.identity}>
-            <img src="/icon-32.png" alt="" width={18} height={18} />
-            <b>ODDD</b>
-            {busy && <span className={styles.busyDot} aria-label="正在处理" />}
-          </span>
-          <button type="button" className={styles.collapse} aria-label="收起对话"
+          <button type="button" className={styles.roundBtn} aria-label="收起对话"
             onPointerDown={(event) => event.stopPropagation()}
             onClick={collapse}>
-            <ChevronDown size={15} />
+            <ChevronLeft size={17} strokeWidth={2.4} />
+          </button>
+
+          <span className={styles.titlePill}>
+            <span className={styles.avatarWrap}>
+              <img src="/icon-32.png" alt="" width={20} height={20} />
+              <i className={styles.onlineDot} data-on={connected || undefined} />
+            </span>
+            <b>ODDD</b>
+          </span>
+
+          <button type="button" className={styles.roundBtn} aria-label="更多"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => setMenu((open) => !open)}>
+            <MoreHorizontal size={17} strokeWidth={2.4} />
           </button>
         </header>
+
+        {menu && (
+          <div className={styles.menu} role="menu">
+            <button type="button" role="menuitem" onClick={() => { setMenu(false); clearChat() }}>
+              清空对话
+            </button>
+            <button type="button" role="menuitem" onClick={() => { setMenu(false); resetPosition() }}>
+              复位窗口位置
+            </button>
+          </div>
+        )}
 
         <div className={styles.thread} ref={scrollRef}>
           {messages.length === 0 && <p className={styles.empty}>问市场、持仓或系统。</p>}
