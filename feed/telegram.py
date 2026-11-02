@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import inspect
 import json
 import urllib.error
 import urllib.parse
@@ -18,6 +20,15 @@ API = "https://api.telegram.org/bot{token}/{method}"
 TIMEOUT = 35          # 长轮询本身的超时（秒）
 POLL_TIMEOUT = 25     # getUpdates 在服务端挂起的时长
 MAX_TEXT = 4000       # Telegram 单条消息上限是 4096，留余量
+# 与网页端一致：单张图 2MB。Telegram 照片本来就压到 1MB 以内，
+# 大文件（视频等）不进入对话链路，避免把状态和 WS 撑爆。
+MAX_MEDIA_BYTES = 2_000_000
+
+
+def _mime_from_path(path: str) -> str:
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    return {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "webp": "image/webp", "gif": "image/gif"}.get(ext, "application/octet-stream")
 
 
 class TelegramBot:
@@ -88,6 +99,74 @@ class TelegramBot:
             out.append(res)
         return {"ok": True, "sent": len(out)}
 
+    # ---------- 入站媒体 ----------
+
+    def download(self, file_id: str) -> tuple[bytes, str] | None:
+        """按 file_id 取回文件内容，返回 (原始字节, mime)。失败返回 None。
+
+        两步：getFile 拿临时路径，再从 /file/bot<token>/<path> 下载。
+        下载地址里带 token，所以只在内存里拼，不落日志。
+        """
+        meta = self._request("getFile", {"file_id": file_id})
+        if not meta.get("ok"):
+            self.last_error = str(meta.get("error") or "取文件失败")
+            return None
+        path = str(((meta.get("result") or {}).get("file_path")) or "")
+        if not path:
+            return None
+        url = f"https://api.telegram.org/file/bot{self.token}/{path}"
+        opener = (urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": self.proxy, "https": self.proxy}))
+            if self.proxy else urllib.request.build_opener())
+        try:
+            with opener.open(url, timeout=TIMEOUT) as resp:
+                raw = resp.read(MAX_MEDIA_BYTES + 1)
+                if len(raw) > MAX_MEDIA_BYTES:
+                    return None
+                ctype = str(resp.headers.get("Content-Type") or "").split(";")[0].strip()
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            return None
+        if not ctype or ctype == "application/octet-stream":
+            ctype = _mime_from_path(path)
+        return raw, ctype
+
+    def read_incoming(self, message: dict) -> tuple[str, list[dict]]:
+        """从一条 update 里取出文字与附件，结构对齐网页端。
+
+        网页端发的是 {kind, name, mime, data: "data:...;base64,..."}，
+        这里产出同样的形状，后续 Agent 链路完全不用分渠道。
+        """
+        text = str(message.get("text") or message.get("caption") or "").strip()
+        # 单张图片：document 也可能是图片（用户以文件形式发送）
+        candidates = []
+        photos = message.get("photo") or []
+        if photos:
+            # 只取最大的一档，Telegram 会按尺寸给多个版本
+            best = max(photos, key=lambda p: int(p.get("file_size") or 0))
+            candidates.append((best.get("file_id"), f"photo_{best.get('file_unique_id', '')[:8]}.jpg",
+                               "image/jpeg"))
+        doc = message.get("document")
+        if isinstance(doc, dict) and doc.get("file_id"):
+            candidates.append((doc.get("file_id"), str(doc.get("file_name") or "document"),
+                               str(doc.get("mime_type") or "")))
+        for file_id, name, mime in candidates:
+            if not file_id:
+                continue
+            got = self.download(file_id)
+            if not got:
+                continue
+            raw, real_mime = got
+            mime = real_mime or mime
+            kind = "image" if mime.startswith("image/") else "text"
+            if kind == "text" and not (
+                    mime.startswith("text/") or name.lower().endswith((".txt", ".md", ".csv", ".json", ".log", ".yaml", ".yml"))):
+                continue                      # 不支持的二进制类型：跳过，下方会提示
+            data = "data:%s;base64,%s" % (mime or "application/octet-stream",
+                                          base64.b64encode(raw).decode("ascii"))
+            return text, [{"kind": kind, "name": name[:80], "mime": mime, "data": data}]
+        return text, []
+
     # ---------- 轮询 ----------
 
     async def _poll_loop(self) -> None:
@@ -121,19 +200,57 @@ class TelegramBot:
         message = update.get("message") or {}
         chat = message.get("chat") or {}
         chat_id = chat.get("id")
-        text = str(message.get("text") or "").strip()
-        if chat_id is None or not text:
+        if chat_id is None:
             return
+        # 文字、图片、文件都接：只读 text 会让用户发的图直接被丢掉，
+        # 界面上表现就是"带媒体的发不出去"。
+        text, attachments = await asyncio.to_thread(self.read_incoming, message)
+        if not text and not attachments and not self._looks_like_media(message):
+            return                        # 真正空的消息（贴纸、系统事件等）：忽略
         if self.allowed and str(chat_id) not in self.allowed:
             self.send(chat_id, "此会话未授权。请先在网页端「设置 → Telegram」里把本会话 ID 加入白名单：\n"
                                f"{chat_id}")
             return
+        if not attachments and self._looks_like_media(message):
+            # 用户确实发了媒体，但类型/体积不在支持范围：要明确告诉他，
+            # 不能让消息静默消失。
+            self.send(chat_id, "这个附件我没法读：只支持图片（≤2MB）和文本文件。")
+            return
         try:
-            reply = await self.on_message(chat_id, text) if self.on_message else ""
+            if not self.on_message:
+                reply = ""
+            elif self._accepts_attachments:
+                reply = await self.on_message(chat_id, text or "（见附件）", attachments)
+            else:
+                reply = await self.on_message(chat_id, text or "（见附件）")
         except Exception as exc:
             reply = f"处理失败：{type(exc).__name__}"
         if reply:
             await asyncio.to_thread(self.send, chat_id, reply)
+
+    @property
+    def _accepts_attachments(self) -> bool:
+        """回调是否接受第三个附件参数。
+
+        不能用"先传三个、抛 TypeError 再传两个"来探测：回调内部自己抛的
+        TypeError 会被误判成签名不匹配，同一条消息会被处理两次。
+        """
+        if self.on_message is None:
+            return False
+        try:
+            params = inspect.signature(self.on_message).parameters.values()
+        except (TypeError, ValueError):
+            return False
+        if any(p.kind is p.VAR_POSITIONAL for p in params):
+            return True
+        positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+        return len(positional) >= 3
+
+    @staticmethod
+    def _looks_like_media(message: dict) -> bool:
+        """这条消息里是不是带了附件（只是我们没取下来）。"""
+        return bool(message.get("photo") or message.get("document") or message.get("caption")
+                    or message.get("voice") or message.get("video") or message.get("audio"))
 
     def start(self) -> None:
         if self._task and not self._task.done():

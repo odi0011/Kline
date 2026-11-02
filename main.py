@@ -748,12 +748,24 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     agent.bars_fn = _agent_bars
 
+    def _agent_advice(symbol: str) -> dict:
+        """胶囊同款建议：直接复用 quant 的计算，保证两边结论永远一致。
+
+        以前 Agent 只看原始指标自己判断，胶囊看系统评分，两边经常给出
+        相反方向（胶囊做空、Agent 说做多），用户只会觉得系统坏了。
+        """
+        advice = (quant.snapshot().get("analysis") or {}).get("advice") or {}
+        return advice.get(str(symbol or "").lower()) or {}
+
+    agent.advice_fn = _agent_advice
+
     # ---- Telegram Bot：与网页端共用同一个 AgentManager 会话 ----
     tg_box: dict = {"bot": None}
 
-    async def _tg_reply(chat_id, text):
-        # 同一个 Agent：网页与 Telegram 共享会话记录和上下文
-        return await agent.ask_and_wait(text)
+    async def _tg_reply(chat_id, text, attachments=None):
+        # 同一个 Agent：网页与 Telegram 共享会话记录和上下文。
+        # 附件走和网页端完全相同的通道（base64 → 多模态 / 文本内联）。
+        return await agent.ask_and_wait(text, attachments=attachments)
 
     async def telegram_supervisor():
         """按配置启停轮询；设置页改 token/开关后 5 秒内生效。"""

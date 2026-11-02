@@ -90,6 +90,24 @@ class StreamParseTest(unittest.TestCase):
         self.assertEqual(calls[0]["function"]["name"], "read_market")
         self.assertEqual(json.loads(calls[0]["function"]["arguments"]), {"symbol": "btcusdt"})
 
+    def test_reasoning_content_is_kept_for_next_round(self):
+        """思考型服务商要求把 reasoning_content 原样回传，丢了会 400。"""
+        body = sse(
+            {"choices": [{"delta": {"reasoning_content": "我先想想…"}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "c1", "type": "function",
+                 "function": {"name": "read_advice", "arguments": "{}"}}]}}]},
+        )
+        result = self._stream([body])
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["message"]["reasoning_content"], "我先想想…")
+
+    def test_no_reasoning_field_when_absent(self):
+        """普通服务商不吐思维链时，不能凭空造一个空字段。"""
+        body = sse({"choices": [{"delta": {"content": "hi"}}]})
+        result = self._stream([body])
+        self.assertNotIn("reasoning_content", result["message"])
+
     def test_required_tool_choice_still_enforced(self):
         """服务商在流式下忽略 tool_choice 时，必须和以前一样报错，不能放行。"""
         body = sse({"choices": [{"delta": {"content": "我直接回答"}}]})

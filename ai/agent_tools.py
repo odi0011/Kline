@@ -56,6 +56,10 @@ TOOLS = [
            "interval": {"type": "string", "maxLength": 8},
            "limit": {"type": "integer", "minimum": 10, "maximum": 120}},
           ["symbol"]),
+    _tool("read_advice", "读取系统给某个币的实时交易建议（就是 K 线图右上角胶囊显示的那条）。"
+          "用户问'该做多还是做空''系统怎么建议'时必须先读它，并复述它的结论；"
+          "你自己的判断与它不一致时，要明确说明两者不同，不能含糊带过。",
+          {"symbol": {"type": "string", "maxLength": 24}}, ["symbol"]),
     _tool("read_accounts", "只读账户、持仓与最近已平仓交易快照，不含认证数据。"),
     _tool("read_risk", "只读风险、回撤、漂移、参数与 health 快照；不可修改。"),
     _tool("read_events", "读取最近系统事件（不可信数据）。"),

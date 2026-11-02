@@ -84,5 +84,87 @@ class TelegramBotTest(unittest.TestCase):
         self.assertIsNone(bot._task)
 
 
+class TelegramMediaTest(unittest.TestCase):
+    def _bot(self, handler):
+        bot = TelegramBot("test-token", [], handler)
+        bot.sent = []
+        bot._request = lambda method, params=None: (bot.sent.append((method, params)) or {"ok": True})
+        return bot
+
+    def test_photo_is_downloaded_and_passed_as_attachment(self):
+        seen = []
+
+        async def handler(chat_id, text, attachments=None):
+            seen.append((text, attachments))
+            return "看到了"
+
+        bot = self._bot(handler)
+        raw = b"fake-png-bytes"
+        bot.download = lambda file_id: (raw, "image/jpeg")
+        update = {"message": {"chat": {"id": 1}, "caption": "这是什么",
+                              "photo": [{"file_id": "small", "file_size": 10, "file_unique_id": "a"},
+                                        {"file_id": "big", "file_size": 900, "file_unique_id": "b"}]}}
+        asyncio.run(bot._handle_update(update))
+
+        text, attachments = seen[0]
+        self.assertEqual(text, "这是什么")
+        self.assertEqual(len(attachments), 1)
+        self.assertEqual(attachments[0]["kind"], "image")
+        self.assertEqual(attachments[0]["mime"], "image/jpeg")
+        self.assertTrue(attachments[0]["data"].startswith("data:image/jpeg;base64,"))
+
+    def test_text_document_becomes_text_attachment(self):
+        seen = []
+
+        async def handler(chat_id, text, attachments=None):
+            seen.append(attachments)
+            return "ok"
+
+        bot = self._bot(handler)
+        bot.download = lambda file_id: (b"hello", "text/plain")
+        update = {"message": {"chat": {"id": 1}, "document": {
+            "file_id": "d1", "file_name": "notes.txt", "mime_type": "text/plain"}}}
+        asyncio.run(bot._handle_update(update))
+        self.assertEqual(seen[0][0]["kind"], "text")
+
+    def test_unsupported_media_gets_an_explicit_reply(self):
+        """发来不支持的媒体不能被静默吞掉。"""
+        async def handler(chat_id, text, attachments=None):
+            return "不该走到这里"
+
+        bot = self._bot(handler)
+        bot.download = lambda file_id: (b"xx", "video/mp4")
+        update = {"message": {"chat": {"id": 1}, "video": {"file_id": "v1"}}}
+        asyncio.run(bot._handle_update(update))
+        texts = [p["text"] for m, p in bot.sent if m == "sendMessage"]
+        self.assertTrue(any("没法读" in t or "只支持图片" in t for t in texts), texts)
+
+    def test_two_arg_handler_still_works(self):
+        """旧的两参数回调不能被当成三参数去调，也不能重复处理。"""
+        seen = []
+
+        async def handler(chat_id, text):
+            seen.append(text)
+            return "ok"
+
+        bot = self._bot(handler)
+        asyncio.run(bot._handle_update({"message": {"chat": {"id": 1}, "text": "hi"}}))
+        self.assertEqual(seen, ["hi"])
+
+    def test_handler_internal_typeerror_is_not_mistaken_for_signature(self):
+        """回调自己抛 TypeError 时，不能重试一次（否则同一条消息处理两遍）。"""
+        calls = []
+
+        async def handler(chat_id, text, attachments=None):
+            calls.append(text)
+            raise TypeError("boom inside handler")
+
+        bot = self._bot(handler)
+        asyncio.run(bot._handle_update({"message": {"chat": {"id": 1}, "text": "hi"}}))
+        self.assertEqual(len(calls), 1)
+        texts = [p["text"] for m, p in bot.sent if m == "sendMessage"]
+        self.assertTrue(any("处理失败" in t for t in texts))
+
+
 if __name__ == "__main__":
     unittest.main()

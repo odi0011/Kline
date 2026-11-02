@@ -233,6 +233,7 @@ def _chat_completion_stream(base: str, key: str, model_id: str, payload: dict,
         return None
 
     parts: list[str] = []
+    reasoning_parts: list[str] = []
     calls: dict[int, dict] = {}
     usage: dict = {}
     model_out = ""
@@ -279,13 +280,16 @@ def _chat_completion_stream(base: str, key: str, model_id: str, payload: dict,
                         if not isinstance(delta, dict):
                             continue
                         # reasoning_content 也是模型在吐 token（思考型模型的思维链），
-                        # 首字延迟和解码窗口都得把它算进去，否则 TPS 会虚高一截
+                        # 首字延迟和解码窗口都得把它算进去，否则 TPS 会虚高一截。
+                        # 同时要收集起来：DeepSeek 思考模式要求下一轮把思维链原样回传，
+                        # 丢掉它会让多轮工具调用直接 400。
                         reasoning = delta.get("reasoning_content")
                         if isinstance(reasoning, str) and reasoning:
                             now = time.monotonic()
                             if first_at is None:
                                 first_at = now
                             last_at = now
+                            reasoning_parts.append(reasoning)
                         piece = delta.get("content")
                         if isinstance(piece, str) and piece:
                             now = time.monotonic()
@@ -334,6 +338,9 @@ def _chat_completion_stream(base: str, key: str, model_id: str, payload: dict,
             "finish_reason": finish,
             "message": {"role": "assistant",
                         "content": "".join(parts) or None,
+                        # 思考型服务商要求下一轮把思维链原样带回，缺了会 400
+                        **({"reasoning_content": "".join(reasoning_parts)}
+                           if reasoning_parts else {}),
                         **({"tool_calls": [calls[k] for k in sorted(calls)]} if calls else {})},
         }],
     }
@@ -432,7 +439,11 @@ def _interpret(status: int, body, ms: int, key: str, model_id: str,
     if not reply and not calls:
         return failure("模型未返回文本或工具调用")
     out = {"ok": True, "reply": reply, "tool_calls": calls,
+           # 非流式同样要保留思维链：下一轮要原样回传（思考型服务商的要求）
            "message": {"role": "assistant", "content": reply or None,
+                       **({"reasoning_content": message["reasoning_content"]}
+                          if isinstance(message.get("reasoning_content"), str)
+                          and message["reasoning_content"] else {}),
                        **({"tool_calls": calls} if calls else {})},
            "finish_reason": choice.get("finish_reason"), "ms": ms,
            "usage": body.get("usage") or {}, "model": body.get("model") or model_id}
