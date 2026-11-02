@@ -629,10 +629,11 @@ class AgentManager:
                 if m.get("role") == "assistant" and m.get("status") in ("succeeded", "running")]
         if not done:
             return empty()
-        # 长回复会被拆成 `原id-2`、`原id-3`…，那些续气泡没有 usage/perf。
-        # 取最后一条真正带数据的，而不是数组末尾那条。
+        # 进行中的那条优先：流式过程中 perf 每 250ms 更新一次，
+        # 底部状态栏要跟着实时跳，而不是等回复结束才刷新。
+        running = [m for m in done if m.get("status") == "running" and m.get("perf")]
         with_data = [m for m in done if m.get("usage") or m.get("perf")]
-        last = (with_data or done)[-1]
+        last = (running or with_data or done)[-1]
         usage = last.get("usage") if isinstance(last.get("usage"), dict) else {}
         perf = last.get("perf") if isinstance(last.get("perf"), dict) else {}
 
@@ -645,6 +646,12 @@ class AgentManager:
             # 在 DeepSeek 这类"一帧多个 token"的服务商上会低一个数量级，
             # 与其显示一个错数字，不如先空着。
             tps = round(completion_tokens / (decode_ms / 1000), 1)
+        elif perf.get("live") and perf.get("chars") and decode_ms:
+            # 流式进行中：用已收到的字符数估 token（中文约 1 字 ≈ 1.5 token，
+            # 英文约 4 字符 ≈ 1 token，取折中 1.6 字符/token）。
+            # 标 live 让前端知道这是估算，结束后会换成服务商的真实值。
+            est_tokens = max(1.0, float(perf["chars"]) / 1.6)
+            tps = round(est_tokens / (decode_ms / 1000), 1)
 
         prompt_tokens = _num(usage.get("prompt_tokens"))
         hit = _num(usage.get("prompt_cache_hit_tokens"))
@@ -818,6 +825,7 @@ class AgentManager:
                 raise ValueError("action 需为文本，payload 需为对象")
             allowed = {"state": set(), "recover": set(),
                        "chat": {"prompt", "model", "attachments"}, "clear_chat": set(),
+                       "compact_chat": set(),
                        "cancel_chat": {"id"}, "create": {"title", "prompt", "model", "intervalSec", "startAt"},
                        "edit": {"id", "title", "prompt", "intervalSec", "startAt"}}
             for name in ("pause", "resume", "cancel", "delete", "run"):
@@ -842,18 +850,29 @@ class AgentManager:
                                                 payload.get("attachments"))
                     return {"ok": True, "id": message_id}
                 if action == "clear_chat":
-                    # 清空会话：进行中的回复先取消，再把历史和摘要一起扔掉。
-                    # 保留 tasks/memory——那是任务记忆，不是聊天记录。
+                    # 清空一切：会话、摘要、记忆，以及后台任务。
+                    # 这是"忘掉所有东西"，所以前端必须二次确认；
+                    # 想只丢对话、保留监控任务的话不要用这个动作。
                     for runner in list(self.chat_runners):
+                        self._cancel_runner(runner)
+                    for runner in list(self.runners.values()):
                         self._cancel_runner(runner)
                     self.chat_runners.clear()
                     self._chat_tasks.clear()
                     self._merged_into.clear()
+                    self.runners.clear()
+                    self._wakeups.clear()
                     self._chat_id = None
                     self.chat = []
                     self.chat_summary = ""
+                    self.memory = {}
+                    self.tasks = []
+                    self._admitted.clear()
+                    self._availability.set()
                     await self._emit()
                     return {"ok": True, **self.state()}
+                if action == "compact_chat":
+                    return await self._compact_chat()
                 if action == "cancel_chat":
                     # 支持按 id 取消任意一条进行中/排队中的回复（并发后不止一条）
                     message_id = _text(payload.get("id", ""), "id", 100)
@@ -885,6 +904,67 @@ class AgentManager:
             raise ValueError("Agent 正在关闭")
         if self.persistence_error:
             raise PersistenceError(self.persistence_error)
+
+    async def _compact_chat(self) -> dict:
+        """手动压缩：把全部历史压成一段摘要，只保留最近一小段原文。
+
+        和自动压缩的区别：自动压缩是机械拼接（保留要点片段），
+        走模型太贵、太慢，每轮都跑不值。这里是用户主动点的，
+        可以用真模型做一次真正的摘要 —— 提炼结论、待办、已确认的偏好，
+        丢掉寒暄和重复内容。
+        """
+        self._writable()
+        usable = [item for item in self.chat
+                  if item.get("role") == "user"
+                  or (item.get("role") == "assistant" and item.get("status") == "succeeded")]
+        if len(usable) <= 6:
+            return {"ok": True, "skipped": True,
+                    "reason": "对话还很短，不需要压缩", **self.state()}
+
+        # 保留最后 6 条原文（最近两三轮），更早的全部压进摘要
+        keep = usable[-6:]
+        older = usable[:-6]
+        transcript = []
+        for item in older:
+            text = str(item.get("content") or "").strip()
+            if not text:
+                continue
+            who = "用户" if item.get("role") == "user" else "助手"
+            transcript.append(f"{who}：{text[:600]}")
+        blob = "\n".join(transcript)[-12000:]
+        existing = str(self.chat_summary or "").strip()
+        if existing:
+            blob = f"【已有摘要】\n{existing}\n\n【新对话】\n{blob}"
+
+        summary = ""
+        try:
+            config, selected = self._model("")
+            prompt = (
+                "把下面这段交易助手对话压缩成一份要点摘要，供后续对话继续使用。\n"
+                "只保留：用户关注/要求的、已经得出的结论与价位、待办与后台任务、"
+                "用户明确保存的偏好。去掉寒暄、重复和过程描述。\n"
+                "用短句、不加标题、不超过 400 字。\n\n" + blob
+            )
+            result = await self._http(
+                config, selected["id"],
+                [{"role": "system", "content": "你是对话压缩器，只输出摘要正文。"},
+                 {"role": "user", "content": prompt}],
+                self.proxy_fn() or None, time.monotonic() + 60, True)
+            if isinstance(result, dict) and result.get("ok"):
+                summary = str(result.get("reply") or "").strip()[:CONTEXT_SUMMARY_CHARS]
+        except Exception:
+            summary = ""
+
+        if not summary:
+            # 模型不可用时退回机械压缩，至少别让上下文爆掉
+            self._refresh_summary()
+            summary = self.chat_summary
+
+        self.chat_summary = summary
+        self.chat = keep
+        await self._emit()
+        return {"ok": True, "compacted": True, "kept": len(keep),
+                "summaryChars": len(summary), **self.state()}
 
     def _context_window(self) -> list[dict]:
         """给模型的历史上下文：滚动摘要 + 最近若干轮原文。
@@ -1379,17 +1459,25 @@ class AgentManager:
         live = {"ttftMs": 0, "chars": 0, "deltas": 0, "latchedAt": 0.0}
         loop = asyncio.get_running_loop()
 
-        def progress(chars, ttft_ms, deltas, elapsed_ms):
+        def progress(chars, ttft_ms, deltas, elapsed_ms, text=""):
             """流式增量回调——跑在 HTTP 线程里，所以只写纯数据，再用
             call_soon_threadsafe 把广播投回事件循环。
 
-            每 400ms 才推一次：状态条是给人看的，推太密只会让 WS 和渲染空转。
+            两件事：
+              1) 把已经收到的文本写进消息（前端就能边收边显示，真正的流式）
+              2) 更新性能指标，让底部那条状态栏实时跳动
+
+            每 250ms 推一次：再密只会让 WS 和渲染空转。
             """
             now = time.monotonic()
             live["chars"] = chars
             live["deltas"] = deltas
             live["ttftMs"] = ttft_ms or live["ttftMs"]
-            if now - live["latchedAt"] < 0.4:
+            # 文本每帧都写（写内存不花代价），广播按节流走
+            if text:
+                target["content"] = text
+                target["streaming"] = True
+            if now - live["latchedAt"] < 0.25:
                 return
             live["latchedAt"] = now
             decode_ms = elapsed_ms - (ttft_ms or 0)

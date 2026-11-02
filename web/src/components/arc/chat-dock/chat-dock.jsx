@@ -5,7 +5,7 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { motion, useReducedMotion } from "motion/react"
-import { FileText, Minimize2, MoreHorizontal, RotateCcw, Trash2 } from "lucide-react"
+import { Archive, FileText, Minimize2, MoreHorizontal, RotateCcw, Trash2 } from "lucide-react"
 import ChatComposer from "./chat-composer"
 import ChatStats from "./chat-stats"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
@@ -196,9 +196,10 @@ const dayLabel = (ts) => {
 }
 
 export default function ChatDock({ messages = [], onSend, connected = true, stats = null,
-                                  onCancel, busy = false, onClear }) {
+                                  onCancel, busy = false, onClear, onCompact }) {
   const reduced = useReducedMotion()
   const [open, setOpen] = useState(false)
+  const [confirm, setConfirm] = useState(null)   // null | "clear" | "compact"
   const [pos, setPos] = useState(() => loadPos() || defaultPos())
   const scrollRef = useRef(null)
   const [launcherSpot, setLauncherSpot] = useState(() => ({ x: pos.x, y: pos.y }))
@@ -325,14 +326,16 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
     id: "g-dock",
     items: [
       { id: "collapse", label: "收起窗口", icon: <Minimize2 size={12} /> },
-      { id: "clear", label: "清空对话", icon: <Trash2 size={12} />, danger: true },
+      { id: "compact", label: "压缩对话", icon: <Archive size={12} /> },
+      { id: "clear", label: "清空全部", icon: <Trash2 size={12} />, danger: true },
       { id: "reset", label: "复位窗口位置", icon: <RotateCcw size={12} /> },
     ],
   }]
 
   const onMenuSelect = (id) => {
     if (id === "collapse") collapse()
-    else if (id === "clear") clearChat()
+    else if (id === "compact") setConfirm("compact")
+    else if (id === "clear") setConfirm("clear")
     else if (id === "reset") resetPosition()
   }
 
@@ -430,6 +433,37 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
             </button>
           </GlassMenu>
         </header>
+
+        {/* 确认层：清空是不可逆操作，压缩会改写历史，两者都要二次确认。
+            用内联的小卡片而不是浏览器 confirm()——后者会打断整页、
+            样式也无法统一。 */}
+        {confirm && (
+          <div className={styles.confirm} role="alertdialog" aria-modal="true"
+            aria-labelledby="oddd-confirm-title">
+            <p className={styles.confirmTitle} id="oddd-confirm-title">
+              {confirm === "clear" ? "清空全部？" : "压缩对话？"}
+            </p>
+            <p className={styles.confirmBody}>
+              {confirm === "clear"
+                ? "会删除所有对话、记忆和后台任务，无法恢复。"
+                : "会把较早的对话压成摘要，只保留最近几条原文。"}
+            </p>
+            <div className={styles.confirmActions}>
+              <button type="button" className={styles.confirmCancel}
+                onClick={() => setConfirm(null)}>取消</button>
+              <button type="button" className={styles.confirmOk}
+                data-danger={confirm === "clear" || undefined}
+                onClick={() => {
+                  const kind = confirm
+                  setConfirm(null)
+                  if (kind === "clear") clearChat()
+                  else onCompact?.()
+                }}>
+                {confirm === "clear" ? "清空" : "压缩"}
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* 消息区用项目统一的 ScrollArea（细滚动条 + 边缘渐隐），
             不要再自己写 overflow-y: auto */}

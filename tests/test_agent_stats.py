@@ -47,9 +47,12 @@ def test_stats_is_empty_without_usage(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
-def test_stats_live_reports_ttft_but_not_fake_tps(tmp_path, monkeypatch):
-    """回复进行中：首字和字符数可以实时给（它们是确定值），
-    TPS 必须空着——服务商的 token 数要到最后一帧才有。"""
+def test_stats_live_estimates_tps_from_chars(tmp_path, monkeypatch):
+    """回复进行中：状态栏要实时跳，所以用字符数估算 TPS。
+
+    服务商的真实 token 数要到最后一帧才有，进行中只能估——
+    标 live=True，前端据此区分"估算"和"实测"，结束后换成真实值。
+    """
     async def scenario():
         manager, _ = make_manager(tmp_path, monkeypatch)
         msg = _seed(manager, status="running",
@@ -58,7 +61,9 @@ def test_stats_live_reports_ttft_but_not_fake_tps(tmp_path, monkeypatch):
         live = manager.stats()
         assert live["live"] is True
         assert live["ttftMs"] == 400, "首字延迟在回复中就该可见"
-        assert live["tps"] is None, "没有真实 token 数时不能给 TPS"
+        assert live["tps"] is not None, "进行中也要有估算值，否则状态栏不动"
+        # 120 字 / 1.6 ≈ 75 token，1 秒解码 → 约 75 tok/s
+        assert 70 <= live["tps"] <= 80, live["tps"]
 
         msg.update(status="succeeded", finishedAt=2,
                    usage={"prompt_tokens": 500, "completion_tokens": 80},

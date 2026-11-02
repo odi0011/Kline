@@ -189,11 +189,12 @@ def _chat_completion_stream(base: str, key: str, model_id: str, payload: dict,
     只有真正拿到事件才算走通；服务商忽略 stream 参数、返回 JSON、瞬间断流
     都按「走不通」处理，交给非流式重来，不让统计影响对话本身。
 
-    on_progress(chars, ttft_ms, deltas, elapsed_ms) 在每次收到可见内容时回调
-    （跑在请求线程里）：
+    on_progress(chars, ttft_ms, deltas, elapsed_ms, text) 在每次收到可见内容时
+    回调（跑在请求线程里）：
       ttft_ms   从请求发出算起、到第一个 token（含思维链）为止，和最终 ttftMs 同一定义；
       deltas    已收到的内容增量帧数，OpenAI 协议下通常一帧一个 token，用来估实时 TPS；
-      elapsed_ms 从请求发出到现在，用于算解码窗口。
+      elapsed_ms 从请求发出到现在，用于算解码窗口；
+      text      目前累计的**全文**，前端据此做增量渲染（真正的流式）。
     """
     import urllib.request
 
@@ -301,9 +302,11 @@ def _chat_completion_stream(base: str, key: str, model_id: str, payload: dict,
                             deltas += 1
                             if on_progress:
                                 # 首字按 first_at 算（含思维链），与最终 ttftMs 一致；
-                                # 用 now 会让实时值偏大，结束后数字突然变小
+                                # 用 now 会让实时值偏大，结束后数字突然变小。
+                                # 第 5 个参数是**目前累计的全文**，前端据此增量渲染。
                                 ttft = int(((first_at or now) - started) * 1000)
-                                on_progress(chars, ttft, deltas, int((now - started) * 1000))
+                                on_progress(chars, ttft, deltas,
+                                            int((now - started) * 1000), "".join(parts))
                         for delta_call in delta.get("tool_calls") or []:
                             if not isinstance(delta_call, dict):
                                 continue

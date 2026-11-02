@@ -238,6 +238,67 @@
   user-select: none;
 }
 
+/* ---------- 确认层 ----------
+   清空/压缩都是不可逆操作，盖在消息区上要二次确认。
+   不是浏览器 confirm()：那会打断整页且样式无法统一。 */
+.confirm {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  padding: 12px 13px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(28, 35, 51, 0.1);
+  box-shadow: 0 16px 40px rgba(16, 24, 40, 0.22);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.confirmTitle {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1c2333;
+}
+.confirmBody {
+  margin: 5px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: rgba(28, 35, 51, 0.55);
+}
+.confirmActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 11px;
+}
+.confirmCancel, .confirmOk {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.confirmCancel {
+  border: 1px solid rgba(28, 35, 51, 0.12);
+  background: transparent;
+  color: rgba(28, 35, 51, 0.7);
+}
+.confirmCancel:hover { background: rgba(28, 35, 51, 0.05); }
+.confirmOk {
+  border: 0;
+  background: #1c2333;
+  color: #f7f9fc;
+}
+.confirmOk:hover { background: #2b3346; }
+.confirmOk[data-danger] { background: #dc2626; }
+.confirmOk[data-danger]:hover { background: #b91c1c; }
+
 /* ---------- 输入区 ---------- */
 .composer { flex: none; padding: 8px; padding-top: 4px; }
 
