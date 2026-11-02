@@ -349,10 +349,12 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
       if (m.status === "running" || m.status === "queued") {
         const line = m.progress?.status
         if (line) return String(line)
-        return m.status === "queued" ? "排队中…" : "在想…"
+        // 文案不要带省略号：右侧已经有三个点在做动画，
+        // 再叠一个 "…" 视觉上是 "在想… ⋯"，重复且难看。
+        return m.status === "queued" ? "排队中" : "在想"
       }
     }
-    return "在想…"
+    return "在想"
   })()
 
   // 折叠态：一个圆形玻璃按钮，落在设置按钮正上方
@@ -417,7 +419,7 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
               animate={{ y: 0 }}
               transition={reduced ? { duration: 0 }
                 : { type: "spring", stiffness: 520, damping: 36, mass: 0.6 }}>
-              {busy ? (statusLine || "在想…") : "ODDD"}
+              {busy ? (statusLine || "在想") : "ODDD"}
             </motion.b>
             {busy && <span className={styles.pillDots} aria-hidden><i /><i /><i /></span>}
           </span>

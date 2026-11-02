@@ -181,37 +181,37 @@ def _status_line(prompt: str, tool: str = "", round_number: int = 1) -> str:
     if tool:
         if tool == "read_candles":
             m = re.search(r"\b([a-zA-Z]{2,12})(?:usdt)?\b", text)
-            return f"在看 {m.group(1).upper()} 的K线…" if m else "在读K线…"
+            return f"在看 {m.group(1).upper()} 的K线" if m else "在读K线"
         if tool == "read_advice":
-            return "在核对系统建议…"
+            return "在核对系统建议"
         if tool == "read_pattern_stats":
-            return "在翻形态胜率…"
+            return "在翻形态胜率"
         if tool == "read_market":
-            return "在看行情…"
+            return "在看行情"
         if tool == "read_accounts":
-            return "在看持仓…"
+            return "在看持仓"
         if tool == "read_risk":
-            return "在查风险…"
+            return "在查风险"
         if tool in ("read_news", "read_events"):
-            return "在刷消息面…"
-        return "在查数据…"
+            return "在刷消息面"
+        return "在查数据"
     if round_number > 1:
-        return "在想结论…"
+        return "在想结论"
     if re.search(r"胜率|哪种形态|哪个形态", text):
-        return "在翻形态胜率…"
+        return "在翻形态胜率"
     if re.search(r"[Kk]\s*线|走势|趋势|形态|支撑|压力", text):
-        return "在看K线…"
+        return "在看K线"
     if re.search(r"做多|做空|能做|开单|仓位|买入|卖出|方向", text):
-        return "在判断方向…"
+        return "在判断方向"
     if re.search(r"持仓|账户|权益|盈亏|亏了|赚了", text):
-        return "在核对持仓…"
+        return "在核对持仓"
     if re.search(r"新闻|消息|公告", text):
-        return "在刷消息面…"
+        return "在刷消息面"
     if re.search(r"你好|hi|hello", text, re.I):
-        return "在接你的话…"
+        return "在接你的话"
     if _wants_detail(text):
-        return "在理清逻辑…"
-    return "在理解你的问题…"
+        return "在理清逻辑"
+    return "在理解你的问题"
 
 
 def _join_consecutive_users(messages: list[dict]) -> list[dict]:

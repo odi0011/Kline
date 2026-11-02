@@ -22,6 +22,10 @@
 .scroll { flex: 1 1 0; min-height: 0; height: 100%; }
 .viewport { padding: 0 2px 8px; }
 
+/* 隐藏滚动条：这块是自动贴底的实时流，滚动条占宽度又没有实际用途。
+   ScrollArea 的轨道是它自己的子节点（哈希类名），只能从外面用属性命中。 */
+.root [data-no-scrollbar] > div[class*="track"] { display: none !important; }
+
 /* 一行：时间 · 币种图标 · 标签 · 算式 · 结果。
    188px 宽里塞 5 列，每列都得抠：
      时间 30 + 图标 12 + 标签 22 + 算式 flex + 结果 34 + gap ≈ 足够 */
