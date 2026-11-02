@@ -16,6 +16,7 @@ import ChatComposer from "./chat-composer"
 import ChatStats from "./chat-stats"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import { GlassMenu } from "@/components/arc/glass-menu/glass-menu"
+import { Sticker, splitSticker } from "./stickers"
 import styles from "./chat-dock.module.css"
 
 const WIDTH = 320
@@ -100,14 +101,16 @@ function FileBubble({ item, mine }) {
     分段，视觉上必须是一枚气泡里的几段话；只有附件按类型各自独立成泡。 */
 const MessageGroup = memo(function MessageGroup({ items }) {
   const mine = items[0]?.role === "user"
-  const texts = items
-    .map((item) => (typeof item.content === "string" ? item.content.trim() : ""))
-    .filter(Boolean)
+  // 每段先拆出 [sticker:名字]：表情包要单独成泡，不能混在文字里
+  const parsed = items.map((item) => splitSticker(
+    typeof item.content === "string" ? item.content : ""))
+  const texts = parsed.map((p) => p.text).filter(Boolean)
+  const stickers = parsed.map((p) => p.sticker).filter(Boolean)
   const failed = items.find((item) => item.status === "failed")
   const cancelled = items.some((item) => item.status === "cancelled")
   const busy = items.some((item) => item.status === "running" || item.status === "queued")
   // 还在等回复且没出字：整个气泡不渲染，不要三点也不要"正在处理"
-  if (busy && !texts.length) return null
+  if (busy && !texts.length && !stickers.length) return null
   const refs = items
     .flatMap((item) => (Array.isArray(item.attachments) ? item.attachments : []))
     .map(asRef).filter(Boolean)
@@ -137,6 +140,12 @@ const MessageGroup = memo(function MessageGroup({ items }) {
           </div>
         </div>
       )}
+      {/* 表情包：独立一枚，无气泡底色——贴纸本身就是内容 */}
+      {stickers.map((name, index) => (
+        <div key={`${name}-${index}`} className={styles.stickerRow} data-role={mine ? "user" : "bot"}>
+          <Sticker name={name} size={46} />
+        </div>
+      ))}
       {/* 图片：单独的宫格气泡 */}
       {images.length > 0 && (
         <div className={styles.bubbleRow} data-role={mine ? "user" : "bot"}>
@@ -342,13 +351,12 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
     setOpen(false)
   }, [messages])
 
-  // ---------- 折叠态：顶部居中的玻璃胶囊 ----------
+  // ---------- 折叠态：顶部居中的玻璃圆环 ----------
   if (!open) {
-    const expanded = busy || unread > 0
     return createPortal(
-      // 外层只负责"贴顶 + 水平居中"（flex），胶囊自己负责形状与动画。
-      // 不让胶囊用 transform 居中：motion 的 layout 动画会接管 transform，
-      // translateX(-50%) 会被覆盖，实测会偏右半个身位。
+      // 外层只负责"贴顶 + 水平居中"（flex），圆钮自己负责形状与动画。
+      // 不让按钮用 transform 居中：motion 的 layout 动画会接管 transform，
+      // translateX(-50%) 会被覆盖，实测偏右半个身位。
       <div className={styles.islandWrap} style={{ top: ISLAND_TOP }}>
         <motion.button
           type="button"
@@ -357,28 +365,18 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
           data-unread={unread > 0 || undefined}
           onClick={() => setOpen(true)}
           aria-label="打开 ODDD 对话"
-          layout
+          title={busy ? (statusLine || "在想") : unread > 0 ? "有新回复" : "ODDD 对话"}
           initial={reduced ? false : { scale: 0.86 }}
           animate={{ scale: 1 }}
-          whileTap={reduced ? undefined : { scale: 0.96 }}
-          transition={reduced ? { duration: 0 } : { type: "spring", stiffness: 420, damping: 30, mass: 0.7 }}>
+          whileTap={reduced ? undefined : { scale: 0.94 }}
+          transition={reduced ? { duration: 0 }
+            : { type: "spring", stiffness: 420, damping: 30, mass: 0.7 }}>
           <span className={styles.islandAvatar}>
-            <img src="/icon-32.png" alt="" width={20} height={20} />
+            <img src="/icon-32.png" alt="" width={30} height={30} />
             <i className={styles.onlineDot} data-on={connected || undefined} />
           </span>
-          {/* 忙碌或有未读时横向展开显示状态；平时只有头像，保持"岛"的形状 */}
-          <motion.span className={styles.islandText} layout
-            initial={false}
-            animate={{ width: expanded ? "auto" : 0, opacity: expanded ? 1 : 0, marginLeft: expanded ? 7 : 0 }}
-            transition={reduced ? { duration: 0 }
-              : { type: "spring", stiffness: 460, damping: 34, mass: 0.6 }}>
-            <motion.b key={busy ? statusLine : "unread"} layout="position"
-              initial={reduced ? false : { y: 4 }}
-              animate={{ y: 0 }}>
-              {busy ? (statusLine || "在想") : "新回复"}
-            </motion.b>
-            {busy && <span className={styles.islandDots} aria-hidden><i /><i /><i /></span>}
-          </motion.span>
+          {/* 忙碌：右下角转一圈的小点；未读：黄点。都不占圆外空间 */}
+          {busy && <span className={styles.islandBusy} aria-hidden />}
           <span className={styles.islandBadge} aria-hidden />
         </motion.button>
       </div>,

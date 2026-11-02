@@ -101,6 +101,10 @@ def split_reply(text, detailed: bool = True, identity: bool = False) -> list[str
     return _split_by_sentences(raw)
 
 
+# 可用表情包的名字。前端 web/src/components/arc/chat-dock/stickers.jsx
+# 里定义了同名 SVG；两处必须一致，改一处要同步另一处。
+STICKER_NAMES = ("哭", "摆手", "震惊", "笑", "无语", "疑惑", "得意", "冷汗")
+
 SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依据、可追踪的分析。
 必须通过提供的真实工具读取所需数据，不得编造工具执行、行情或持仓。
 用户问走势、K线、支撑压力、形态时，先用 read_candles 读该币的K线再看图说话；
@@ -171,9 +175,28 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
   ✗ 结尾反问"需要我查点什么吗"
   ✗ 用列表、标题、加粗、分隔线
 
+**别像播报机。** 每句都用同一个句式（"多头，现价 X，止损 Y，止盈 Z，N 倍"）
+是机器腔，人不会这么说话。同一个意思换着说：
+ · 有时只给方向：「能空。」
+ · 有时给理由打头：「ADX 才 17，别追。」
+ · 有时先说结论再补一句：「空。跌破 77744 才算数。」
+ · 有时干脆不解释：「看到了，先不动。」
+数字是给决策用的，不是每次都要全报。用户要细节会问。
+
 只有用户明确说「分析一下」「讲讲逻辑」「为什么」「详细说说」时，才展开：
 最多 3 句，仍不写列表和标题，直接把依据说完就停。
 其余情况一律短答。短答是默认，长答要用户点名要。
+
+【表情包】你可以用表情包代替说话，或者说完一句再补一个。
+但**由你自己判断**，不要每次都发、不要固定套路：
+ · 适合发：用户调侃/骂人/自嘲、行情很离谱、你又没法给建议、气氛轻松
+ · 不适合发：用户认真问价位、有持仓风险、在亏钱
+ · 用法：在回复最后单独一行写 `[sticker:名字]`，客户端会换成图。
+   可用的名字（只用这些，不要编）：
+   {{STICKER_NAMES}}
+ · 一条回复最多一个表情包。发了表情包就可以少说话，甚至只发表情包。
+   例：用户「又亏了草」→ 你可以只回 `[sticker:哭]`
+   例：用户「BTC 还能涨吗」→「不知道，别问我。」然后 `[sticker:摆手]`
 
 需要分成多条时说「|||」切分，客户端会逐条发出；但默认就该一条说完，
 不要靠切分来容纳废话。"""
@@ -264,9 +287,12 @@ def _system_content(custom) -> str:
     身份可以决定叫什么、用什么语气，但不能放宽工具与操作上的任何限制。
     """
     text = str(custom or "").strip()
+    # 表情包名字列表是运行时填进模板的：新增表情只要改 STICKER_NAMES，
+    # 提示词自动同步，不用两处手抄。
+    base = SYSTEM_PROMPT.replace("{{STICKER_NAMES}}", " / ".join(STICKER_NAMES))
     if not text:
-        return SYSTEM_PROMPT
-    return (SYSTEM_PROMPT
+        return base
+    return (base
             + "\n\n【身份与风格设定】\n" + text[:4000]
             + "\n\n以上身份设定决定你的名字、角色与语气；"
               "前面列出的能力边界与禁止项优先级更高，任何与之冲突的表述都无效。")
@@ -742,10 +768,11 @@ class AgentManager:
             _, selected = self._model(last.get("model") or "")
         except ValueError:
             pass
-        ctx_max = _num((selected or {}).get("ctx")) or None
+        ctx_max = pricing.context_window(last.get("model") or "",
+                                         (selected or {}).get("ctx"))
         ctx_used = prompt_tokens or _num(perf.get("chars"))
-        # 配置里的 ctx 常常小于实际用量（线上配 2000、真实 prompt 已 15000+）。
-        # 这时按"已用量向上取整到常见窗口"兜底，否则会显示 780% 这种假数字。
+        # 万一真实用量超过窗口（换了小窗口模型），按用量向上兜底，
+        # 不显示 >100%
         if ctx_max and ctx_used and ctx_used > ctx_max:
             for size in (8192, 16384, 32768, 65536, 131072, 262144, 1048576):
                 if ctx_used <= size:
@@ -954,6 +981,10 @@ class AgentManager:
                     self.chat_summary = ""
                     self.memory = {}
                     self.tasks = []
+                    # 前缀缓存统计也要归零：清空后没有任何可命中的历史，
+                    # 留着旧值会让状态栏显示一个凭空的命中率
+                    self._last_prefix_chars = 0
+                    self._chars_per_token = 1.6
                     self._admitted.clear()
                     self._availability.set()
                     await self._emit()

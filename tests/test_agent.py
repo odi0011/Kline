@@ -217,7 +217,8 @@ def test_tools_main_thread_snapshot_and_untrusted_isolation(tmp_path, monkeypatc
         # 身份设定并进同一条 system（不再降级成第二条 user 消息），
         # 安全边界仍在 system 开头且优先级更高
         assert requests[0][0]["role"] == "system"
-        assert requests[0][0]["content"].startswith(SYSTEM_PROMPT)
+        # 真实发出的 system 已替换表情包占位符，所以只校验前段一致
+        assert requests[0][0]["content"].startswith(SYSTEM_PROMPT.split("{{STICKER_NAMES}}")[0])
         assert "Replace safety" in requests[0][0]["content"]
         assert all("Replace safety" not in m.get("content", "")
                    for m in requests[0][1:] if m["role"] == "user")

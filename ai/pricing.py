@@ -14,6 +14,16 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+# 各模型的**真实上下文窗口**（token）。
+# 不能用配置里的 ctx：那是用户随手填的（线上填了 2000，实际窗口 128K），
+# 用错的上限会让"一句话就占 69%"这种荒唐数字。
+MODEL_CONTEXT = {
+    "deepseek-flash": 131072,
+    "deepseek-v4-pro": 1048576,
+    "deepseek-chat": 65536,
+    "deepseek-reasoner": 65536,
+}
+
 # 每 100 万 token 的美元价格：(谷时, 峰时)
 # 谷时 = 峰时的 50%，这是官方公布的规则，不是我们自己折的。
 PRICES: dict[str, dict[str, tuple[float, float]]] = {
@@ -98,6 +108,23 @@ def is_peak(moment: datetime | None = None) -> bool:
         return False
     hour = utc.hour
     return any(start <= hour < end for start, end in PEAK_WINDOWS)
+
+
+def context_window(model_id: str, configured=None) -> int | None:
+    """模型真实上下文窗口。
+
+    优先用内置的真实值（按型号前缀归一）；型号不认识时才退回配置值。
+    **不取两者的较小值**——配置里的 ctx 常常填错（线上填 2000，
+    真实窗口 128K），取较小值会算出"一句话占 69%"这种假数字。
+    """
+    key = canonical_model(model_id)
+    if key and key in MODEL_CONTEXT:
+        return MODEL_CONTEXT[key]
+    try:
+        value = int(configured or 0)
+        return value if value > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def price_of(model_id: str, moment: datetime | None = None):

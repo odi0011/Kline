@@ -186,6 +186,16 @@
 .bubbleRow[data-role="user"] { justify-content: flex-end; }
 .bubbleRow[data-role="bot"] { justify-content: flex-start; }
 
+/* 表情包：没有气泡底色，贴纸本身就是内容。
+   比气泡略大一点、带轻微阴影，像贴上去的一张图。 */
+.stickerRow { display: flex; }
+.stickerRow[data-role="user"] { justify-content: flex-end; }
+.stickerRow[data-role="bot"] { justify-content: flex-start; }
+.stickerRow svg {
+  filter: drop-shadow(0 2px 6px rgba(16, 24, 40, 0.12));
+  border-radius: 50%;
+}
+
 .bubble {
   max-width: 84%;
   min-width: 0;
@@ -412,74 +422,58 @@
 /* 灵动岛是**横向胶囊**，不是正圆：即使内容为空也要有明确的长宽比。
    高度 34px，最小宽度 96px（≈ 2.8:1），左右各留出空白，
    头像居中偏左——这样空态也是"岛"而不是一个圆点。 */
-/* 灵动岛是**横向胶囊**，不是正圆：即使内容为空也要有明确的长宽比。
-   高度 34px、最小宽度 86px（≈2.5:1）——再宽空态就显得头重脚轻，
-   再窄就退回成圆了。 */
+/* 折叠态：顶部居中的玻璃圆环（不是横条）。
+   圆形直径 46px，头像居中；忙碌/未读时右下角出小点，
+   展开时从圆的位置放大成对话窗。 */
 .island {
   position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 0;
-  height: 34px;
-  min-width: 86px;
-  padding: 0 9px;
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  padding: 0;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.52);
-  border: 1px solid rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(18px) saturate(170%);
   -webkit-backdrop-filter: blur(18px) saturate(170%);
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.9) inset,
-    0 6px 20px rgba(16, 24, 40, 0.14);
+    0 6px 20px rgba(16, 24, 40, 0.16);
   cursor: pointer;
-  overflow: hidden;
+  overflow: visible;
   font: inherit;
   color: #1c2333;
 }
 .island:hover { background: rgba(255, 255, 255, 0.68); }
 
-.islandAvatar { position: relative; flex: none; display: block; width: 22px; height: 22px; }
-.islandAvatar img { display: block; width: 22px; height: 22px; border-radius: 50%; object-fit: cover; }
+.islandAvatar { position: relative; display: block; width: 30px; height: 30px; }
+.islandAvatar img { display: block; width: 30px; height: 30px; border-radius: 50%; object-fit: cover; }
 
-/* 展开的文案区：宽度从 0 生长到内容宽度 */
-.islandText {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  overflow: hidden;
-  white-space: nowrap;
-}
-.islandText b {
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  color: rgba(28, 35, 51, 0.72);
-}
-
-/* 忙碌时三个点依次呼吸 */
-.islandDots { display: inline-flex; gap: 2px; flex: none; }
-.islandDots i {
-  width: 3px;
-  height: 3px;
+/* 忙碌：右下角一圈旋转弧，提示"在算" */
+.islandBusy {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: var(--accent-deep, #b45309);
-  animation: pillDot 1.05s ease-in-out infinite;
+  border: 1.5px solid rgba(240, 185, 11, 0.28);
+  border-top-color: var(--accent, #f0b90b);
+  animation: islandSpin 0.9s linear infinite;
 }
-.islandDots i:nth-child(2) { animation-delay: 0.16s; }
-.islandDots i:nth-child(3) { animation-delay: 0.32s; }
+@keyframes islandSpin { to { transform: rotate(360deg); } }
 
-/* 未读小点：贴在胶囊右端（灵动岛右侧信息区的位置） */
+/* 未读：右下角黄点 */
 .islandBadge {
   position: absolute;
-  top: 50%;
-  right: 9px;
-  width: 6px;
-  height: 6px;
-  margin-top: -3px;
+  right: 5px;
+  bottom: 5px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--accent, #f0b90b);
-  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.92);
   display: none;
 }
 .island[data-unread] .islandBadge { display: block; }

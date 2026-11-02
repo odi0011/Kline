@@ -6,20 +6,30 @@
 import asyncio
 import copy
 
-from ai.agent import SYSTEM_PROMPT, _system_content
+from ai.agent import STICKER_NAMES, SYSTEM_PROMPT, _system_content
 from tests.test_agent import completion, make_manager, wait_for
 
 
 def test_no_custom_returns_base_prompt():
-    assert _system_content("") == SYSTEM_PROMPT
-    assert _system_content(None) == SYSTEM_PROMPT
-    assert _system_content("   ") == SYSTEM_PROMPT
+    # 返回的是**已经替换过表情包占位符**的版本，不能直接和模板比
+    text = _system_content("")
+    assert text == SYSTEM_PROMPT.replace("{{STICKER_NAMES}}", " / ".join(STICKER_NAMES))
+    assert "{{STICKER_NAMES}}" not in text, "占位符必须被替换掉"
+
+
+def test_sticker_names_are_rendered_into_prompt():
+    """表情包名字列表要真的写进提示词，否则模型不知道该发哪个。"""
+    from ai.agent import STICKER_NAMES
+    text = _system_content("")
+    for name in STICKER_NAMES:
+        assert name in text, f"提示词里缺少表情包 {name}"
 
 
 def test_identity_is_appended_into_system():
     text = _system_content("你叫 ODDD，底层模型是 claude-opus-5.5")
     assert "claude-opus-5.5" in text
-    assert text.startswith(SYSTEM_PROMPT), "基础提示词不能被替换掉"
+    assert text.startswith(SYSTEM_PROMPT.split("{{STICKER_NAMES}}")[0][:200]), \
+        "基础提示词不能被替换掉"
 
 
 def test_safety_boundaries_survive_identity():
