@@ -97,6 +97,48 @@
   color: #1c2333;
 }
 
+/* 胶囊里的文字：空闲是名字，忙碌时换成实时状态短句。
+   用 overflow:hidden 兜住换词时的位移，不让胶囊高度跳动。 */
+.pillText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: #1c2333;
+  display: block;
+}
+.pillText[data-busy] {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: rgba(28, 35, 51, 0.66);
+  letter-spacing: 0.01em;
+}
+
+/* 忙碌时三个点依次呼吸，提示"在动"，但不用转圈那种廉价动画 */
+.pillDots {
+  display: inline-flex;
+  gap: 2px;
+  flex: none;
+  margin-left: 3px;
+}
+.pillDots i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--accent-deep, #b45309);
+  animation: pillDot 1.05s ease-in-out infinite;
+}
+.pillDots i:nth-child(2) { animation-delay: 0.16s; }
+.pillDots i:nth-child(3) { animation-delay: 0.32s; }
+
+@keyframes pillDot {
+  0%, 60%, 100% { opacity: 0.28; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-1.5px); }
+}
+
 /* 在线点：贴着头像右下角 */
 .onlineDot {
   position: absolute;
@@ -122,6 +164,16 @@
   flex-direction: column;
   gap: 8px;
   padding: 46px 10px 12px;
+}
+
+/* 每组气泡的入场包装：本身不产生额外间距，只承载 transform。
+   用纵向 flex 承接内部的多枚气泡（文字 + 图片 + 文件各自独立成泡），
+   间距由 gap 给，和 threadViewport 一致的节奏。 */
+.groupEnter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
 }
 
 .empty {

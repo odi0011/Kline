@@ -336,6 +336,22 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
     else if (id === "reset") resetPosition()
   }
 
+  /** 忙碌时标题栏显示的那句状态：取最后一条进行中消息的 progress.status。
+      后端在每轮模型请求和每次工具调用时都会写一句（"在判断方向…"）。 */
+  const statusLine = (() => {
+    if (!busy) return ""
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role === "user") continue
+      if (m.status === "running" || m.status === "queued") {
+        const line = m.progress?.status
+        if (line) return String(line)
+        return m.status === "queued" ? "排队中…" : "在想…"
+      }
+    }
+    return "在想…"
+  })()
+
   // 折叠态：一个圆形玻璃按钮，落在设置按钮正上方
   if (!open) {
     const spot = launcherSpot
@@ -379,12 +395,28 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
             收起走右侧菜单里的「收起窗口」。 */}
         <header className={styles.header} title="拖动可移动窗口"
           onPointerDown={startDrag}>
-          <span className={styles.titlePill}>
+          {/* 胶囊：空闲时是名字，忙碌时变成一句实时状态（"在判断方向…"），
+              让人知道它此刻在干什么，而不是只看到一个转圈。
+
+              不用 AnimatePresence 做换词：它的 exit 会把旧节点停在
+              opacity:0 上（动画时间轴被冻结的环境里就是永久不可见）。
+              改成同一个元素上直接换文本 + key 触发轻量入场。 */}
+          <span className={styles.titlePill} data-busy={busy || undefined}>
             <span className={styles.avatarWrap}>
               <img src="/icon-32.png" alt="" width={20} height={20} />
               <i className={styles.onlineDot} data-on={connected || undefined} />
             </span>
-            <b>ODDD</b>
+            <motion.b
+              key={busy ? (statusLine || "working") : "idle"}
+              className={styles.pillText}
+              data-busy={busy || undefined}
+              initial={reduced ? false : { y: 3 }}
+              animate={{ y: 0 }}
+              transition={reduced ? { duration: 0 }
+                : { type: "spring", stiffness: 520, damping: 36, mass: 0.6 }}>
+              {busy ? (statusLine || "在想…") : "ODDD"}
+            </motion.b>
+            {busy && <span className={styles.pillDots} aria-hidden><i /><i /><i /></span>}
           </span>
 
           {/* 更多菜单用项目统一的 GlassMenu（custom 触发器复用这枚圆钮），
@@ -410,7 +442,17 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
             return (
               <Fragment key={group.key}>
                 {gap ? <p className={styles.timeDivider}>{dayLabel(group.at)}</p> : null}
-                <MessageGroup items={group.items} />
+                {/* 气泡入场：只做位移+缩放，**不动 opacity**。
+                    动画时间轴在某些环境（后台标签页）会被冻结，
+                    以 opacity:0 起始会让气泡永久不可见。
+                    必须是真实块级包装（display:contents 上 transform 无效）。 */}
+                <motion.div className={styles.groupEnter}
+                  initial={reduced ? false : { y: 6, scale: 0.985 }}
+                  animate={{ y: 0, scale: 1 }}
+                  transition={reduced ? { duration: 0 }
+                    : { type: "spring", stiffness: 480, damping: 34, mass: 0.7 }}>
+                  <MessageGroup items={group.items} />
+                </motion.div>
               </Fragment>
             )
           })}

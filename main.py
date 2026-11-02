@@ -700,6 +700,9 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             "drift": analysis.get("drift") or {},
             "evaluations": analysis.get("liveEvaluations") or {},
             "params": analysis.get("params") or {},
+            # 形态胜率：前端形态卡片上显示的就是这份数据。
+            # 之前没接进来，Agent 被问"哪种形态胜率最高"只能回"我没有这个工具"。
+            "patternStats": storage.pattern_stats() if storage else {},
             "recentEvents": (snapshot.get("events") or [])[-40:],
             "news": [{key: item.get(key) for key in ("title", "source", "url", "ts", "desc")}
                      for item in hub.news[:30]],

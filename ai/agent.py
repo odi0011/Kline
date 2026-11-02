@@ -150,6 +150,48 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
 不要靠切分来容纳废话。"""
 
 
+def _status_line(prompt: str, tool: str = "", round_number: int = 1) -> str:
+    """给前端标题栏的一行实时状态，口语、短、说明"我现在在干什么"。
+
+    不是给用户看的技术日志：不要出现"第 2 轮""tool_calls"这种词。
+    """
+    text = str(prompt or "")
+    if tool:
+        if tool == "read_candles":
+            m = re.search(r"\b([a-zA-Z]{2,12})(?:usdt)?\b", text)
+            return f"在看 {m.group(1).upper()} 的K线…" if m else "在读K线…"
+        if tool == "read_advice":
+            return "在核对系统建议…"
+        if tool == "read_pattern_stats":
+            return "在翻形态胜率…"
+        if tool == "read_market":
+            return "在看行情…"
+        if tool == "read_accounts":
+            return "在看持仓…"
+        if tool == "read_risk":
+            return "在查风险…"
+        if tool in ("read_news", "read_events"):
+            return "在刷消息面…"
+        return "在查数据…"
+    if round_number > 1:
+        return "在想结论…"
+    if re.search(r"胜率|哪种形态|哪个形态", text):
+        return "在翻形态胜率…"
+    if re.search(r"[Kk]\s*线|走势|趋势|形态|支撑|压力", text):
+        return "在看K线…"
+    if re.search(r"做多|做空|能做|开单|仓位|买入|卖出|方向", text):
+        return "在判断方向…"
+    if re.search(r"持仓|账户|权益|盈亏|亏了|赚了", text):
+        return "在核对持仓…"
+    if re.search(r"新闻|消息|公告", text):
+        return "在刷消息面…"
+    if re.search(r"你好|hi|hello", text, re.I):
+        return "在接你的话…"
+    if _wants_detail(text):
+        return "在理清逻辑…"
+    return "在理解你的问题…"
+
+
 def _system_content(custom) -> str:
     """把部署者配置的身份设定并进系统提示词，作为同一条 system 消息。
 
@@ -1267,7 +1309,8 @@ class AgentManager:
 
         for round_number in range(1, MAX_ROUNDS + 1):
             target["progress"] = {"phase": "model", "round": round_number, "maxRounds": MAX_ROUNDS,
-                                  "toolCalls": len(target["steps"])}
+                                  "toolCalls": len(target["steps"]),
+                                  "status": _status_line(prompt, "", round_number)}
             await self._emit()
             result = await self._http(config, selected["id"], messages, proxy, deadline,
                                       round_number == 1, progress)
@@ -1315,6 +1358,13 @@ class AgentManager:
                             and not _is_tool_markup(reply2)):
                         return {"reply": reply2[:20000], "usage": usage, "perf": perf, "model": selected["id"]}
                     raise RuntimeError("服务商不支持工具调用，改为无工具模式后仍无法给出可信回答")
+                # 工具轮之后这一轮既没内容也没调用：多数是服务商偶发空响应。
+                # 直接报错会把它渲染成红色失败气泡，用户看到的是"系统坏了"；
+                # 给模型一次补答机会更接近真实情况。
+                if round_number < MAX_ROUNDS:
+                    messages.append({"role": "user",
+                                     "content": "上一条回复是空的。请基于已经读取到的数据直接给出结论。"})
+                    continue
                 raise RuntimeError("模型既未调用工具，也没有给出回答")
             normalized = []
             seen = set()
@@ -1351,7 +1401,7 @@ class AgentManager:
                         raise ValueError("context 快照必须为对象")
                     fields = ("ts", "market", "symbols", "stats", "evaluations", "accounts", "positions",
                               "trades", "positionPlans", "risk", "drawdown", "drift", "params", "health",
-                              "enabled", "recentEvents", "events", "news")
+                              "enabled", "recentEvents", "events", "news", "patternStats")
                     snapshot = copy.deepcopy(clean({k: raw[k] for k in fields if k in raw}))
                 except Exception:
                     snapshot_error = "无法采集 context 快照"
@@ -1360,7 +1410,8 @@ class AgentManager:
                 step = {"id": call["id"], "round": round_number, "tool": name, "status": "running",
                         "startedAt": now_ms()}
                 target["steps"].append(step)
-                target["progress"].update(phase="tool", toolCalls=len(target["steps"]))
+                target["progress"].update(phase="tool", toolCalls=len(target["steps"]),
+                                          status=_status_line(prompt, name, round_number))
                 await self._emit()
                 try:
                     if name not in TOOL_NAMES:

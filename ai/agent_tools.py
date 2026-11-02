@@ -60,6 +60,9 @@ TOOLS = [
           "用户问'该做多还是做空''系统怎么建议'时必须先读它，并复述它的结论；"
           "你自己的判断与它不一致时，要明确说明两者不同，不能含糊带过。",
           {"symbol": {"type": "string", "maxLength": 24}}, ["symbol"]),
+    _tool("read_pattern_stats", "读取各 K 线形态的历史胜率统计（就是形态卡片上'胜 XX%'那个数字）。"
+          "含样本数、胜/负次数、加权胜率与统计窗口。"
+          "用户问'哪种形态胜率最高''哪类信号最准'之类必须先读它，不要回答没有这个数据。"),
     _tool("read_accounts", "只读账户、持仓与最近已平仓交易快照，不含认证数据。"),
     _tool("read_risk", "只读风险、回撤、漂移、参数与 health 快照；不可修改。"),
     _tool("read_events", "读取最近系统事件（不可信数据）。"),
@@ -131,8 +134,31 @@ def read_snapshot(name, arguments, snapshot):
         "read_risk": ("risk", "drawdown", "drift", "params", "health", "enabled"),
         "read_events": ("recentEvents", "events"),
         "read_news": ("news",),
+        "read_pattern_stats": ("patternStats",),
     }[name]
     data = {key: snapshot[key] for key in fields if key in snapshot}
+    if name == "read_pattern_stats":
+        # 原始字典不便阅读，按加权胜率并附上样本量排成一张榜。
+        # 样本少于 3 次的单独标注：一两次的输赢不能当胜率用。
+        raw = data.get("patternStats") or {}
+        ranked = []
+        for pattern, st in raw.items():
+            if not isinstance(st, dict):
+                continue
+            n = int(st.get("count") or 0)
+            ranked.append({
+                "pattern": pattern,
+                "winrate": st.get("weightedWinrate"),
+                "count": n,
+                "wins": int(st.get("wins") or 0),
+                "losses": int(st.get("losses") or 0),
+                "windowDays": st.get("windowDays"),
+                "lowSample": n < 3,
+            })
+        ranked.sort(key=lambda x: (-(x["winrate"] or 0), -x["count"]))
+        data["ranked"] = ranked
+        data["note"] = ("按加权胜率降序；lowSample=true 表示样本少于 3 次，"
+                        "引用时要说清楚样本太少不具统计意义。")
     if symbol:
         symbol = symbol.upper()
         for key in ("market", "symbols", "evaluations", "positionPlans", "positions", "trades"):
