@@ -217,12 +217,14 @@ class TelegramBot:
             self.send(chat_id, "这个附件我没法读：只支持图片（≤2MB）和文本文件。")
             return
         try:
+            # 只发媒体时 text 为空，原样传空串：Agent 那边会补一句给模型看的说明，
+            # 但会话记录里保留空 content，网页端就只渲染附件气泡。
             if not self.on_message:
                 reply = ""
             elif self._accepts_attachments:
-                reply = await self.on_message(chat_id, text or "（见附件）", attachments)
+                reply = await self.on_message(chat_id, text, attachments)
             else:
-                reply = await self.on_message(chat_id, text or "（见附件）")
+                reply = await self.on_message(chat_id, text)
         except Exception as exc:
             reply = f"处理失败：{type(exc).__name__}"
         if reply:

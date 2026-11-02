@@ -830,9 +830,13 @@ class AgentManager:
 
     async def ask(self, prompt, model="", attachments=None):
         self._writable()
-        prompt = _text(prompt, "问题", 6000, True)
+        # 允许只发附件不带文字：内容里的 prompt 留空，前端就只会渲染附件气泡，
+        # 不会多出一行"（见附件）"占位文字。给模型的那份会补一句说明。
+        prompt = _text(prompt, "问题", 6000, False)
         model = _text(model, "model", 200)
         prepared = _attachments(attachments)
+        if not prompt and not prepared:
+            raise ValueError("请输入问题或附件")
         _, selected = self._model(model)
 
         # 上一轮还没回完就又说了一句：把两句并成一次提问，取消上一个回复后重来。
@@ -855,6 +859,9 @@ class AgentManager:
         user_message = {"id": uuid.uuid4().hex[:12], "role": "user", "content": prompt, "ts": now_ms()}
         if refs:
             user_message["attachments"] = refs
+        # 会话里存原始 prompt（可能为空 → 前端只画附件气泡）；
+        # 给模型的另给一句，否则纯图片请求会带着空文本块，部分服务商会拒绝。
+        model_prompt = prompt or ("请看附件内容并回应。" if refs else prompt)
         self.chat = (self.chat + [
             user_message,
             {"id": assistant_id, "role": "assistant", "content": "", "status": "queued",
@@ -867,7 +874,7 @@ class AgentManager:
             raise
         self._chat_id = assistant_id
         runner = asyncio.create_task(
-            self._run_chat(assistant_id, prompt, selected["id"], history, prepared))
+            self._run_chat(assistant_id, model_prompt, selected["id"], history, prepared))
         self.chat_runners.add(runner)
         self._chat_tasks[assistant_id] = runner
         def done(_):
@@ -911,7 +918,9 @@ class AgentManager:
                 previous_id = item.get("id")
                 previous_refs = [r for r in (item.get("attachments") or []) if isinstance(r, dict)]
                 break
-        if not previous_user:
+        # 上一条可能只带附件、没有文字（content 为空串），那也是有效提问，
+        # 不能因为 previous_user 为空就放弃合并。
+        if previous_id is None:
             return None
         # 取消进行中的回复，并把这条空 assistant 连同它对应的 user 一起从会话里摘掉：
         # 合并后的新消息已经包含了前一句，否则用户会看到自己说了两遍。
@@ -923,7 +932,11 @@ class AgentManager:
         self.chat = [m for m in self.chat if m.get("id") not in drop]
         if self._chat_id == pending_id:
             self._chat_id = None
-        merged_prompt = f"{previous_user}\n\n（补充）{base}"
+        # 两边都可能只有附件没有文字，拼装时要处理空串
+        if previous_user and base:
+            merged_prompt = f"{previous_user}\n\n（补充）{base}"
+        else:
+            merged_prompt = previous_user or base
         # 附件沿用上一条 user 的图片/文本引用，再拼上本次新加的
         merged_attachments = list(prepared or [])
         for ref in previous_refs:

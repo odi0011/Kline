@@ -282,10 +282,12 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
     followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
   }
 
-  /** Composer 只上交「文字 + 附件」，请求构造在这里统一做。 */
+  /** Composer 只上交「文字 + 附件」，请求构造在这里统一做。
+      只发附件时 prompt 留空：不能塞一句"（见附件）"充数，
+      那会变成一条真的用户消息，气泡里就多出一行没意义的文字。 */
   const send = async (prompt, attachments = []) => {
     if (!connected) throw new Error("尚未连接服务端")
-    const payload = { prompt: prompt || "（见附件）" }
+    const payload = { prompt: prompt || "" }
     if (attachments.length) {
       payload.attachments = attachments.map((file) => ({
         kind: file.kind, name: file.name, mime: file.mime, data: file.data,
