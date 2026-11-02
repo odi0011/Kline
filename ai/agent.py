@@ -514,6 +514,10 @@ class AgentManager:
         self._chat_slots = asyncio.Semaphore(MAX_CHAT_CONCURRENT)
         self._action_lock = asyncio.Lock()
         self._chat_id = None
+        # 从历史调用学到的"字符 → token"换算比。流式过程中拿不到 usage，
+        # 状态栏需要用它估算输入/输出量。按真实 usage 滚动更新，
+        # 比写死一个常数更准（不同服务商、中英文混排差异很大）。
+        self._chars_per_token = 1.6
         self._closing = False
         self.persistence_error = ""
         self._load_blocked = False
@@ -653,6 +657,20 @@ class AgentManager:
             raise PersistenceError(self.persistence_error) from None
         self.persistence_error = ""
 
+    def _learn_ratio(self, usage: dict, input_chars: int, output_chars) -> None:
+        """用服务商回报的真实 token 数校正"字符→token"换算比。
+
+        只作为**下一轮估算**的依据：当前这轮的真实值已经在 usage 里，
+        估算只在流式过程中、拿不到 usage 时使用。
+        取指数平滑（新样本权重 0.3），避免单次异常把比值带偏。
+        """
+        prompt_tokens = _num(usage.get("prompt_tokens"))
+        if input_chars and prompt_tokens and prompt_tokens > 0:
+            ratio = input_chars / prompt_tokens
+            if 0.5 <= ratio <= 8.0:          # 明显离群的值不采信
+                self._chars_per_token = round(
+                    (self._chars_per_token or 1.6) * 0.7 + ratio * 0.3, 3)
+
     def stats(self):
         """输入框上方那条状态条的数据。全部来自真实调用，不做估算填充：
 
@@ -692,14 +710,28 @@ class AgentManager:
             # 与其显示一个错数字，不如先空着。
             tps = round(completion_tokens / (decode_ms / 1000), 1)
         elif perf.get("live") and perf.get("chars") and decode_ms:
-            # 流式进行中：用已收到的字符数估 token（中文约 1 字 ≈ 1.5 token，
-            # 英文约 4 字符 ≈ 1 token，取折中 1.6 字符/token）。
-            # 标 live 让前端知道这是估算，结束后会换成服务商的真实值。
-            est_tokens = max(1.0, float(perf["chars"]) / 1.6)
+            # 流式进行中：用已收到的字符数估 token。
+            # _chars_per_token 是从历史真实 usage 学到的比值（见 _learn_ratio），
+            # 比写死 1.6 更贴当前服务商/语种。
+            cpt = self._chars_per_token or 1.6
+            est_tokens = max(1.0, float(perf["chars"]) / cpt)
             tps = round(est_tokens / (decode_ms / 1000), 1)
+            # 输出 token 也估一份，费用才能实时算
+            if completion_tokens is None:
+                completion_tokens = int(est_tokens)
 
         prompt_tokens = _num(usage.get("prompt_tokens"))
         hit = _num(usage.get("prompt_cache_hit_tokens"))
+        # 流式进行中服务商还没给 usage：用字符数估一份，让状态栏先动起来。
+        # 这样缓存/上下文/费用三项不用等回复结束才更新。
+        live_est = bool(perf.get("live"))
+        if prompt_tokens is None and live_est:
+            cpt = self._chars_per_token or 1.6
+            prompt_tokens = int(perf.get("inputChars", 0) / cpt) or None
+            if prompt_tokens:
+                # 前缀缓存：上一次请求的前缀这轮还能命中
+                prefix_tokens = int(perf.get("prefixChars", 0) / cpt)
+                hit = min(prompt_tokens, prefix_tokens)
         cache_hit = None
         if hit is not None and prompt_tokens:
             cache_hit = round(hit / prompt_tokens * 100, 1)
@@ -725,7 +757,16 @@ class AgentManager:
         cost_info = {}
         try:
             fx = (self.config_fn() or {}).get("fx_rate")
-            cost_info = pricing.describe(last.get("model") or "", usage, fx=fx)
+            # 流式过程中 usage 还没来，用上面估算出来的 token 数算费用，
+            # 否则这一项要等回复结束才显示。
+            billing = dict(usage)
+            if prompt_tokens is not None:
+                billing["prompt_tokens"] = prompt_tokens
+            if completion_tokens is not None:
+                billing["completion_tokens"] = completion_tokens
+            if hit is not None:
+                billing["prompt_cache_hit_tokens"] = hit
+            cost_info = pricing.describe(last.get("model") or "", billing, fx=fx)
         except Exception:
             cost_info = {"cost": None, "costUsd": None, "note": "费用计算失败"}
 
@@ -1561,6 +1602,20 @@ class AgentManager:
         usage = {}
         # 性能统计：多轮工具调用累加，写进消息里给前端的状态条读
         perf = {"ttftMs": 0, "decodeMs": 0, "chars": 0, "requests": 0, "streamed": False}
+        # 输入侧规模：流式过程中服务商还不给 usage，但状态栏要实时显示
+        # 上下文占用和费用，所以先按字符数估一份。
+        input_chars = sum(len(str(m.get("content") or "")) for m in messages
+                          if isinstance(m.get("content"), str))
+        for m in messages:
+            content = m.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        input_chars += len(part["text"])
+        perf["inputChars"] = input_chars
+        # 前缀缓存能命中的部分 ≈ 上一次请求的前缀（同一轮对话里只增不改）。
+        # 用它估一个"实时命中率"，结束后用服务商的真实值覆盖。
+        perf["prefixChars"] = int(getattr(self, "_last_prefix_chars", 0))
         live = {"ttftMs": 0, "chars": 0, "deltas": 0, "latchedAt": 0.0}
         loop = asyncio.get_running_loop()
 
@@ -1591,6 +1646,9 @@ class AgentManager:
                 # 解码窗口刚开始那一下只有几十毫秒，拿来算 TPS 会得出上千的假数字
                 "decodeMs": decode_ms if decode_ms >= 600 else 0,
                 "streamed": True, "requests": 1, "live": True,
+                # 输入侧规模：stats() 用它实时估上下文占用和费用
+                "inputChars": perf.get("inputChars", 0),
+                "prefixChars": perf.get("prefixChars", 0),
             }
             try:
                 loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._broadcast()))
@@ -1620,6 +1678,8 @@ class AgentManager:
             for key, value in (result.get("usage") or {}).items():
                 if type(value) in (int, float) and math.isfinite(value):
                     usage[key] = usage.get(key, 0) + value
+            # 用真实 usage 校正"字符→token"比值，下一轮估算会更准
+            self._learn_ratio(usage, perf.get("inputChars", 0), result.get("chars"))
             calls = result.get("tool_calls") or []
             if not isinstance(calls, list) or len(calls) > 8:
                 raise RuntimeError("tool_calls 无效或超过每轮 8 次限制")
@@ -1786,6 +1846,13 @@ class AgentManager:
             message.update(status="succeeded", content=pieces[0],
                            usage=result["usage"], perf=result.get("perf") or {},
                            model=result["model"])
+            # 记住这轮的上下文规模：下一轮的"可命中前缀"就是它。
+            # 前缀缓存按 64 token 块匹配，所以只有严格相同的前缀才算命中；
+            # 追加式上下文正好保证"上一轮的全部 = 这一轮的前缀"。
+            try:
+                self._last_prefix_chars = self._context_chars()
+            except Exception:
+                self._last_prefix_chars = 0
             if len(pieces) > 1:
                 extra = []
                 for idx, piece in enumerate(pieces[1:], start=2):
