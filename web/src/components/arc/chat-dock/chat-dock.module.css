@@ -191,8 +191,16 @@
 
 /* ---------- 附件气泡 ---------- */
 
-/* 图片气泡：内容就是宫格，内边距压到最小 */
-.imageBubble { padding: 3px; width: 190px; max-width: 90%; }
+/* 图片气泡：图片直接铺满，由气泡自己裁外圈圆角。
+   之前是「气泡 16px 圆角 + 3px 内边距 + 图片 6px 圆角」，三层圆角互不重合，
+   四个角会露出深色内边距形成的楔形，看起来就是"图片被裁掉一块"。
+   正确做法：内边距归零，气泡 overflow:hidden 用与外层一致的圆角裁切。 */
+.imageBubble {
+  padding: 0;
+  width: 190px;
+  max-width: 90%;
+  overflow: hidden;
+}
 
 /* 3 列宫格，超出自动换行。
    必须给宫格一个明确宽度：气泡本身是 inline 收缩的，只写 1fr 时
@@ -201,7 +209,7 @@
   display: grid;
   width: 100%;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 3px;
+  gap: 2px;
 }
 .imageGrid[data-count="1"] { grid-template-columns: minmax(0, 1fr); }
 .imageGrid[data-count="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -211,9 +219,12 @@
   width: 100%;
   aspect-ratio: 1 / 1;
   overflow: hidden;
-  border-radius: 6px;
+  /* 单张图铺满整个气泡，外圈圆角由 .imageBubble 裁；
+     多张图才需要自己的小圆角，否则内部分隔处是硬直角 */
+  border-radius: 0;
   background: rgba(28, 35, 51, 0.06);
 }
+.imageGrid:not([data-count="1"]) .thumb { border-radius: 4px; }
 /* 单张图不裁成正方形，保持原始比例 */
 .imageGrid[data-count="1"] .thumb { aspect-ratio: auto; max-height: 260px; }
 .thumb img {
