@@ -39,10 +39,10 @@
 }
 .row:hover { background: rgba(28, 35, 51, 0.045); }
 
-/* 时间列：秒级，固定宽度避免每行抖动 */
+/* 时间列：只留秒级后 4 位（mm:ss），省出宽度给算式 */
 .time {
   flex: none;
-  width: 44px;
+  width: 34px;
   font-size: 8.5px;
   color: rgba(16, 24, 40, 0.3);
 }
@@ -54,24 +54,26 @@
   background: rgba(28, 35, 51, 0.12);
 }
 
-/* 标签列：固定宽度，让算式左边缘对齐成一列 */
+/* 标签列：窄到只放标识符，把空间都留给算式 */
 .tag {
   flex: none;
-  width: 34px;
-  font-size: 8.5px;
+  width: 26px;
+  font-size: 8px;
   font-weight: 700;
   color: rgba(16, 24, 40, 0.34);
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: clip;
 }
 .expr {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: clip;
 }
 .value {
   flex: none;
+  min-width: 40px;
+  text-align: right;
   font-weight: 600;
   color: #1c2333;
   font-variant-numeric: tabular-nums;

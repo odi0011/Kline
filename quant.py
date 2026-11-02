@@ -735,10 +735,10 @@ class QuantEngine:
         add("in", "rsi", "RSI", round(state.get("rsi") or 0, 1) if state.get("rsi") is not None else None)
         add("in", "adx", "ADX", round(state.get("adx") or 0, 1) if state.get("adx") is not None else None)
         if state.get("plusDI") is not None and state.get("minusDI") is not None:
-            add("in", "di", "+DI − −DI",
+            add("in", "di", "+DI−−DI",
                 round(float(state["plusDI"]) - float(state["minusDI"]), 2))
         if state.get("atrPct") is not None:
-            add("in", "atr", "ATR 百分位", round(float(state["atrPct"]), 1))
+            add("in", "atr", "ATR位", round(float(state["atrPct"]), 1))
         if state.get("roc") is not None:
             add("in", "roc", "ROC%", round(float(state["roc"]) * 100, 2))
         if state.get("bwPct") is not None:
@@ -756,9 +756,9 @@ class QuantEngine:
 
         # 3) 合计 ÷ 权重和
         if w:
-            add("sum", "wsum", "Σ权重", round(sum(float(x) for x in w.values()), 2))
+            add("sum", "wsum", "Σw", round(sum(float(x) for x in w.values()), 2))
         if total is not None:
-            add("sum", "total", f"{dir_label}方合计 ÷ Σw", round(float(total), 2), tone)
+            add("sum", "total", f"{dir_label}÷Σw", round(float(total), 2), tone)
 
         # 4) 分离度
         if total is not None and opposite is not None:
@@ -770,19 +770,18 @@ class QuantEngine:
         if len(scores) > 1:
             mean = sum(scores) / len(scores)
             sd = (sum((x - mean) ** 2 for x in scores) / len(scores)) ** 0.5
-            add("sigma", "sd", f"σ 评分 (n={len(scores)})", round(sd, 2))
+            add("sigma", "sd", f"σ(n={len(scores)})", round(sd, 2))
             stability = max(0.0, min(100.0, 100 - sd * 5))
             if total is not None:
                 est = (float(total) / 100) * (stability / 100) * 100
-                add("est", "est", f"估算 {total:.2f}% × 稳 {stability:.1f}%",
-                    round(est), tone)
+                add("est", "est", f"{total:.0f}%×稳{stability:.0f}%", round(est), tone)
 
         # 6) 否决理由（有才记）
         for veto in score.vetoes or []:
             add("veto", "veto", str(veto)[:40], None, "warn")
 
         # 尾行：本轮结论，方便在长流里定位
-        add("verdict", "verdict", f"结论 {dir_label} · {score.grade}",
+        add("verdict", "verdict", f"{dir_label} {score.grade}",
             round(float(score.score), 2), tone)
 
         self.calc_stream.extend(rows)

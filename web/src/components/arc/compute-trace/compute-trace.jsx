@@ -18,25 +18,32 @@ const fmt = (v) => {
   if (n == null) return ""
   return Math.abs(n) >= 1000 ? n.toFixed(0) : n.toFixed(2)
 }
+/** 秒级时间只显示 mm:ss——小时位在短线窗口里没有信息量，省下的宽度给算式 */
 const hhmmss = (ts) => {
   const n = num(ts)
   if (n == null) return ""
   const d = new Date(n)
   const p = (x) => String(x).padStart(2, "0")
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  return `${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
+
+/** 估值/占比这类整数量不显示两位小数，避免 52.00 这种噪声 */
+const isCount = (kind) => kind === "est" || kind === "verdict"
 
 /** 一行计算：时间 · 币种图标 · 标签 · 算式 · 结果 */
 const CalcRow = ({ row }) => {
   const tone = row.tone || undefined
   const showValue = row.value != null && row.value !== ""
+  const shown = isCount(row.kind) && num(row.value) != null
+    ? String(Math.round(num(row.value)))
+    : fmt(row.value)
   return (
     <div className={styles.row} data-kind={row.kind} data-tone={tone}>
       <span className={styles.time}>{hhmmss(row.ts)}</span>
       {row.sym ? <CoinAvatar symbol={row.sym} size={12} /> : <span className={styles.dot} />}
       <span className={styles.tag}>{row.tag}</span>
       <span className={styles.expr}>{row.expr}</span>
-      {showValue ? <b className={styles.value}>{fmt(row.value)}</b> : null}
+      {showValue ? <b className={styles.value}>{shown}</b> : null}
     </div>
   )
 }
