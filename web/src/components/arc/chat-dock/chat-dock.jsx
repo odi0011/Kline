@@ -1,11 +1,17 @@
 /* 悬浮聊天窗（ODDD）。
-   能力：拖动移动、折叠到左下角设置按钮上方（弹性粘性动画）、玻璃材质。
-   只显示气泡对话——思考过程与工具调用不展示给用户。
-   消息/发送走 App 注入的 onSend（WS agent_action），本组件不碰网络。 */
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+
+   折叠态 = 顶部居中的一枚玻璃胶囊（类似灵动岛）：
+     · 平时是窄胶囊，带头像和在线点
+     · 有未读/正在回复时，胶囊横向生长并显示状态（"在判断方向"）
+     · 点一下从胶囊位置展开成完整对话窗（spring + squircle 圆角变化）
+
+   展开态 = 可拖动的对话窗。
+   折叠/展开动画都由 motion 的 layout 完成——形状在胶囊和卡片之间连续插值，
+   圆角从"半个高度"收到卡片半径，和灵动岛的做法一致。 */
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { motion, useReducedMotion } from "motion/react"
-import { Archive, FileText, Minimize2, MoreHorizontal, RotateCcw, Trash2 } from "lucide-react"
+import { Archive, FileText, MoreHorizontal, RotateCcw, Trash2, X } from "lucide-react"
 import ChatComposer from "./chat-composer"
 import ChatStats from "./chat-stats"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
@@ -15,6 +21,9 @@ import styles from "./chat-dock.module.css"
 const WIDTH = 320
 const HEIGHT = 468
 const MARGIN = 14
+/** 折叠胶囊：贴顶部居中，距顶 10px */
+const ISLAND_TOP = 10
+const ISLAND_H = 34
 const STORAGE_KEY = "oddd.chat.dock.v1"
 
 const STATUS_TEXT = { queued: "排队中", running: "正在处理", failed: "回复失败", cancelled: "已停止" }
@@ -33,22 +42,6 @@ const defaultPos = () => {
   return {
     x: window.innerWidth - WIDTH - MARGIN,
     y: window.innerHeight - HEIGHT - MARGIN,
-  }
-}
-
-const LAUNCHER = 46
-
-/** 折叠后的落点：左下角设置圆按钮的正上方。
-    必须等布局完成才有真实 rect——首次渲染时 .glass-wrap 还没排版，
-    getBoundingClientRect 全是 0，退回兜底值会和设置按钮重叠。 */
-const collapsedTarget = () => {
-  const anchor = document.querySelector(".glass-wrap")
-  const box = anchor?.getBoundingClientRect()
-  const hasLayout = box && box.height > 0 && box.top > 0
-  if (!hasLayout) return null
-  return {
-    x: Math.round(box.left + box.width / 2 - LAUNCHER / 2),
-    y: Math.round(box.top - LAUNCHER - 10),
   }
 }
 
@@ -104,8 +97,7 @@ function FileBubble({ item, mine }) {
 
 /** 一轮消息的渲染单元。
     后端会把过长的回复拆成多条（id 带 `-2`/`-3` 后缀），那是同一次回答的
-    分段，视觉上必须是一枚气泡里的几段话；只有附件按类型各自独立成泡。
-    这样一屏消息数等于「用户问了几次」，而不是「模型切了几刀」。 */
+    分段，视觉上必须是一枚气泡里的几段话；只有附件按类型各自独立成泡。 */
 const MessageGroup = memo(function MessageGroup({ items }) {
   const mine = items[0]?.role === "user"
   const texts = items
@@ -202,7 +194,6 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
   const [confirm, setConfirm] = useState(null)   // null | "clear" | "compact"
   const [pos, setPos] = useState(() => loadPos() || defaultPos())
   const scrollRef = useRef(null)
-  const [launcherSpot, setLauncherSpot] = useState(() => ({ x: pos.x, y: pos.y }))
   const dragging = useRef(false)
   const [draggingUi, setDraggingUi] = useState(false)
 
@@ -215,19 +206,6 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
     setPos(next)
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)) } catch { /* 隐私模式忽略 */ }
   }, [])
-
-  // 折叠落点：布局就绪后测量，并在窗口尺寸变化时重测
-  useEffect(() => {
-    if (open) return
-    const measure = () => {
-      const spot = collapsedTarget()
-      if (spot) setLauncherSpot(spot)
-    }
-    measure()
-    const raf = requestAnimationFrame(measure)
-    window.addEventListener("resize", measure)
-    return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", measure) }
-  }, [open])
 
   /** 手写拖拽：pointer 事件绑在 window 上，松手才落盘位置。
       不用 motion 的 drag —— 它在本页（大量 canvas / 浮层）里事件接管不稳定。 */
@@ -303,29 +281,18 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
     return "发送失败，请重试"
   }
 
-  // 折叠：先同步算好落点再卸载窗口，否则按钮会在"上一帧的落点"起步
-  const collapse = () => {
-    const spot = collapsedTarget()
-    if (spot) setLauncherSpot(spot)
-    setOpen(false)
-  }
-
   const resetPosition = () => {
     const spot = defaultPos()
     commitPos(spot.x, spot.y)
   }
 
-  // 清空只清本地的显示列表，服务端会话由 onClear 处理（没有就只关面板不谎称已清）
-  const clearChat = () => {
-    onClear?.()
-  }
+  const clearChat = () => onClear?.()
 
-  /** 「更多」菜单：走统一 GlassMenu，不再自己拼 div。
-      没有"返回"——这个窗口没有上一页，收起放在这里。 */
+  /** 「更多」菜单：走统一 GlassMenu。
+      收起按钮不再放这里——它是标题栏上独立的圆形按钮。 */
   const menuGroups = [{
     id: "g-dock",
     items: [
-      { id: "collapse", label: "收起窗口", icon: <Minimize2 size={12} /> },
       { id: "compact", label: "压缩对话", icon: <Archive size={12} /> },
       { id: "clear", label: "清空全部", icon: <Trash2 size={12} />, danger: true },
       { id: "reset", label: "复位窗口位置", icon: <RotateCcw size={12} /> },
@@ -333,79 +300,111 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
   }]
 
   const onMenuSelect = (id) => {
-    if (id === "collapse") collapse()
-    else if (id === "compact") setConfirm("compact")
+    if (id === "compact") setConfirm("compact")
     else if (id === "clear") setConfirm("clear")
     else if (id === "reset") resetPosition()
   }
 
   /** 忙碌时标题栏显示的那句状态：取最后一条进行中消息的 progress.status。
-      后端在每轮模型请求和每次工具调用时都会写一句（"在判断方向…"）。 */
-  const statusLine = (() => {
+      后端在每轮模型请求和每次工具调用时都会写一句（"在判断方向"）。 */
+  const statusLine = useMemo(() => {
     if (!busy) return ""
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
       if (m.role === "user") continue
       if (m.status === "running" || m.status === "queued") {
-        const line = m.progress?.status
-        if (line) return String(line)
-        // 文案不要带省略号：右侧已经有三个点在做动画，
-        // 再叠一个 "…" 视觉上是 "在想… ⋯"，重复且难看。
-        return m.status === "queued" ? "排队中" : "在想"
+        return m.progress?.status || (m.status === "queued" ? "排队中" : "在想")
       }
     }
     return "在想"
-  })()
+  }, [busy, messages])
 
-  // 折叠态：一个圆形玻璃按钮，落在设置按钮正上方
+  /** 未读：折叠态时如果有新完成的回复，胶囊上出一个小圆点。
+      基准取"上一次折叠那一刻的已完成条数"——不是打开时的条数，
+      否则折叠后收到的回复永远不会算作未读。 */
+  const doneCount = (list) => list.filter((m) => m.role !== "user" && m.content
+    && (m.status === "succeeded" || m.status === "failed")).length
+  const seenRef = useRef(doneCount(messages))
+  const [unread, setUnread] = useState(0)
+  useEffect(() => {
+    if (open) {
+      // 打开着的时候不算未读：用户正在看
+      seenRef.current = doneCount(messages)
+      setUnread(0)
+      return
+    }
+    setUnread(Math.max(0, doneCount(messages) - seenRef.current))
+  }, [messages, open])
+  // 折叠那一刻把基准对齐到当前，之后新增的才算未读
+  const collapse = useCallback(() => {
+    seenRef.current = doneCount(messages)
+    setUnread(0)
+    setOpen(false)
+  }, [messages])
+
+  // ---------- 折叠态：顶部居中的玻璃胶囊 ----------
   if (!open) {
-    const spot = launcherSpot
+    const expanded = busy || unread > 0
     return createPortal(
-      <button key={`launcher-${pos.x}-${pos.y}`} type="button" className={styles.launcher}
-        style={{
-          left: spot.x,
-          top: spot.y,
-          "--from-x": `${pos.x}px`,
-          "--from-y": `${pos.y}px`,
-          "--spot-x": `${spot.x}px`,
-          "--spot-y": `${spot.y}px`,
-        }}
-        onClick={() => setOpen(true)}
-        aria-label="打开 ODDD 对话"
-        title="ODDD 对话">
-        <img src="/icon-32.png" alt="" width={22} height={22} />
-        {busy && <span className={styles.launcherDot} aria-hidden />}
-      </button>,
+      // 外层只负责"贴顶 + 水平居中"（flex），胶囊自己负责形状与动画。
+      // 不让胶囊用 transform 居中：motion 的 layout 动画会接管 transform，
+      // translateX(-50%) 会被覆盖，实测会偏右半个身位。
+      <div className={styles.islandWrap} style={{ top: ISLAND_TOP }}>
+        <motion.button
+          type="button"
+          className={styles.island}
+          data-busy={busy || undefined}
+          data-unread={unread > 0 || undefined}
+          onClick={() => setOpen(true)}
+          aria-label="打开 ODDD 对话"
+          layout
+          initial={reduced ? false : { scale: 0.86 }}
+          animate={{ scale: 1 }}
+          whileTap={reduced ? undefined : { scale: 0.96 }}
+          transition={reduced ? { duration: 0 } : { type: "spring", stiffness: 420, damping: 30, mass: 0.7 }}>
+          <span className={styles.islandAvatar}>
+            <img src="/icon-32.png" alt="" width={20} height={20} />
+            <i className={styles.onlineDot} data-on={connected || undefined} />
+          </span>
+          {/* 忙碌或有未读时横向展开显示状态；平时只有头像，保持"岛"的形状 */}
+          <motion.span className={styles.islandText} layout
+            initial={false}
+            animate={{ width: expanded ? "auto" : 0, opacity: expanded ? 1 : 0, marginLeft: expanded ? 7 : 0 }}
+            transition={reduced ? { duration: 0 }
+              : { type: "spring", stiffness: 460, damping: 34, mass: 0.6 }}>
+            <motion.b key={busy ? statusLine : "unread"} layout="position"
+              initial={reduced ? false : { y: 4 }}
+              animate={{ y: 0 }}>
+              {busy ? (statusLine || "在想") : "新回复"}
+            </motion.b>
+            {busy && <span className={styles.islandDots} aria-hidden><i /><i /><i /></span>}
+          </motion.span>
+          <span className={styles.islandBadge} aria-hidden />
+        </motion.button>
+      </div>,
       document.body,
     )
   }
 
+  // ---------- 展开态：完整对话窗 ----------
   return createPortal(
     <motion.section
       className={styles.dock}
       style={{ position: "fixed", left: pos.x, top: pos.y, width: WIDTH, height: HEIGHT }}
-      // 展开：只做缩放弹出，**不动 opacity**。
-      // 之前用 opacity:0 起始，遇上动画时间轴被冻结（后台标签页）就永远
-      // 停在初始帧、窗口等于消失。可见性必须由默认样式保证。
-      initial={reduced ? false : { scale: 0.9 }}
-      animate={{ scale: 1 }}
+      // 展开：从顶部胶囊的位置放大出来。只做 scale + y，**不动 opacity**——
+      // 动画时间轴被冻结的环境里，opacity:0 起始会让窗口永久不可见。
+      initial={reduced ? false : { scale: 0.72, y: -Math.max(0, pos.y - ISLAND_TOP), borderRadius: 40 }}
+      animate={{ scale: 1, y: 0, borderRadius: 20 }}
+      exit={reduced ? undefined : { scale: 0.8, y: -Math.max(0, pos.y - ISLAND_TOP), borderRadius: 40 }}
       transition={reduced ? { duration: 0 }
-        : { type: "spring", stiffness: 460, damping: 34, mass: 0.8 }}
+        : { type: "spring", stiffness: 380, damping: 32, mass: 0.85 }}
       aria-label="ODDD 对话"
       data-dragging={draggingUi || undefined}>
       <div className={styles.shell}>
-        {/* 悬浮标题栏：胶囊 + 圆形菜单，绝对定位压在消息滚动区之上，
-            不占布局高度（原先是 flex 的一行，会和消息区抢空间）。
-            整个标题栏可拖动窗口。没有返回按钮——这个窗口没有"上一页"，
-            收起走右侧菜单里的「收起窗口」。 */}
+        {/* 悬浮标题栏：胶囊 + 收起钮 + 圆形菜单，绝对定位压在消息滚动区之上。
+            整个标题栏可拖动窗口。 */}
         <header className={styles.header} title="拖动可移动窗口"
           onPointerDown={startDrag}>
-          {/* 胶囊：空闲时是名字，忙碌时变成一句实时状态（"在判断方向…"），
-              让人知道它此刻在干什么，而不是只看到一个转圈。
-
-              不用 AnimatePresence 做换词：它的 exit 会把旧节点停在
-              opacity:0 上（动画时间轴被冻结的环境里就是永久不可见）。
-              改成同一个元素上直接换文本 + key 触发轻量入场。 */}
           <span className={styles.titlePill} data-busy={busy || undefined}>
             <span className={styles.avatarWrap}>
               <img src="/icon-32.png" alt="" width={20} height={20} />
@@ -424,16 +423,30 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
             {busy && <span className={styles.pillDots} aria-hidden><i /><i /><i /></span>}
           </span>
 
-          {/* 更多菜单用项目统一的 GlassMenu（custom 触发器复用这枚圆钮），
-              不要自己写 role="menu" 的 div —— 那会和图表设置菜单两套样式。 */}
-          <GlassMenu label="对话菜单" triggerLabel="更多" trigger="custom" side="bottom"
-            align="end" width={132} groups={menuGroups}
-            onSelect={onMenuSelect}>
-            <button type="button" className={styles.roundBtn} aria-label="更多"
-              onPointerDown={(event) => event.stopPropagation()}>
-              <MoreHorizontal size={17} strokeWidth={2.4} />
+          <div className={styles.headerBtns}>
+            {/* 收起钮：独立圆形按钮，放在菜单钮左边。
+                图标是"向内收拢"的双箭头，和展开方向对应。 */}
+            <button type="button" className={styles.roundBtn} aria-label="收起窗口"
+              title="收起为顶部胶囊"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={collapse}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
+                aria-hidden>
+                <path d="M9 4v5H4" /><path d="M9 9L4 4" />
+                <path d="M15 20v-5h5" /><path d="M15 15l5 5" />
+              </svg>
             </button>
-          </GlassMenu>
+
+            <GlassMenu label="对话菜单" triggerLabel="更多" trigger="custom" side="bottom"
+              align="end" width={132} groups={menuGroups}
+              onSelect={onMenuSelect}>
+              <button type="button" className={styles.roundBtn} aria-label="更多"
+                onPointerDown={(event) => event.stopPropagation()}>
+                <MoreHorizontal size={17} strokeWidth={2.4} />
+              </button>
+            </GlassMenu>
+          </div>
         </header>
 
         {/* 确认层：清空是不可逆操作，压缩会改写历史，两者都要二次确认。
@@ -467,8 +480,7 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
           </div>
         )}
 
-        {/* 消息区用项目统一的 ScrollArea（细滚动条 + 边缘渐隐），
-            不要再自己写 overflow-y: auto */}
+        {/* 消息区用项目统一的 ScrollArea（细滚动条 + 边缘渐隐） */}
         <ScrollArea orientation="vertical" fade={16} scrollbars="auto" label="ODDD 对话记录"
           viewportRef={scrollRef} className={styles.thread}
           viewportClassName={styles.threadViewport} onScroll={onThreadScroll}>
@@ -478,10 +490,7 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
             return (
               <Fragment key={group.key}>
                 {gap ? <p className={styles.timeDivider}>{dayLabel(group.at)}</p> : null}
-                {/* 气泡入场：只做位移+缩放，**不动 opacity**。
-                    动画时间轴在某些环境（后台标签页）会被冻结，
-                    以 opacity:0 起始会让气泡永久不可见。
-                    必须是真实块级包装（display:contents 上 transform 无效）。 */}
+                {/* 气泡入场：只做位移+缩放，不动 opacity */}
                 <motion.div className={styles.groupEnter}
                   initial={reduced ? false : { y: 6, scale: 0.985 }}
                   animate={{ y: 0, scale: 1 }}
@@ -495,9 +504,6 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
         </ScrollArea>
 
         <div className={styles.composer}>
-          {/* 状态条和输入框共用一条外轮廓：包在同一容器里，
-              圆角由输入框自己给出，状态条只负责上半段。
-              分开放两个兄弟节点时，接缝处两个不同的圆角会互相顶出台阶。 */}
           <div className={styles.composerShell}>
             <ChatStats stats={stats} busy={busy} />
             <ChatComposer onSend={send} busy={busy} disabled={!connected}
