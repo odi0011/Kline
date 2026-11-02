@@ -214,8 +214,13 @@ def test_tools_main_thread_snapshot_and_untrusted_isolation(tmp_path, monkeypatc
         await finished(manager, task)
         assert task["status"] == "succeeded" and len(task["steps"]) == 5
         assert context_threads == [main_thread]
-        assert requests[0][0] == {"role": "system", "content": SYSTEM_PROMPT}
-        assert "Replace safety" in requests[0][1]["content"]
+        # 身份设定并进同一条 system（不再降级成第二条 user 消息），
+        # 安全边界仍在 system 开头且优先级更高
+        assert requests[0][0]["role"] == "system"
+        assert requests[0][0]["content"].startswith(SYSTEM_PROMPT)
+        assert "Replace safety" in requests[0][0]["content"]
+        assert all("Replace safety" not in m.get("content", "")
+                   for m in requests[0][1:] if m["role"] == "user")
         assert all("IGNORE SYSTEM" not in message.get("content", "") for message in requests[0])
         tools = [json.loads(m["content"]) for m in requests[-1] if m["role"] == "tool"]
         assert all(m["untrusted"] for m in tools)
