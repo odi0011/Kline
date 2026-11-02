@@ -409,12 +409,21 @@
 /* 折叠态：顶部居中的玻璃胶囊（灵动岛）。
    形态要点：圆角 = 高度一半，所以是胶囊而不是圆角方块；
    平时只有头像宽，忙碌/未读时横向生长显示状态（layout 动画插值）。 */
+/* 灵动岛是**横向胶囊**，不是正圆：即使内容为空也要有明确的长宽比。
+   高度 34px，最小宽度 96px（≈ 2.8:1），左右各留出空白，
+   头像居中偏左——这样空态也是"岛"而不是一个圆点。 */
+/* 灵动岛是**横向胶囊**，不是正圆：即使内容为空也要有明确的长宽比。
+   高度 34px、最小宽度 86px（≈2.5:1）——再宽空态就显得头重脚轻，
+   再窄就退回成圆了。 */
 .island {
   position: relative;
   display: flex;
   align-items: center;
+  justify-content: flex-start;
+  gap: 0;
   height: 34px;
-  padding: 0 7px;
+  min-width: 86px;
+  padding: 0 9px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.52);
   border: 1px solid rgba(255, 255, 255, 0.85);
@@ -460,13 +469,14 @@
 .islandDots i:nth-child(2) { animation-delay: 0.16s; }
 .islandDots i:nth-child(3) { animation-delay: 0.32s; }
 
-/* 未读小点：贴在胶囊右侧 */
+/* 未读小点：贴在胶囊右端（灵动岛右侧信息区的位置） */
 .islandBadge {
   position: absolute;
-  top: 5px;
-  right: 5px;
+  top: 50%;
+  right: 9px;
   width: 6px;
   height: 6px;
+  margin-top: -3px;
   border-radius: 50%;
   background: var(--accent, #f0b90b);
   box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.9);
