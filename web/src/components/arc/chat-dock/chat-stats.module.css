@@ -16,19 +16,24 @@
      · 不给状态条加 border-bottom，也不加 margin 负值去"盖住"接缝，
        靠容器裁切保证无缝 */
 
+/* 输入框上方的性能条：比输入框窄一圈，紧贴它的上沿，之间没有缝隙。
+
+   形状要点（按示意）：
+     · 左右各内缩 7px，所以它比输入框短
+     · 底边与输入框顶边严丝合缝（margin-bottom: -1px 吃掉那条边框）
+     · 只有上方两个圆角（12px），底部平直——因为它是"贴"在输入框上的
+     · 输入框本身保持完整 18px 圆角，不受影响 */
+
 .bar {
-  --composer-radius: 18px;
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  /* 与输入框同宽同左：不内缩、不留间距。
-     底边再压 -1px 吃掉输入框的上边框，接缝才不会露一条缝。 */
-  margin: 0 0 -1px;
-  padding: 3px 11px 5px;
-  border-radius: var(--composer-radius) var(--composer-radius) 0 0;
+  gap: 9px;
+  /* 比输入框窄：左右各缩进 7px；底边压 -1px 消除接缝 */
+  margin: 0 7px -1px;
+  padding: 3px 9px 4px;
+  border-radius: 12px 12px 0 0;
   background: rgba(255, 255, 255, 0.55);
-  /* 只描上、左、右三条边；底边由输入框自己的上边框衔接 */
   border: 1px solid rgba(28, 35, 51, 0.07);
   border-bottom: 0;
   backdrop-filter: blur(10px) saturate(150%);

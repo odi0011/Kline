@@ -40,7 +40,7 @@ const fmtSize = (bytes) => {
   return `${bytes}B`
 }
 
-export default function ChatComposer({ onSend, busy, disabled, onCancel, stacked = false }) {
+export default function ChatComposer({ onSend, busy, disabled, onCancel }) {
   const [text, setText] = useState("")
   const [files, setFiles] = useState([])
   const [sending, setSending] = useState(false)
@@ -121,7 +121,6 @@ export default function ChatComposer({ onSend, busy, disabled, onCancel, stacked
     <div className={styles.wrap}>
       {error && <p className={styles.error} role="alert">{error}</p>}
       <div ref={rowRef} className={styles.row} data-dragging={dragging || undefined}
-        data-stacked={stacked || undefined}
         onDragOver={(event) => { event.preventDefault(); setDragging(true) }}
         onDragLeave={() => setDragging(false)}
         onDrop={(event) => {

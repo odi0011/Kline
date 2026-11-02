@@ -1,25 +1,11 @@
-/* 输入框上方的实时性能条：TPS / 首字延迟 / 缓存命中 / 上下文占用。
+/* 输入框上方的实时性能条：速度 / 缓存命中 / 本轮费用 / 上下文占用。
 
-   形状是「扣在输入框上的一枚标签」：上圆角与输入框一致，下沿去掉圆角
-   直接和输入框顶边贴住，看起来像从输入框里拉出来的一条。
-   数据全部来自后端真实用量，没有测到的项显示 "—" 而不是 0。 */
+   数据全部来自后端真实计量（usage + 流式计时），没有测到的项显示 "—"
+   而不是 0——0 会被误读成"测出来是零"。
+   费用按服务商官方价目表实时计算，含峰谷时段（详见 ai/pricing.py）。 */
 import { memo } from "react"
+import { Zap, Database, Wallet, CircleDot } from "lucide-react"
 import styles from "./chat-stats.module.css"
-
-/** 大数字用紧凑写法：12800 → 12.8k */
-const compact = (value) => {
-  const n = Number(value)
-  if (!Number.isFinite(n)) return "—"
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 10000) return `${(n / 1000).toFixed(1)}k`
-  return String(Math.round(n))
-}
-
-const ms = (value) => {
-  const n = Number(value)
-  if (!Number.isFinite(n) || n <= 0) return "—"
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}s` : `${Math.round(n)}ms`
-}
 
 const pct = (value) => {
   const n = Number(value)
@@ -27,8 +13,23 @@ const pct = (value) => {
   return `${n.toFixed(n >= 10 ? 0 : 1)}%`
 }
 
-/** 上下文占用：用量 / 窗口，外加一条同宽的比例条。
-    超过 80% 转警示色——那是"该清对话了"的真实信号。 */
+/** 速度：整数 tok/s，过大时保留一位小数 */
+const speed = (value) => {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return "—"
+  return n >= 100 ? String(Math.round(n)) : n.toFixed(1)
+}
+
+/** 费用：小额保留 4 位，避免 ¥0.00 看着像免费 */
+const money = (value) => {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return "—"
+  if (n === 0) return "¥0"
+  if (n < 0.01) return `¥${n.toFixed(4)}`
+  if (n < 1) return `¥${n.toFixed(3)}`
+  return `¥${n.toFixed(2)}`
+}
+
 const ratio = (used, max) => {
   const u = Number(used)
   const m = Number(max)
@@ -36,36 +37,46 @@ const ratio = (used, max) => {
   return Math.min(1, Math.max(0, u / m))
 }
 
-const Item = ({ label, value, tone }) => (
-  <span className={styles.item} data-tone={tone || undefined}>
-    <span className={styles.label}>{label}</span>
+const Item = ({ icon, label, value, tone, title }) => (
+  <span className={styles.item} data-tone={tone || undefined} title={title}>
+    <span className={styles.icon} aria-hidden>{icon}</span>
+    {label ? <span className={styles.label}>{label}</span> : null}
     <b className={styles.value}>{value}</b>
   </span>
 )
 
 const ChatStats = memo(function ChatStats({ stats, busy }) {
   if (!stats) return null
-  const { tps, ttftMs, cacheHit, ctxUsed, ctxMax } = stats
+  const { tps, cacheHit, ctxUsed, ctxMax, cost } = stats
   const used = ratio(ctxUsed, ctxMax)
-  // 全都没有数据时整条不显示：一条全是 "—" 的栏占地方还没意义
-  const blank = tps == null && ttftMs == null && cacheHit == null && used == null
+  const blank = tps == null && cacheHit == null && used == null && cost == null
   if (blank && !busy) return null
 
   return (
     <div className={styles.bar} data-busy={busy || undefined} role="status"
       aria-label="对话性能指标">
-      {/* 回复进行中还没有真实 token 数：TPS 留空，别用帧数编一个低一个数量级的错值 */}
-      <Item label="TPS" value={tps == null ? "—" : tps.toFixed(tps >= 100 ? 0 : 1)} />
-      <Item label="首字" value={ms(ttftMs)} />
-      <Item label="缓存" value={pct(cacheHit)} tone={cacheHit >= 50 ? "good" : undefined} />
-      <span className={styles.item}>
-        <span className={styles.label}>上下文</span>
-        <b className={styles.value}>
-          {used == null ? "—" : `${Math.round(used * 100)}%`}
-        </b>
+      {/* 速度：服务商回报的 completion_tokens ÷ 解码窗口 */}
+      <Item icon={<Zap size={11} strokeWidth={2.2} />}
+        value={speed(tps)} label="tok/s" />
+
+      {/* 缓存命中率：cache_hit ÷ prompt_tokens */}
+      <Item icon={<Database size={11} strokeWidth={2.2} />}
+        value={pct(cacheHit)} label="缓存"
+        tone={cacheHit >= 50 ? "good" : undefined}
+        title="提示词缓存命中率" />
+
+      {/* 本轮费用：按官方价目表逐项计算，含峰谷 */}
+      <Item icon={<Wallet size={11} strokeWidth={2.2} />}
+        value={money(cost)}
+        title={stats.costNote || "按官方价目表计算"}/>
+
+      {/* 上下文占用 */}
+      <span className={styles.item} title={`${ctxUsed ?? 0} / ${ctxMax ?? 0} tokens`}>
+        <span className={styles.icon} aria-hidden><CircleDot size={11} strokeWidth={2.2} /></span>
+        <b className={styles.value}>{used == null ? "—" : `${Math.round(used * 100)}%`}</b>
         {used != null && (
           <span className={styles.track} data-warn={used >= 0.8 || undefined}>
-            <i style={{ width: `${Math.max(2, used * 100)}%` }} />
+            <i style={{ width: `${Math.max(3, used * 100)}%` }} />
           </span>
         )}
       </span>

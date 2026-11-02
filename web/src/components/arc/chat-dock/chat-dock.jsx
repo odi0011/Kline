@@ -352,14 +352,6 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
     return "在想…"
   })()
 
-  /** 状态条是否真的会渲染（ChatStats 在数据全空时不显示）。
-      输入框要根据这个决定要不要把自己的上圆角收平。 */
-  const hasStats = (() => {
-    if (!stats) return false
-    return stats.tps != null || stats.ttftMs != null || stats.cacheHit != null
-      || (stats.ctxUsed != null && stats.ctxMax != null)
-  })()
-
   // 折叠态：一个圆形玻璃按钮，落在设置按钮正上方
   if (!open) {
     const spot = launcherSpot
@@ -473,7 +465,7 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
           <div className={styles.composerShell}>
             <ChatStats stats={stats} busy={busy} />
             <ChatComposer onSend={send} busy={busy} disabled={!connected}
-              onCancel={onCancel} stacked={hasStats} />
+              onCancel={onCancel} />
           </div>
         </div>
       </div>

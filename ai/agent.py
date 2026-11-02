@@ -15,6 +15,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+from ai import pricing
 from ai.agent_tools import (TOOLS, TOOL_NAMES, bounded, clean, preference_update,
                             read_snapshot, validate_preference)
 from ai.provider import chat_completion
@@ -655,6 +656,15 @@ class AgentManager:
                     break
             else:
                 ctx_max = ctx_used
+        # 费用：按服务商官方价目表逐项计算（含峰谷时段）。
+        # 型号不在价目表里时 cost=None，前端显示 "—" 而不是编一个数字。
+        cost_info = {}
+        try:
+            fx = (self.config_fn() or {}).get("fx_rate")
+            cost_info = pricing.describe(last.get("model") or "", usage, fx=fx)
+        except Exception:
+            cost_info = {"cost": None, "costUsd": None, "note": "费用计算失败"}
+
         return {
             "tps": tps,
             "ttftMs": _num(perf.get("ttftMs")) or None,
@@ -664,6 +674,12 @@ class AgentManager:
             "promptTokens": prompt_tokens,
             "completionTokens": completion_tokens,
             "perfAt": last.get("finishedAt") or last.get("ts"),
+            # 本轮费用（人民币）与峰谷标记
+            "cost": cost_info.get("cost"),
+            "costUsd": cost_info.get("costUsd"),
+            "costPeak": cost_info.get("peak"),
+            "costNote": cost_info.get("note") or "",
+            "costParts": cost_info.get("parts") or {},
             # 回复进行中：TPS 是增量估算，前端据此把数字显示成「暂定」
             "live": bool(perf.get("live")),
         }
