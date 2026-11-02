@@ -5,7 +5,7 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { motion, useReducedMotion } from "motion/react"
-import { ChevronLeft, FileText, Loader2, MoreHorizontal } from "lucide-react"
+import { FileText, MoreHorizontal } from "lucide-react"
 import ChatComposer from "./chat-composer"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import styles from "./chat-dock.module.css"
@@ -100,28 +100,46 @@ function FileBubble({ item, mine }) {
   )
 }
 
-// 消息气泡按内容记忆：只要这条消息没变就不重渲染，长对话不会随每次输入卡顿
-const MessageBubble = memo(function MessageBubble({ message }) {
-  const mine = message.role === "user"
-  const text = typeof message.content === "string" ? message.content : ""
-  const busy = message.status === "running" || message.status === "queued"
+/** 一轮消息的渲染单元。
+    后端会把过长的回复拆成多条（id 带 `-2`/`-3` 后缀），那是同一次回答的
+    分段，视觉上必须是一枚气泡里的几段话；只有附件按类型各自独立成泡。
+    这样一屏消息数等于「用户问了几次」，而不是「模型切了几刀」。 */
+const MessageGroup = memo(function MessageGroup({ items }) {
+  const mine = items[0]?.role === "user"
+  const texts = items
+    .map((item) => (typeof item.content === "string" ? item.content.trim() : ""))
+    .filter(Boolean)
+  const failed = items.find((item) => item.status === "failed")
+  const cancelled = items.some((item) => item.status === "cancelled")
+  const busy = items.some((item) => item.status === "running" || item.status === "queued")
   // 还在等回复且没出字：整个气泡不渲染，不要三点也不要"正在处理"
-  if (busy && !text) return null
-  const refs = (Array.isArray(message.attachments) ? message.attachments : [])
+  if (busy && !texts.length) return null
+  const refs = items
+    .flatMap((item) => (Array.isArray(item.attachments) ? item.attachments : []))
     .map(asRef).filter(Boolean)
-  const images = refs.filter((r) => r.kind === "image" && r.url)
-  const files = refs.filter((r) => r.kind !== "image" || !r.url)
+  // 同一附件可能被重复带上（合并回复时），按 url/名字去重
+  const seen = new Set()
+  const unique = refs.filter((ref) => {
+    const key = ref.url || ref.name
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  const images = unique.filter((r) => r.kind === "image" && r.url)
+  const files = unique.filter((r) => r.kind !== "image" || !r.url)
   return (
     <>
-      {/* 文字气泡：附件不再混在文字里 */}
-      {(text || message.status === "failed" || message.status === "cancelled") && (
+      {/* 文字气泡：一轮一个，分段之间用段落间距区分；附件不再混在文字里 */}
+      {(texts.length > 0 || failed || cancelled) && (
         <div className={styles.bubbleRow} data-role={mine ? "user" : "bot"}>
           <div className={styles.bubble} data-role={mine ? "user" : "bot"}>
-            {text ? <p className={styles.text}>{text}</p> : null}
-            {message.status === "failed" && (
-              <p className={styles.error} role="alert">{message.error || STATUS_TEXT.failed}</p>
+            {texts.map((text, index) => (
+              <p key={index} className={styles.text}>{text}</p>
+            ))}
+            {failed && (
+              <p className={styles.error} role="alert">{failed.error || STATUS_TEXT.failed}</p>
             )}
-            {message.status === "cancelled" && <span className={styles.muted}>已停止</span>}
+            {cancelled && !failed && <span className={styles.muted}>已停止</span>}
           </div>
         </div>
       )}
@@ -140,6 +158,27 @@ const MessageBubble = memo(function MessageBubble({ message }) {
     </>
   )
 })
+
+/** 长回复被后端拆成多条 assistant 消息（id 形如 `原id-2`），
+    视觉上应算同一轮的一组：同组内不重复插时间分隔。 */
+const groupMessages = (messages) => {
+  const groups = []
+  for (const message of messages) {
+    const id = String(message.id || "")
+    const base = id.replace(/-\d+$/, "")
+    const last = groups[groups.length - 1]
+    // 同角色、且 id 属于同一轮（共享 base）→ 并进当前组
+    if (last && last.role === message.role && last.baseId === base) {
+      last.items.push(message)
+      continue
+    }
+    groups.push({
+      key: id, baseId: base, role: message.role,
+      at: Number(message.ts) || 0, prevTs: last?.at ?? 0, items: [message],
+    })
+  }
+  return groups
+}
 
 /** 时间分隔：两条消息相隔超过 5 分钟才插一行，和微信/Telegram 一致 */
 const TIME_GAP_MS = 5 * 60 * 1000
@@ -191,7 +230,7 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
       不用 motion 的 drag —— 它在本页（大量 canvas / 浮层）里事件接管不稳定。 */
   const startDrag = useCallback((event) => {
     if (event.button !== 0) return
-    if (event.target.closest("button")) return      // 收起按钮不触发拖拽
+    if (event.target.closest("button")) return      // 圆钮不触发拖拽
     event.preventDefault()
     const startX = event.clientX
     const startY = event.clientY
@@ -314,16 +353,12 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
       aria-label="ODDD 对话"
       data-dragging={draggingUi || undefined}>
       <div className={styles.shell}>
-        {/* 标题栏按截图布局：左侧圆形返回、中间胶囊（头像+绿点+名字）、右侧圆形菜单。
-           整条都可以拖动窗口；两个按钮自身不触发拖拽。 */}
+        {/* 悬浮标题栏：胶囊 + 圆形菜单，绝对定位压在消息滚动区之上，
+            不占布局高度（原先是 flex 的一行，会和消息区抢空间）。
+            整个标题栏可拖动窗口。没有返回按钮——这个窗口没有"上一页"，
+            收起走右侧菜单里的「收起窗口」。 */}
         <header className={styles.header} title="拖动可移动窗口"
           onPointerDown={startDrag}>
-          <button type="button" className={styles.roundBtn} aria-label="收起对话"
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={collapse}>
-            <ChevronLeft size={17} strokeWidth={2.4} />
-          </button>
-
           <span className={styles.titlePill}>
             <span className={styles.avatarWrap}>
               <img src="/icon-32.png" alt="" width={20} height={20} />
@@ -341,6 +376,9 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
 
         {menu && (
           <div className={styles.menu} role="menu">
+            <button type="button" role="menuitem" onClick={collapse}>
+              收起窗口
+            </button>
             <button type="button" role="menuitem" onClick={() => { setMenu(false); clearChat() }}>
               清空对话
             </button>
@@ -356,13 +394,12 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
           viewportRef={scrollRef} className={styles.thread}
           viewportClassName={styles.threadViewport} onScroll={onThreadScroll}>
           {messages.length === 0 && <p className={styles.empty}>问市场、持仓或系统。</p>}
-          {messages.map((message, index) => {
-            const previous = messages[index - 1]
-            const gap = !previous || (Number(message.ts) || 0) - (Number(previous.ts) || 0) > TIME_GAP_MS
+          {groupMessages(messages).map((group) => {
+            const gap = !group.at || !group.prevTs || group.at - group.prevTs > TIME_GAP_MS
             return (
-              <Fragment key={message.id}>
-                {gap && message.ts ? <p className={styles.timeDivider}>{dayLabel(Number(message.ts))}</p> : null}
-                <MessageBubble message={message} />
+              <Fragment key={group.key}>
+                {gap ? <p className={styles.timeDivider}>{dayLabel(group.at)}</p> : null}
+                <MessageGroup items={group.items} />
               </Fragment>
             )
           })}

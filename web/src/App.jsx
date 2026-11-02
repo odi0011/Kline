@@ -880,6 +880,7 @@ export default function App() {
       {/* ODDD 悬浮对话窗：可拖动、可折叠到左下角设置按钮上方 */}
       <ChatDock messages={agentChat} connected={connected}
         onSend={agentRequest} busy={agentChatBusy}
+        onClear={() => agentRequest({ type: 'agent_action', action: 'clear_chat', payload: {} })}
         onCancel={() => {
           const running = (agentChat || []).filter((m) => m.role !== 'user' && (m.status === 'running' || m.status === 'queued')).pop()
           if (running) agentRequest({ type: 'agent_action', action: 'cancel_chat', payload: { id: running.id } })

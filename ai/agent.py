@@ -252,6 +252,7 @@ class AgentManager:
         self.runners: dict[str, asyncio.Task] = {}
         self.chat_runners: set[asyncio.Task] = set()
         self._chat_tasks: dict[str, asyncio.Task] = {}   # message_id -> runner，供按 id 取消
+        self._merged_into: dict[str, str] = {}          # 被合并的消息 id -> 接手回答的新 id
         self._wakeups: dict[str, asyncio.Event] = {}
         self._executing: set[str] = set()
         self._admitted: set[str] = set()
@@ -521,7 +522,7 @@ class AgentManager:
             if not isinstance(action, str) or not isinstance(payload, dict):
                 raise ValueError("action 需为文本，payload 需为对象")
             allowed = {"state": set(), "recover": set(),
-                       "chat": {"prompt", "model", "attachments"},
+                       "chat": {"prompt", "model", "attachments"}, "clear_chat": set(),
                        "cancel_chat": {"id"}, "create": {"title", "prompt", "model", "intervalSec", "startAt"},
                        "edit": {"id", "title", "prompt", "intervalSec", "startAt"}}
             for name in ("pause", "resume", "cancel", "delete", "run"):
@@ -545,6 +546,19 @@ class AgentManager:
                     message_id = await self.ask(payload.get("prompt", ""), payload.get("model", ""),
                                                 payload.get("attachments"))
                     return {"ok": True, "id": message_id}
+                if action == "clear_chat":
+                    # 清空会话：进行中的回复先取消，再把历史和摘要一起扔掉。
+                    # 保留 tasks/memory——那是任务记忆，不是聊天记录。
+                    for runner in list(self.chat_runners):
+                        self._cancel_runner(runner)
+                    self.chat_runners.clear()
+                    self._chat_tasks.clear()
+                    self._merged_into.clear()
+                    self._chat_id = None
+                    self.chat = []
+                    self.chat_summary = ""
+                    await self._emit()
+                    return {"ok": True, **self.state()}
                 if action == "cancel_chat":
                     # 支持按 id 取消任意一条进行中/排队中的回复（并发后不止一条）
                     message_id = _text(payload.get("id", ""), "id", 100)
@@ -627,8 +641,19 @@ class AgentManager:
         model = _text(model, "model", 200)
         prepared = _attachments(attachments)
         _, selected = self._model(model)
-        # 同一时间只留一个回复在跑（避免并发写同一份状态）；排队见下方 busy 处理
+
+        # 上一轮还没回完就又说了一句：把两句并成一次提问，取消上一个回复后重来。
+        # 否则用户会看到"回复到一半又冒出一条新的"，上下文还被切成两段。
+        merged = self._absorb_pending(prompt, prepared)
+        absorbed = None
+        if merged is not None:
+            absorbed, prompt, prepared = merged
+
         assistant_id = uuid.uuid4().hex[:12]
+        # 被合并掉的那个等待者（Telegram 长回复）要跟着新回复走，否则它等的是一个
+        # 已被取消、已从会话里摘掉的 id，只能拿到"记录已不在"。
+        if absorbed:
+            self._merged_into[absorbed] = assistant_id
         self._reserve(assistant_id)
         history = self._context_window()
         # 附件只随本次请求进模型；会话里只留可渲染的引用（图片存盘后给 url）
@@ -662,6 +687,68 @@ class AgentManager:
         await self._broadcast()
         return assistant_id
 
+    def _absorb_pending(self, prompt: str, prepared: list[dict]):
+        """若上一条回复还在进行，把它取消并把两次提问合并成一次。
+
+        返回 (被取消的消息 id, 新 prompt, 新附件列表) 表示已合并；
+        返回 None 表示没有进行中的回复。
+        合并而不是排队：用户补一句话通常是纠正或追加要求，让模型看到完整的两句
+        才能一次答对；排队会导致"第一句答一半，第二句另起一轮"。
+        """
+        if not self.chat_runners:
+            return None
+        base = str(prompt or "").strip()
+        # 找最后一条还在跑/排队的 assistant，以及它前面那条 user
+        pending_id = None
+        for item in reversed(self.chat):
+            if item.get("role") == "assistant" and item.get("status") in ("running", "queued"):
+                pending_id = item.get("id")
+                break
+        if pending_id is None:
+            return None
+        ids = [m.get("id") for m in self.chat]
+        index = ids.index(pending_id) if pending_id in ids else -1
+        previous_user = ""
+        previous_id = None
+        previous_refs: list[dict] = []
+        # 从那条 assistant 往前找最近的 user，就是待合并的问题
+        for item in reversed(self.chat[:index] if index > 0 else []):
+            if item.get("role") == "user":
+                previous_user = str(item.get("content") or "").strip()
+                previous_id = item.get("id")
+                previous_refs = [r for r in (item.get("attachments") or []) if isinstance(r, dict)]
+                break
+        if not previous_user:
+            return None
+        # 取消进行中的回复，并把这条空 assistant 连同它对应的 user 一起从会话里摘掉：
+        # 合并后的新消息已经包含了前一句，否则用户会看到自己说了两遍。
+        runner = self._chat_tasks.pop(pending_id, None)
+        if runner is not None:
+            self._cancel_runner(runner)
+            self.chat_runners.discard(runner)
+        drop = {pending_id, previous_id}
+        self.chat = [m for m in self.chat if m.get("id") not in drop]
+        if self._chat_id == pending_id:
+            self._chat_id = None
+        merged_prompt = f"{previous_user}\n\n（补充）{base}"
+        # 附件沿用上一条 user 的图片/文本引用，再拼上本次新加的
+        merged_attachments = list(prepared or [])
+        for ref in previous_refs:
+            if ref.get("kind") == "image" and ref.get("url"):
+                # 已落盘的图片：按 base64 读回来给模型
+                local = os.path.join(self.attachments_dir,
+                                     ref["url"].replace("/agent-attachments/", ""))
+                try:
+                    with open(local, "rb") as handle:
+                        merged_attachments.append({
+                            "kind": "image", "name": ref.get("name", "image"),
+                            "mime": ref.get("mime", "image/png"),
+                            "data": base64.b64encode(handle.read()).decode(),
+                        })
+                except OSError:
+                    pass
+        return pending_id, merged_prompt[:6000], merged_attachments
+
     async def ask_and_wait(self, prompt: str, model: str = "", timeout: float = 300) -> str:
         """发一条用户消息并等回复内容（Telegram 等外部渠道用）。
 
@@ -674,6 +761,19 @@ class AgentManager:
             try:
                 await asyncio.wait_for(asyncio.shield(runner), timeout)
             except asyncio.TimeoutError:
+                pass
+            except asyncio.CancelledError:
+                # 被下一条提问合并了：那一轮才是真正的回答，跟着它继续等
+                pass
+        # ask() 返回后仍可能被后续消息合并（用户补话），这里顺着映射跳到接手的那一轮
+        while message_id in self._merged_into:
+            message_id = self._merged_into.pop(message_id)
+            follow = self._chat_tasks.get(message_id)
+            if follow is None:
+                break
+            try:
+                await asyncio.wait_for(asyncio.shield(follow), timeout)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
         message = next((m for m in self.chat if m.get("id") == message_id), None)
         if message is None:

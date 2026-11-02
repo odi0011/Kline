@@ -135,6 +135,23 @@ def test_chat_background_history_no_fake_stream(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
+def test_clear_chat_wipes_history_and_survives_reload(tmp_path, monkeypatch):
+    """清空对话：消费端看到空会话，重新加载状态文件也是空的。"""
+    async def scenario():
+        manager, events = make_manager(tmp_path, monkeypatch)
+        assert (await manager.handle("chat", {"prompt": "第一句"}))["ok"]
+        assert await wait_for(lambda: not manager.chat_runners)
+        result = await manager.handle("clear_chat", {})
+        assert result["ok"] and result["chat"] == []
+        assert manager.chat == [] and manager.chat_summary == ""
+        assert events[-1]["type"] == "agent_state" and events[-1]["chat"] == []
+        await manager.stop()
+        resumed, _ = make_manager(tmp_path, monkeypatch)
+        assert resumed.chat == [], "清空后重新加载不应恢复旧会话"
+        await resumed.stop()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("models,requested,part", [([], "", "配置"),
     ([{"id": "test-model", "active": True}], "unknown", "未知"),
     ([{"id": "test-model", "supportsTools": False}], "", "tools")])
@@ -306,29 +323,43 @@ def test_cancel_slow_http_retains_global_slots_and_no_task_overlap(tmp_path, mon
     asyncio.run(scenario())
 
 
-def test_chat_allows_two_concurrent_then_queues(tmp_path, monkeypatch):
-    """并发已放开：两条同时发都接受，第三条排队，不再直接拒绝。"""
+def test_new_message_merges_into_pending_reply(tmp_path, monkeypatch):
+    """上一轮还没回完又说一句：两句合并成一次提问并重新回答，而不是各答一遍。"""
     slow = SlowHTTP()
+    prompts = []
+
+    def provider(*args, **kwargs):
+        messages = kwargs.get("messages")
+        if messages is None and len(args) >= 3:
+            messages = args[2]
+        for item in reversed(messages or []):
+            if item.get("role") == "user":
+                prompts.append(str(item.get("content") or ""))
+                break
+        return slow(*args, **kwargs)
+
     async def scenario():
-        manager, _ = make_manager(tmp_path, monkeypatch, provider=slow)
+        manager, _ = make_manager(tmp_path, monkeypatch, provider=provider)
         try:
-            first, second = await asyncio.gather(
-                manager.handle("chat", {"prompt": "a"}),
-                manager.handle("chat", {"prompt": "b"}))
-            assert first["ok"] and second["ok"]
-            # 两个槽位都进入运行
-            assert await wait_for(lambda: slow.active == 2)
-            # 第三条排队但仍被接受
-            third = await manager.handle("chat", {"prompt": "c"})
-            assert third["ok"]
-            # 按 id 取消排队中的那条
-            assert (await manager.handle("cancel_chat", {"id": third["id"]}))["ok"]
-            assert await wait_for(lambda: any(m.get("status") == "cancelled" for m in manager.chat))
-            # 不存在的 id 要报错
-            assert not (await manager.handle("cancel_chat", {"id": "other"}))["ok"]
+            first = await manager.handle("chat", {"prompt": "看下BTC"})
+            assert first["ok"]
+            assert await wait_for(lambda: slow.active == 1)
+            # 第一条还没回完就补一句
+            second = await manager.handle("chat", {"prompt": "顺便说下ETH"})
+            assert second["ok"]
+            assert await wait_for(lambda: slow.active == 1)
             slow.release.set()
             assert await wait_for(lambda: not manager.chat_runners)
-            assert await wait_for(lambda: any(m.get("status") == "succeeded" for m in manager.chat))
+            joined = prompts[-1]
+            assert "看下BTC" in joined and "顺便说下ETH" in joined, \
+                f"两次提问没有合并进同一轮上下文: {joined!r}"
+            assert [m for m in manager.chat if m.get("status") in ("running", "queued")] == []
+            # 合并后只应剩一条用户消息（含两句），不能把前一句再显示一遍
+            users = [m for m in manager.chat if m.get("role") == "user"]
+            assert len(users) == 1, f"合并后残留了重复的用户消息: {users!r}"
+            assert users[0]["content"] == joined, "会话里的用户消息与模型看到的上下文不一致"
+            # 不存在的 id 取消仍然报错
+            assert not (await manager.handle("cancel_chat", {"id": "other"}))["ok"]
         finally:
             slow.release.set()
             await manager.stop()

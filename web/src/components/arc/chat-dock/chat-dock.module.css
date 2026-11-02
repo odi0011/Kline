@@ -26,22 +26,27 @@
     0 2px 8px rgba(16, 24, 40, 0.06);
 }
 
-/* ---------- 头部（拖动把手） ----------
-   布局参照截图：左圆钮 | 中间胶囊（头像+在线点+名字）| 右圆钮。
-   不画分隔线，让头部和消息区连成一块玻璃，而不是"上面一个失色的栏"。 */
+/* ---------- 悬浮标题栏 ----------
+   绝对定位压在消息滚动区上方，不占布局高度；胶囊只包住头像和名字，
+   不再拉满整行。没有返回按钮（这个窗口没有上一页）。 */
 .header {
-  flex: none;
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  right: 10px;
+  z-index: 4;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  height: 46px;
-  padding: 0 10px;
+  pointer-events: none;
   cursor: grab;
   user-select: none;
 }
 .header:active { cursor: grabbing; }
+.header > * { pointer-events: auto; }
 
-/* 左右两枚白色圆钮 */
+/* 右侧圆形菜单钮 */
 .roundBtn {
   flex: none;
   display: grid;
@@ -51,28 +56,33 @@
   padding: 0;
   border: 1px solid rgba(255, 255, 255, 0.9);
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.82);
+  /* 玻璃材质，和其它面板一致 */
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
   color: #1c2333;
-  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.08);
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.9);
   cursor: pointer;
   transition: background-color 120ms ease, transform 120ms ease;
 }
-.roundBtn:hover { background: #fff; }
+.roundBtn:hover { background: rgba(255, 255, 255, 0.8); }
 .roundBtn:active { transform: scale(0.94); }
 
-/* 中间胶囊：白色药丸，头像右下角一个绿色在线点 */
+/* 胶囊：宽度跟着内容，不拉满 */
 .titlePill {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 7px;
-  height: 34px;
+  height: 32px;
   padding: 0 12px 0 5px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.95);
-  box-shadow: 0 1px 4px rgba(16, 24, 40, 0.07);
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.9);
   overflow: hidden;
 }
 .avatarWrap { position: relative; flex: none; display: block; width: 24px; height: 24px; }
@@ -129,14 +139,14 @@
 .menu button:hover { background: rgba(28, 35, 51, 0.06); }
 
 /* ---------- 消息区 ----------
-   滚动交给项目统一的 ScrollArea（细滚动条 + 边缘渐隐），
-   这里只负责占位和内部排布，不再自己声明 overflow。 */
+   滚动交给项目统一的 ScrollArea（细滚动条 + 边缘渐隐）。
+   顶部留出悬浮标题栏的高度，消息不会钻到胶囊底下。 */
 .thread { flex: 1 1 auto; min-height: 0; }
 .threadViewport {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 10px;
+  padding: 46px 10px 12px;
 }
 
 .empty {
@@ -172,6 +182,8 @@
 }
 
 .text { margin: 0; white-space: pre-wrap; }
+/* 同一轮回复被拆成多段时，段与段之间留出呼吸感，但仍在一枚气泡里 */
+.text + .text { margin-top: 6px; }
 
 .pending {
   display: inline-flex;
