@@ -1,0 +1,111 @@
+/* 玻璃菜单：面板材质 + 行样式。
+   行必须和项目其它列表一致（22px 行高 / 圆角 5 / 11px 字号 / 浅底 hover），
+   否则菜单一展开就和旁边面板不是一套东西。 */
+
+.panel {
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(16, 24, 40, 0.18);
+  padding: 5px;
+  width: 100%;
+}
+
+/* 行：与 news-feed / quant-panel / position-history 同一套裸列表语言 */
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  box-sizing: border-box;
+  width: 100%;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 11px;
+  color: #1c2333;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+.row:hover { background: rgba(28, 35, 51, 0.05); }
+.row[aria-disabled="true"] { cursor: default; opacity: 0.42; }
+.row[aria-disabled="true"]:hover { background: transparent; }
+.row[data-danger] { color: #dc2626; }
+
+.icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--accent-deep, #b45309);
+}
+
+.label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 尾部说明：勾选、快捷键、子菜单箭头共用一列，宽度固定不抖 */
+.trail {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9.5px;
+  color: #8b949e;
+  font-variant-numeric: tabular-nums;
+}
+.check {
+  display: grid;
+  place-items: center;
+  width: 13px;
+  color: var(--accent-deep, #b45309);
+}
+.check[data-off] { visibility: hidden; }
+
+.groupLabel {
+  padding: 4px 6px 2px;
+  font-size: 9.5px;
+  color: #8b949e;
+  letter-spacing: 0.5px;
+}
+
+.divider { height: 1px; margin: 4px 5px; background: rgba(28, 35, 51, 0.08); }
+
+/* 子菜单返回行：和普通行同高，只是箭头在左 */
+.back { color: #5b6472; }
+
+/* 搜索框：与输入框同一套玻璃内嵌样式 */
+.search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  margin: 0 3px 4px;
+  padding: 0 7px;
+  border-radius: 5px;
+  background: rgba(28, 35, 51, 0.055);
+  color: #8b949e;
+}
+.search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  color: #1c2333;
+}
+.hint { flex: none; font-size: 9.5px; color: #8b949e; white-space: nowrap; }
+.empty { padding: 8px 6px; font-size: 11px; color: #a0a8b4; text-align: center; }

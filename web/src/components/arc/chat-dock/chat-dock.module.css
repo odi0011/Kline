@@ -110,33 +110,8 @@
 }
 .onlineDot[data-on] { background: #22c55e; }
 
-/* 右侧"更多"菜单 */
-.menu {
-  position: absolute;
-  top: 44px;
-  right: 10px;
-  z-index: 5;
-  min-width: 132px;
-  padding: 4px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.97);
-  border: 1px solid rgba(28, 35, 51, 0.08);
-  box-shadow: 0 10px 28px rgba(16, 24, 40, 0.16);
-}
-.menu button {
-  display: block;
-  width: 100%;
-  padding: 7px 10px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: #1c2333;
-  font: inherit;
-  font-size: 11.5px;
-  text-align: left;
-  cursor: pointer;
-}
-.menu button:hover { background: rgba(28, 35, 51, 0.06); }
+/* 右侧"更多"菜单由统一 GlassMenu 渲染，这里只保留触发器圆钮样式。
+   菜单面板/行/勾选态都在 glass-menu.module.css，避免两套菜单各写一份。 */
 
 /* ---------- 消息区 ----------
    滚动交给项目统一的 ScrollArea（细滚动条 + 边缘渐隐）。

@@ -703,10 +703,10 @@ export default function App() {
     {
       id: 'g-symbols',
       items: [{
-        id: 'symbols', label: '选择币种', icon: <Coins size={16} />, shortcut: `${sel.length} 个`,
+        id: 'symbols', label: '选择币种', icon: <Coins size={14} />, shortcut: `${sel.length} 个`,
         items: pool.map((s) => ({
           id: `sym:${s}`, label: s.toUpperCase(),
-          icon: <CoinAvatar symbol={s} size={18} />,
+          icon: <CoinAvatar symbol={s} size={14} />,
           checked: sel.includes(s), keepOpen: true,
           disabled: (atMax && !sel.includes(s)) || (atMin && sel.includes(s)),
         })),
@@ -717,18 +717,18 @@ export default function App() {
     {
       id: 'g-interval',
       items: [{
-        id: 'interval', label: 'K线周期', icon: <Clock3 size={16} />, shortcut: defaultIv,
+        id: 'interval', label: 'K线周期', icon: <Clock3 size={14} />, shortcut: defaultIv,
         items: (meta?.intervals || ['1m', '3m']).map((iv) => ({
-          id: `iv:${iv}`, label: iv, icon: <Clock3 size={16} />, checked: settings.interval === iv, keepOpen: true,
+          id: `iv:${iv}`, label: iv, icon: <Clock3 size={14} />, checked: settings.interval === iv, keepOpen: true,
         })),
       }],
     },
     {
       id: 'g-range',
       items: [{
-        id: 'range', label: '显示范围', icon: <MoveHorizontal size={16} />, shortcut: `最近 ${settings.visibleBars} 根`,
+        id: 'range', label: '显示范围', icon: <MoveHorizontal size={14} />, shortcut: `最近 ${settings.visibleBars} 根`,
         items: [50, 70, 100, 150].map((n) => ({
-          id: `bars:${n}`, label: `最近 ${n} 根`, icon: <MoveHorizontal size={16} />, checked: settings.visibleBars === n, keepOpen: true,
+          id: `bars:${n}`, label: `最近 ${n} 根`, icon: <MoveHorizontal size={14} />, checked: settings.visibleBars === n, keepOpen: true,
         })),
       }],
     },
@@ -736,13 +736,13 @@ export default function App() {
       id: 'g-chart',
       label: '图表',
       items: [
-        { id: 'volume', label: '成交量', icon: <BarChart3 size={16} />, checked: settings.showVolume, keepOpen: true },
-        { id: 'grid', label: '网格线', icon: <Grid3x3 size={16} />, checked: settings.showGrid, keepOpen: true },
+        { id: 'volume', label: '成交量', icon: <BarChart3 size={14} />, checked: settings.showVolume, keepOpen: true },
+        { id: 'grid', label: '网格线', icon: <Grid3x3 size={14} />, checked: settings.showGrid, keepOpen: true },
       ],
     },
     {
       id: 'g-settings',
-      items: [{ id: 'settings', label: '设置', icon: <Settings size={16} /> }],
+      items: [{ id: 'settings', label: '设置', icon: <Settings size={14} /> }],
     },
   ]
 

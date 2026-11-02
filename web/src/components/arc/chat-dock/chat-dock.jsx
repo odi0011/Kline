@@ -5,9 +5,10 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { motion, useReducedMotion } from "motion/react"
-import { FileText, MoreHorizontal } from "lucide-react"
+import { FileText, Minimize2, MoreHorizontal, RotateCcw, Trash2 } from "lucide-react"
 import ChatComposer from "./chat-composer"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
+import { GlassMenu } from "@/components/arc/glass-menu/glass-menu"
 import styles from "./chat-dock.module.css"
 
 const WIDTH = 320
@@ -196,7 +197,6 @@ const dayLabel = (ts) => {
 export default function ChatDock({ messages = [], onSend, connected = true, onCancel, busy = false, onClear }) {
   const reduced = useReducedMotion()
   const [open, setOpen] = useState(false)
-  const [menu, setMenu] = useState(false)
   const [pos, setPos] = useState(() => loadPos() || defaultPos())
   const scrollRef = useRef(null)
   const [launcherSpot, setLauncherSpot] = useState(() => ({ x: pos.x, y: pos.y }))
@@ -302,7 +302,6 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
   const collapse = () => {
     const spot = collapsedTarget()
     if (spot) setLauncherSpot(spot)
-    setMenu(false)
     setOpen(false)
   }
 
@@ -314,6 +313,23 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
   // 清空只清本地的显示列表，服务端会话由 onClear 处理（没有就只关面板不谎称已清）
   const clearChat = () => {
     onClear?.()
+  }
+
+  /** 「更多」菜单：走统一 GlassMenu，不再自己拼 div。
+      没有"返回"——这个窗口没有上一页，收起放在这里。 */
+  const menuGroups = [{
+    id: "g-dock",
+    items: [
+      { id: "collapse", label: "收起窗口", icon: <Minimize2 size={12} /> },
+      { id: "clear", label: "清空对话", icon: <Trash2 size={12} />, danger: true },
+      { id: "reset", label: "复位窗口位置", icon: <RotateCcw size={12} /> },
+    ],
+  }]
+
+  const onMenuSelect = (id) => {
+    if (id === "collapse") collapse()
+    else if (id === "clear") clearChat()
+    else if (id === "reset") resetPosition()
   }
 
   // 折叠态：一个圆形玻璃按钮，落在设置按钮正上方
@@ -367,26 +383,17 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
             <b>ODDD</b>
           </span>
 
-          <button type="button" className={styles.roundBtn} aria-label="更多"
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => setMenu((open) => !open)}>
-            <MoreHorizontal size={17} strokeWidth={2.4} />
-          </button>
+          {/* 更多菜单用项目统一的 GlassMenu（custom 触发器复用这枚圆钮），
+              不要自己写 role="menu" 的 div —— 那会和图表设置菜单两套样式。 */}
+          <GlassMenu label="对话菜单" triggerLabel="更多" trigger="custom" side="bottom"
+            align="end" width={132} groups={menuGroups}
+            onSelect={onMenuSelect}>
+            <button type="button" className={styles.roundBtn} aria-label="更多"
+              onPointerDown={(event) => event.stopPropagation()}>
+              <MoreHorizontal size={17} strokeWidth={2.4} />
+            </button>
+          </GlassMenu>
         </header>
-
-        {menu && (
-          <div className={styles.menu} role="menu">
-            <button type="button" role="menuitem" onClick={collapse}>
-              收起窗口
-            </button>
-            <button type="button" role="menuitem" onClick={() => { setMenu(false); clearChat() }}>
-              清空对话
-            </button>
-            <button type="button" role="menuitem" onClick={() => { setMenu(false); resetPosition() }}>
-              复位窗口位置
-            </button>
-          </div>
-        )}
 
         {/* 消息区用项目统一的 ScrollArea（细滚动条 + 边缘渐隐），
             不要再自己写 overflow-y: auto */}
