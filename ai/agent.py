@@ -313,6 +313,30 @@ def _num(value):
     return None
 
 
+def _symbol(value, known=None) -> str:
+    """把模型给的币种名归一到系统内部格式：BTC / btc / BTCUSDT → btcusdt。
+
+    模型经常只写 "BTC"，而系统内部的 key 一律是 "btcusdt"。不归一就会
+    全部匹配失败，然后模型据此断言"这个币不在监控里"——这正是线上
+    "BTC 已不在监控范围"的直接原因。
+    """
+    raw = str(value or "").strip().lower()
+    if not raw:
+        raise ValueError("请输入币种")
+    if not re.fullmatch(r"[a-z0-9]{2,24}", raw):
+        raise ValueError("symbol 需为 2–24 位字母或数字")
+    pool = [str(x).lower() for x in (known or [])]
+    if raw in pool:
+        return raw
+    # 常见写法补 usdt
+    if raw + "usdt" in pool:
+        return raw + "usdt"
+    # 带 usdt 但不在池子里：原样返回，让调用方给出"不在监控"的准确提示
+    if raw.endswith("usdt"):
+        return raw
+    return raw + "usdt"
+
+
 # 无工具模式：服务商忽略 tools 时，退回纯文本对话，并明确告知它没有能力。
 NO_TOOLS_NOTE = (
     "【本次对话没有可用的工具】你不要尝试调用任何工具，也无法读取实时行情、"
@@ -1413,9 +1437,10 @@ class AgentManager:
             raise ValueError("read_advice 参数需为对象")
         if set(arguments) - {"symbol"}:
             raise ValueError("read_advice 包含不支持的参数")
-        symbol = _text(arguments.get("symbol", ""), "symbol", 24, True).lower()
-        if not re.fullmatch(r"[a-z0-9]{2,24}", symbol):
-            raise ValueError("symbol 需为 2–24 位字母或数字")
+        # BTC / btc / BTCUSDT → btcusdt：不归一会全部匹配失败，
+        # 模型就会据此断言"这个币不在监控里"
+        symbol = _symbol(arguments.get("symbol", ""),
+                         self.symbols_fn() if self.symbols_fn else None)
         if not self.advice_fn:
             return {"available": False, "reason": "服务端尚未接入建议数据"}
         try:
@@ -1453,9 +1478,10 @@ class AgentManager:
             raise ValueError("read_candles 参数需为对象")
         if set(arguments) - {"symbol", "interval", "limit"}:
             raise ValueError("read_candles 包含不支持的参数")
-        symbol = _text(arguments.get("symbol", ""), "symbol", 24, True).lower()
-        if not re.fullmatch(r"[a-z0-9]{2,24}", symbol):
-            raise ValueError("symbol 需为 2–24 位字母或数字")
+        # BTC / btc / BTCUSDT → btcusdt：不归一会全部匹配失败，
+        # 模型就会据此断言"这个币不在监控里"
+        symbol = _symbol(arguments.get("symbol", ""),
+                         self.symbols_fn() if self.symbols_fn else None)
         interval = _text(arguments.get("interval", ""), "interval", 8) or ""
         raw_limit = arguments.get("limit", 40)
         if type(raw_limit) is not int or not 10 <= raw_limit <= 120:

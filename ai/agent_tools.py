@@ -191,16 +191,24 @@ def read_snapshot(name, arguments, snapshot):
                         "引用时要说清楚样本太少不具统计意义。")
     if symbol:
         symbol = symbol.upper()
+        # "BTC" 也要能匹配 "btcusdt"：模型经常只写币名不写计价货币。
+        # 只做前缀匹配，不做模糊——避免 BTC 误匹配到 BTCDOM。
+        def hit(name) -> bool:
+            text = str(name or "").upper()
+            if not text:
+                return False
+            return text == symbol or text == symbol + "USDT" or text.rstrip("USDT") + "USDT" == symbol
+
         for key in ("market", "symbols", "evaluations", "positionPlans", "positions", "trades"):
             value = data.get(key)
             if isinstance(value, dict):
                 if "symbol" in value:
-                    data[key] = value if str(value["symbol"]).upper() == symbol else {}
+                    data[key] = value if hit(value["symbol"]) else {}
                 else:
-                    data[key] = {k: v for k, v in value.items() if str(k).upper() == symbol}
+                    data[key] = {k: v for k, v in value.items() if hit(k)}
             elif isinstance(value, list):
                 data[key] = [item for item in value
-                             if str(item.get("symbol", "") if isinstance(item, dict) else item).upper() == symbol]
+                             if hit(item.get("symbol", "") if isinstance(item, dict) else item)]
     return {"untrusted": True, "source": "event-loop context snapshot",
             "ts": snapshot.get("ts"), "available": bool(data), "symbol": symbol,
             "data": bounded(data)}

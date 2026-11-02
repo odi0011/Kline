@@ -152,3 +152,48 @@ def test_read_candles_distinguishes_not_ready_from_not_watched(tmp_path, monkeyp
         assert "不在当前监控列表" in other["reason"]
         await manager.stop()
     asyncio.run(scenario())
+
+
+def test_symbol_normalization():
+    """BTC / btc / BTCUSDT 都要归一到 btcusdt。
+
+    这是"BTC 已不在监控范围"的直接原因：模型只写 BTC，系统 key 是 btcusdt，
+    不归一则全部匹配失败。
+    """
+    from ai.agent import _symbol
+    pool = ["btcusdt", "ethusdt"]
+    for raw in ("BTC", "btc", "BTCUSDT", "btcusdt", "Btc"):
+        assert _symbol(raw, pool) == "btcusdt", raw
+    # 不在池子里的也要补全，便于给出准确的"不在监控"提示
+    assert _symbol("DOGE", pool) == "dogeusdt"
+    assert _symbol("dogeusdt", pool) == "dogeusdt"
+
+
+def test_read_candles_accepts_short_symbol(tmp_path, monkeypatch):
+    """模型传 'BTC' 时应该真的能读到 btcusdt 的数据。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch)
+        manager.symbols_fn = lambda: ["btcusdt"]
+
+        class Candle:
+            open_time = 1; open = 2.0; high = 3.0; low = 1.5; close = 2.5
+            volume = 10.0; buy_vol = 6.0; sell_vol = 4.0
+
+        manager.bars_fn = lambda sym, iv="": [Candle()] * 20
+        out = manager._read_candles({"symbol": "BTC"})
+        assert out["available"] is True
+        assert out["symbol"] == "btcusdt"
+        await manager.stop()
+    asyncio.run(scenario())
+
+
+def test_read_advice_accepts_short_symbol(tmp_path, monkeypatch):
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch)
+        manager.symbols_fn = lambda: ["btcusdt"]
+        manager.advice_fn = lambda sym: ADVICE if sym == "btcusdt" else {}
+        out = manager._read_advice({"symbol": "BTC"})
+        assert out["available"] is True
+        assert out["advice"]["symbol"] == "btcusdt"
+        await manager.stop()
+    asyncio.run(scenario())
