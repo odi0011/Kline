@@ -814,8 +814,13 @@ def test_provider_without_tools_falls_back_instead_of_failing(tmp_path, monkeypa
     asyncio.run(scenario())
 
 
-def test_context_summary_keeps_early_turns_in_prompt(tmp_path, monkeypatch):
-    """超出窗口的旧对话要被压进摘要并送进下一轮 prompt，而不是直接丢掉。"""
+def test_context_is_append_only_for_cache_hits(tmp_path, monkeypatch):
+    """上下文必须是**追加式**的：每轮只是变长，不做滑动窗口。
+
+    滑动窗口每轮丢掉最旧一条 → 前缀位移 → DeepSeek 的前缀缓存整段失效，
+    实测命中率只有 48%。这里验证：第 N 轮请求里能看到第 0 轮的问题，
+    而且历史只增不减（前一轮的消息是这一轮的前缀）。
+    """
     seen = []
 
     def provider(*args, **kwargs):
@@ -828,18 +833,18 @@ def test_context_summary_keeps_early_turns_in_prompt(tmp_path, monkeypatch):
     async def scenario():
         manager, _ = make_manager(tmp_path, monkeypatch, provider=provider)
         try:
-            for i in range(15):
+            for i in range(8):
                 ack = await manager.handle("chat", {"prompt": f"第{i}个问题"})
                 assert ack["ok"]
                 await wait_for(lambda: not manager.chat_runners)
-            # 最后一次请求里应能看到早期问题的摘要
             last = seen[-1]
             joined = "\n".join(str(m.get("content") or "") for m in last)
-            assert "第0个问题" in joined, "早期对话没有进入上下文"
-            assert manager.chat_summary, "摘要没有被生成"
-            # 快照里也带上了摘要（可持久化）
+            assert "第0个问题" in joined, "早期对话被丢掉了，缓存会整段失效"
+            # 第 3 轮的历史必须是第 4 轮历史的前缀
+            early = [str(m.get("content") or "") for m in seen[3] if m.get("role") == "user"]
+            later = [str(m.get("content") or "") for m in seen[7] if m.get("role") == "user"]
+            assert later[:len(early)] == early, "历史不是追加式的，前缀变了"
             await manager.stop()
         finally:
             await manager.stop()
-
     asyncio.run(scenario())

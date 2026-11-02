@@ -30,8 +30,9 @@ def test_safety_boundaries_survive_identity():
 
 
 def test_identity_length_is_bounded():
-    text = _system_content("x" * 6000)
-    assert text.count("x") == 4000, "身份设定要截断，不能把上下文撑爆"
+    # 用不会出现在提示词里的字符，避免把模板自身的字算进去
+    text = _system_content("＃" * 6000)
+    assert text.count("＃") == 4000, "身份设定要截断，不能把上下文撑爆"
 
 
 def test_prompt_forbids_leaking_the_config():
