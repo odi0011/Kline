@@ -241,6 +241,14 @@
 /* ---------- 输入区 ---------- */
 .composer { flex: none; padding: 8px; padding-top: 4px; }
 
+/* 状态条 + 输入框的外壳。
+   两者的圆角必须来自同一条连续轮廓：外壳只负责纵向拼接，不画背景与描边。 */
+.composerShell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
 /* ---------- 附件气泡 ---------- */
 
 /* 图片气泡：图片直接铺满，由气泡自己裁外圈圆角。

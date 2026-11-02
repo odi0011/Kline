@@ -4,17 +4,31 @@
      · 左右各内缩一点，圆弧才不会和输入框的圆角打架，看起来是嵌进去的
      · 材质比输入框略淡，视觉上退到后面，不抢输入框的注意力 */
 
+/* 输入框上方的性能条：和输入框是**同一个轮廓**的两段。
+
+   做法：状态条只画上半部分（上圆角 + 左右描边 + 上描边），
+   底部完全交给输入框。两者的圆角半径、左右边缘、背景必须一致，
+   否则接缝处会露出台阶——之前就是状态条底部直角、输入框 18px 圆角，
+   视觉上像状态条比输入框宽出一圈。
+
+   关键约束：
+     · 圆角用同一个变量 --composer-radius（18px），改一处两边同步
+     · 不给状态条加 border-bottom，也不加 margin 负值去"盖住"接缝，
+       靠容器裁切保证无缝 */
+
 .bar {
+  --composer-radius: 18px;
   position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
-  /* 与输入框左右对齐，不内缩：内缩会让它看起来是另一块面板而不是从输入框里拉出来的 */
+  /* 与输入框同宽同左：不内缩、不留间距。
+     底边再压 -1px 吃掉输入框的上边框，接缝才不会露一条缝。 */
   margin: 0 0 -1px;
-  padding: 3px 11px 4px;
-  /* 上圆角 = 输入框的 18px，肩线直接顺着输入框的弧 */
-  border-radius: 18px 18px 0 0;
-  background: rgba(255, 255, 255, 0.5);
+  padding: 3px 11px 5px;
+  border-radius: var(--composer-radius) var(--composer-radius) 0 0;
+  background: rgba(255, 255, 255, 0.55);
+  /* 只描上、左、右三条边；底边由输入框自己的上边框衔接 */
   border: 1px solid rgba(28, 35, 51, 0.07);
   border-bottom: 0;
   backdrop-filter: blur(10px) saturate(150%);
