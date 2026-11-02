@@ -1,6 +1,0 @@
-{"ts": 1793618688947, "kind": "system", "reason": "量化引擎已启动，开始盯盘", "enabled": true}
-{"ts": 1793618721412, "kind": "error", "reason": "审计拉取失败(主账户): 'latin-1' codec can't encode characters in position 0-4: ordinal not in range(256)"}
-{"ts": 1793618721413, "kind": "audit", "reason": "已核对仓位：本地记录和交易所一致", "positions": {}}
-{"ts": 1793618761240, "kind": "signal", "reason": "收到 对称三角形 看涨信号 @ 2285.46", "account": "主账户", "symbol": "ethusdt", "pattern": "symmetrical_triangle", "name_zh": "对称三角形", "direction": "bullish", "price": 2285.46}
-{"ts": 1793618761430, "kind": "error", "reason": "可用余额获取失败(主账户): 'latin-1' codec can't encode characters in position 0-4: ordinal not in range(256)"}
-{"ts": 1793618761431, "kind": "skip", "reason": "多周期盯盘：4h EMA 未形成明确方向", "account": "主账户", "symbol": "ethusdt", "pattern": "symmetrical_triangle"}
