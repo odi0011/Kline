@@ -68,7 +68,7 @@ def test_agent_is_told_to_read_advice_first(tmp_path, monkeypatch):
     """系统提示词要明确要求先读系统建议，并交代分歧。"""
     from ai.agent import SYSTEM_PROMPT
     assert "read_advice" in SYSTEM_PROMPT
-    assert "复述它的方向与理由" in SYSTEM_PROMPT
+    assert "方向和关键价位" in SYSTEM_PROMPT
     assert "分歧" in SYSTEM_PROMPT
 
 
