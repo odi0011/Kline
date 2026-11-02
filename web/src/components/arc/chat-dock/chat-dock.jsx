@@ -7,6 +7,7 @@ import { createPortal } from "react-dom"
 import { motion, useReducedMotion } from "motion/react"
 import { ChevronLeft, FileText, Loader2, MoreHorizontal } from "lucide-react"
 import ChatComposer from "./chat-composer"
+import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import styles from "./chat-dock.module.css"
 
 const WIDTH = 320
@@ -227,12 +228,18 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
     return () => window.removeEventListener("resize", onResize)
   }, [commitPos, pos.x, pos.y])
 
-  // 新消息贴底（输入框自己管理焦点，这里只管滚动）
+  // 新消息贴底：只有原本就在底部时才自动跟随，往回翻看历史时不能把用户拽下去
+  const followRef = useRef(true)
   useLayoutEffect(() => {
     const node = scrollRef.current
     if (!node || !open) return
-    node.scrollTop = node.scrollHeight
+    if (followRef.current) node.scrollTop = node.scrollHeight
   }, [messages, open])
+
+  const onThreadScroll = (event) => {
+    const el = event.currentTarget
+    followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+  }
 
   /** Composer 只上交「文字 + 附件」，请求构造在这里统一做。 */
   const send = async (prompt, attachments = []) => {
@@ -343,7 +350,11 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
           </div>
         )}
 
-        <div className={styles.thread} ref={scrollRef}>
+        {/* 消息区用项目统一的 ScrollArea（细滚动条 + 边缘渐隐），
+            不要再自己写 overflow-y: auto */}
+        <ScrollArea orientation="vertical" fade={16} scrollbars="auto" label="ODDD 对话记录"
+          viewportRef={scrollRef} className={styles.thread}
+          viewportClassName={styles.threadViewport} onScroll={onThreadScroll}>
           {messages.length === 0 && <p className={styles.empty}>问市场、持仓或系统。</p>}
           {messages.map((message, index) => {
             const previous = messages[index - 1]
@@ -355,7 +366,7 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
               </Fragment>
             )
           })}
-        </div>
+        </ScrollArea>
 
         <div className={styles.composer}>
           <ChatComposer onSend={send} busy={busy} disabled={!connected}

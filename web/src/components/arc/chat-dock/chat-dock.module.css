@@ -128,14 +128,11 @@
 }
 .menu button:hover { background: rgba(28, 35, 51, 0.06); }
 
-/* ---------- 消息区 ---------- */
-.thread {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(28, 35, 51, 0.16) transparent;
+/* ---------- 消息区 ----------
+   滚动交给项目统一的 ScrollArea（细滚动条 + 边缘渐隐），
+   这里只负责占位和内部排布，不再自己声明 overflow。 */
+.thread { flex: 1 1 auto; min-height: 0; }
+.threadViewport {
   display: flex;
   flex-direction: column;
   gap: 8px;

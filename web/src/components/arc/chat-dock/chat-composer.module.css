@@ -41,7 +41,9 @@
 .addBtn:hover:not(:disabled) { background: rgba(28, 35, 51, 0.06); color: #1c2333; }
 .addBtn:disabled { opacity: 0.4; cursor: default; }
 
-/* 输入区：附件 chip 与 textarea 同在一个 flex-wrap 容器里 */
+/* 输入区：附件 chip 与 textarea 同在一个 flex-wrap 容器里。
+   这里是内联流式布局（chip 和输入框混排换行），无法套 ScrollArea，
+   只把滚动条压细到和全局一致，不出现浏览器默认粗条。 */
 .field {
   flex: 1 1 auto;
   min-width: 0;
@@ -51,8 +53,12 @@
   gap: 4px;
   max-height: 96px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-width: thin;
+  scrollbar-color: rgba(28, 35, 51, 0.18) transparent;
 }
+.field::-webkit-scrollbar { width: 4px; }
+.field::-webkit-scrollbar-thumb { background: rgba(28, 35, 51, 0.18); border-radius: 2px; }
 
 .input {
   flex: 1 1 60px;
