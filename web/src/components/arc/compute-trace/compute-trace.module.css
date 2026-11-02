@@ -22,15 +22,17 @@
 .scroll { flex: 1 1 0; min-height: 0; height: 100%; }
 .viewport { padding: 0 2px 8px; }
 
-/* 一行：时间 · 币种图标 · 标签 · 算式 · 结果 */
+/* 一行：时间 · 币种图标 · 标签 · 算式 · 结果。
+   188px 宽里塞 5 列，每列都得抠：
+     时间 30 + 图标 12 + 标签 22 + 算式 flex + 结果 34 + gap ≈ 足够 */
 .row {
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 17px;
-  padding: 0 3px;
+  gap: 3px;
+  height: 16px;
+  padding: 0 2px;
   border-radius: 3px;
-  font-size: 10px;
+  font-size: 9.5px;
   line-height: 1;
   color: rgba(28, 35, 51, 0.66);
   font-variant-numeric: tabular-nums;
@@ -39,12 +41,12 @@
 }
 .row:hover { background: rgba(28, 35, 51, 0.045); }
 
-/* 时间列：只留秒级后 4 位（mm:ss），省出宽度给算式 */
+/* 时间列：只留 mm:ss */
 .time {
   flex: none;
-  width: 34px;
-  font-size: 8.5px;
-  color: rgba(16, 24, 40, 0.3);
+  width: 28px;
+  font-size: 8px;
+  color: rgba(16, 24, 40, 0.28);
 }
 /* 没有币种时的占位圆点（模型侧的计量行） */
 .dot {
@@ -54,25 +56,23 @@
   background: rgba(28, 35, 51, 0.12);
 }
 
-/* 标签列：窄到只放标识符，把空间都留给算式 */
+/* 标签列：只放标识符（w/ in/ gap/ verdict），不写中文 */
 .tag {
   flex: none;
-  width: 26px;
-  font-size: 8px;
+  width: 22px;
+  font-size: 7.5px;
   font-weight: 700;
-  color: rgba(16, 24, 40, 0.34);
+  color: rgba(16, 24, 40, 0.3);
   overflow: hidden;
-  text-overflow: clip;
 }
 .expr {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  text-overflow: clip;
 }
 .value {
   flex: none;
-  min-width: 40px;
+  min-width: 32px;
   text-align: right;
   font-weight: 600;
   color: #1c2333;

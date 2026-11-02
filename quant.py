@@ -99,6 +99,8 @@ GATE_MAX_LOG = 40        # 保留最近的拦截理由条数（给前端展示�
 # 计算流水保留条数。5 秒一轮 × 5 币 × 约 15 行 ≈ 75 行/轮，
 # 3000 条够翻好几轮历史；只在内存里，不落库。
 CALC_MAX_ROWS = 3000
+# 计算流水里分项的单字标签（列很窄，放不下英文）
+SHORT_TAG = {"trend": "势", "momentum": "能", "volume": "量", "structure": "构"}
 
 
 def _now_ms() -> int:
@@ -751,7 +753,8 @@ class QuantEngine:
             weight = w.get(key)
             if part is None or weight is None:
                 continue
-            add("w", key, f"{label} {part:.2f} × {weight:.2f}",
+            # tag 用单字，窄列也放得下；中文名不重复写进算式
+            add("w", SHORT_TAG.get(key, key), f"{part:.1f}×{weight:.2f}",
                 round(float(part) * float(weight), 2))
 
         # 3) 合计 ÷ 权重和
