@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import functools
 import json
@@ -102,6 +103,74 @@ def _text(value, name, limit, required=False):
     if required and not value:
         raise ValueError(f"请输入{name}")
     return value
+
+
+MAX_ATTACHMENTS = 4
+MAX_IMAGE_BYTES = 2_000_000      # 单张图解码后上限；再大 base64 会把状态文件和 WS 撑爆
+MAX_TEXT_FILE_BYTES = 200_000
+IMAGE_MIMES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+_ATTACH_NAME = re.compile(r"[^\w.\-\u4e00-\u9fff ]{0,64}")
+
+
+def _attachments(value):
+    """校验前端粘贴的附件，返回可直接拼进模型请求的结构。
+
+    图片转成 data URL 走多模态；文本文件内联进提示词。
+    只在本次请求里携带，不写进会话状态（base64 太大会撑爆状态文件与广播）。
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > MAX_ATTACHMENTS:
+        raise ValueError(f"附件最多 {MAX_ATTACHMENTS} 个")
+    out = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("附件格式无效")
+        kind = str(item.get("kind") or "")
+        name = _ATTACH_NAME.sub("", str(item.get("name") or "attachment"))[:80] or "attachment"
+        mime = str(item.get("mime") or "")[:80]
+        data = item.get("data")
+        if not isinstance(data, str) or not data:
+            raise ValueError("附件缺少内容")
+        # 前端传 data URL；也允许纯 base64
+        if data.startswith("data:"):
+            header, _, data = data.partition(",")
+            if not header.startswith("data:"):
+                raise ValueError("附件编码无效")
+        if kind == "image":
+            if mime not in IMAGE_MIMES:
+                raise ValueError("仅支持 PNG / JPEG / WebP / GIF 图片")
+            # base64 长度换算成解码后字节数
+            if len(data) * 3 // 4 > MAX_IMAGE_BYTES:
+                raise ValueError("单张图片不能超过 2MB")
+            out.append({"kind": "image", "name": name, "mime": mime, "data": data})
+        elif kind == "text":
+            if len(data) * 3 // 4 > MAX_TEXT_FILE_BYTES:
+                raise ValueError("文本附件不能超过 200KB")
+            try:
+                text = base64.b64decode(data, validate=True).decode("utf-8", "replace")
+            except Exception:
+                raise ValueError("文本附件解码失败") from None
+            out.append({"kind": "text", "name": name, "mime": mime, "text": text})
+        else:
+            raise ValueError(f"不支持的附件类型 {kind!r}")
+    return out
+
+
+def _user_content(prompt: str, attachments: list[dict]):
+    """把文本与图片合成 OpenAI 多模态 content。没有图片就用纯字符串。"""
+    images = [a for a in attachments if a["kind"] == "image"]
+    texts = [a for a in attachments if a["kind"] == "text"]
+    body = prompt
+    for file in texts:
+        body += f"\n\n【附件 {file['name']}】\n```\n{file['text'][:40000]}\n```"
+    if not images:
+        return body
+    parts = [{"type": "text", "text": body}]
+    for img in images:
+        parts.append({"type": "image_url",
+                      "image_url": {"url": f"data:{img['mime']};base64,{img['data']}"}})
+    return parts
 
 
 def _interval(value):
@@ -349,7 +418,8 @@ class AgentManager:
         try:
             if not isinstance(action, str) or not isinstance(payload, dict):
                 raise ValueError("action 需为文本，payload 需为对象")
-            allowed = {"state": set(), "recover": set(), "chat": {"prompt", "model"},
+            allowed = {"state": set(), "recover": set(),
+                       "chat": {"prompt", "model", "attachments"},
                        "cancel_chat": {"id"}, "create": {"title", "prompt", "model", "intervalSec", "startAt"},
                        "edit": {"id", "title", "prompt", "intervalSec", "startAt"}}
             for name in ("pause", "resume", "cancel", "delete", "run"):
@@ -370,7 +440,8 @@ class AgentManager:
                     return {"ok": True, **self.state()}
                 self._writable()
                 if action == "chat":
-                    message_id = await self.ask(payload.get("prompt", ""), payload.get("model", ""))
+                    message_id = await self.ask(payload.get("prompt", ""), payload.get("model", ""),
+                                                payload.get("attachments"))
                     return {"ok": True, "id": message_id}
                 if action == "cancel_chat":
                     message_id = _text(payload.get("id", ""), "id", 100)
@@ -400,19 +471,25 @@ class AgentManager:
         if self.persistence_error:
             raise PersistenceError(self.persistence_error)
 
-    async def ask(self, prompt, model=""):
+    async def ask(self, prompt, model="", attachments=None):
         self._writable()
         prompt = _text(prompt, "问题", 6000, True)
         model = _text(model, "model", 200)
+        prepared = _attachments(attachments)
         _, selected = self._model(model)
         if self.chat_runners:
             raise ValueError("已有回复进行中（取消后仍需等待底层请求结束）")
         assistant_id = uuid.uuid4().hex[:12]
         self._reserve(assistant_id)
         history = [item for item in self.chat if item.get("role") == "user" or item.get("status") == "succeeded"][-6:]
+        # 附件只随本次请求进模型；会话里只留名字，避免 base64 撑爆状态文件与广播
+        names = [a["name"] for a in prepared]
         previous_chat = self.chat
+        user_message = {"id": uuid.uuid4().hex[:12], "role": "user", "content": prompt, "ts": now_ms()}
+        if names:
+            user_message["attachments"] = names
         self.chat = (self.chat + [
-            {"id": uuid.uuid4().hex[:12], "role": "user", "content": prompt, "ts": now_ms()},
+            user_message,
             {"id": assistant_id, "role": "assistant", "content": "", "status": "queued",
              "ts": now_ms(), "model": selected["id"], "steps": []}])[-40:]
         try:
@@ -422,7 +499,8 @@ class AgentManager:
             self._release(assistant_id)
             raise
         self._chat_id = assistant_id
-        runner = asyncio.create_task(self._run_chat(assistant_id, prompt, selected["id"], history))
+        runner = asyncio.create_task(
+            self._run_chat(assistant_id, prompt, selected["id"], history, prepared))
         self.chat_runners.add(runner)
         def done(_):
             self.chat_runners.discard(runner)
@@ -561,7 +639,7 @@ class AgentManager:
         finally:
             self._http_slots.release()
 
-    async def _agent_loop(self, target, prompt, model, history=None):
+    async def _agent_loop(self, target, prompt, model, history=None, attachments=None):
         config, selected = self._model(model)  # 配置、proxy、context 均不在线程中读取。
         proxy = self.proxy_fn() or None
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -571,7 +649,7 @@ class AgentManager:
                              json.dumps(str(custom)[:4000], ensure_ascii=False)})
         for item in history or []:
             messages.append({"role": item["role"], "content": item["content"][:8000]})
-        messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "user", "content": _user_content(prompt, attachments or [])})
         deadline = time.monotonic() + TASK_TIMEOUT
         usage = {}
         for round_number in range(1, MAX_ROUNDS + 1):
@@ -670,11 +748,12 @@ class AgentManager:
                                  "content": json.dumps({"untrusted": True, "data": output}, ensure_ascii=False)})
         raise RuntimeError("已达到 8 轮上限，任务未得到最终结论；已执行步骤可查")
 
-    async def _run_chat(self, message_id, prompt, model, history):
+    async def _run_chat(self, message_id, prompt, model, history, attachments=None):
         message = next(item for item in self.chat if item["id"] == message_id)
         try:
             message.update(status="running", startedAt=now_ms())
-            result = await asyncio.wait_for(self._agent_loop(message, prompt, model, history), TASK_TIMEOUT)
+            result = await asyncio.wait_for(
+                self._agent_loop(message, prompt, model, history, attachments), TASK_TIMEOUT)
             # 长回复切成多条：第一条挂在原消息上，其余作为后续气泡追加。
             # 模型即使不听提示词，也不会把几千字塞进一个气泡。
             pieces = split_reply(result["reply"]) or [""]

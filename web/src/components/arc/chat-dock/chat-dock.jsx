@@ -2,12 +2,11 @@
    能力：拖动移动、折叠到左下角设置按钮上方（弹性粘性动画）、玻璃材质。
    只显示气泡对话——思考过程与工具调用不展示给用户。
    消息/发送走 App 注入的 onSend（WS agent_action），本组件不碰网络。 */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { motion, useReducedMotion } from "motion/react"
-import {
-  ArrowUp, ChevronDown, Paperclip, Globe, Image as ImageIcon, Loader2, Square,
-} from "lucide-react"
+import { ChevronDown, Loader2 } from "lucide-react"
+import ChatComposer from "./chat-composer"
 import styles from "./chat-dock.module.css"
 
 const WIDTH = 320
@@ -54,7 +53,8 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
-function MessageBubble({ message }) {
+// 消息气泡按内容记忆：只要这条消息没变就不重渲染，长对话不会随每次输入卡顿
+const MessageBubble = memo(function MessageBubble({ message }) {
   const mine = message.role === "user"
   const text = typeof message.content === "string" ? message.content : ""
   const busy = message.status === "running" || message.status === "queued"
@@ -72,19 +72,19 @@ function MessageBubble({ message }) {
           <p className={styles.error} role="alert">{message.error || STATUS_TEXT.failed}</p>
         )}
         {message.status === "cancelled" && <span className={styles.muted}>已停止</span>}
+        {Array.isArray(message.attachments) && message.attachments.length > 0 && (
+          <span className={styles.attachNote}>{message.attachments.join(" · ")}</span>
+        )}
       </div>
     </div>
   )
-}
+})
 
 export default function ChatDock({ messages = [], onSend, connected = true, onCancel, busy = false }) {
   const reduced = useReducedMotion()
   const [open, setOpen] = useState(false)
-  const [prompt, setPrompt] = useState("")
   const [pos, setPos] = useState(() => loadPos() || defaultPos())
-  const [sending, setSending] = useState(false)
   const scrollRef = useRef(null)
-  const inputRef = useRef(null)
   const [launcherSpot, setLauncherSpot] = useState(() => ({ x: pos.x, y: pos.y }))
   const dragging = useRef(false)
   const [draggingUi, setDraggingUi] = useState(false)
@@ -153,35 +153,29 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
     return () => window.removeEventListener("resize", onResize)
   }, [commitPos, pos.x, pos.y])
 
-  // 展开后聚焦输入框；新消息贴底
-  useLayoutEffect(() => {
-    if (!open) return
-    inputRef.current?.focus({ preventScroll: true })
-  }, [open])
-
+  // 新消息贴底（输入框自己管理焦点，这里只管滚动）
   useLayoutEffect(() => {
     const node = scrollRef.current
     if (!node || !open) return
     node.scrollTop = node.scrollHeight
   }, [messages, open])
 
-  const send = async () => {
-    const text = prompt.trim()
-    if (!text || sending || !connected) return
-    setSending(true)
-    try {
-      await onSend?.({ type: "agent_action", action: "chat", payload: { prompt: text } })
-      setPrompt("")
-    } finally {
-      setSending(false)
+  /** Composer 只上交「文字 + 附件」，请求构造在这里统一做。 */
+  const send = async (prompt, attachments = []) => {
+    if (!connected) throw new Error("尚未连接服务端")
+    const payload = { prompt: prompt || "（见附件）" }
+    if (attachments.length) {
+      payload.attachments = attachments.map((file) => ({
+        kind: file.kind, name: file.name, mime: file.mime, data: file.data,
+      }))
     }
+    const result = await onSend?.({ type: "agent_action", action: "chat", payload })
+    if (result?.ok === false) throw new Error(textOfError(result.error))
   }
 
-  const onKeyDown = (event) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault()
-      send()
-    }
+  const textOfError = (value) => {
+    if (typeof value === "string" && value.trim()) return value.trim()
+    return "发送失败，请重试"
   }
 
   // 折叠：先同步算好落点再卸载窗口，否则按钮会在"上一帧的落点"起步
@@ -218,6 +212,13 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
     <motion.section
       className={styles.dock}
       style={{ position: "fixed", left: pos.x, top: pos.y, width: WIDTH, height: HEIGHT }}
+      // 展开：只做缩放弹出，**不动 opacity**。
+      // 之前用 opacity:0 起始，遇上动画时间轴被冻结（后台标签页）就永远
+      // 停在初始帧、窗口等于消失。可见性必须由默认样式保证。
+      initial={reduced ? false : { scale: 0.9 }}
+      animate={{ scale: 1 }}
+      transition={reduced ? { duration: 0 }
+        : { type: "spring", stiffness: 460, damping: 34, mass: 0.8 }}
       aria-label="ODDD 对话"
       data-dragging={draggingUi || undefined}>
       <div className={styles.shell}>
@@ -241,40 +242,8 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
         </div>
 
         <div className={styles.composer}>
-          <div className={styles.composerInner}>
-            <textarea
-              ref={inputRef}
-              className={styles.input}
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              onKeyDown={onKeyDown}
-              placeholder="向 ODDD 提问…"
-              rows={1}
-              maxLength={6000}
-              aria-label="输入消息"
-            />
-            <div className={styles.options}>
-              <div className={styles.btnsAdd}>
-                <button type="button" aria-label="附加文件" title="附加文件（未接入）" disabled>
-                  <Paperclip size={17} />
-                </button>
-                <button type="button" aria-label="添加图片" title="添加图片（未接入）" disabled>
-                  <ImageIcon size={17} />
-                </button>
-                <button type="button" aria-label="联网搜索" title="联网搜索（未接入）" disabled>
-                  <Globe size={17} />
-                </button>
-              </div>
-              {busy
-                ? <button type="button" className={styles.stop} onClick={() => onCancel?.()}
-                    aria-label="停止回复" title="停止回复"><Square size={12} fill="currentColor" /></button>
-                : <button type="button" className={styles.submit} onClick={send}
-                    disabled={!prompt.trim() || sending || !connected}
-                    aria-label="发送" title={connected ? "发送" : "未连接服务端"}>
-                    {sending ? <Loader2 size={15} className={styles.spin} /> : <ArrowUp size={15} strokeWidth={2.6} />}
-                  </button>}
-            </div>
-          </div>
+          <ChatComposer onSend={send} busy={busy} disabled={!connected}
+            onCancel={onCancel} />
         </div>
       </div>
     </motion.section>,

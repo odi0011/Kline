@@ -142,99 +142,20 @@
 /* ---------- 输入区 ---------- */
 .composer { flex: none; padding: 8px; padding-top: 4px; }
 
-/* 渐变描边：外层渐变 + 内层玻璃，形成一个细边玻璃卡片 */
-.composerInner {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 1.5px;
-  border-radius: 16px;
-  background: linear-gradient(to bottom right,
-    rgba(255, 255, 255, 0.95),
-    rgba(28, 35, 51, 0.16),
-    rgba(255, 255, 255, 0.8));
+/* 用户消息里附件的名字：只显示名字，不显示内容 */
+.attachNote {
+  display: block;
+  margin-top: 3px;
+  font-size: 9.5px;
+  color: rgba(247, 249, 252, 0.62);
 }
-.composerInner > textarea,
-.composerInner > .options {
-  border-radius: 14.5px;
-}
-
-.input {
-  width: 100%;
-  min-height: 40px;
-  max-height: 84px;
-  padding: 9px 11px 6px;
-  border: 0;
-  outline: none;
-  resize: none;
-  background: rgba(255, 255, 255, 0.5);
-  color: #1c2333;
-  font-family: inherit;
-  font-size: 11.5px;
-  line-height: 1.5;
-  scrollbar-width: thin;
-}
-.input::placeholder { color: rgba(16, 24, 40, 0.38); transition: color 0.3s ease; }
-.input:focus::placeholder { color: rgba(16, 24, 40, 0.2); }
-
-.options {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 6px 6px;
-  background: rgba(255, 255, 255, 0.5);
-}
-
-.btnsAdd { display: flex; gap: 6px; }
-.btnsAdd button {
-  display: flex;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: rgba(28, 35, 51, 0.22);
-  cursor: pointer;
-  transition: color 0.2s ease, transform 0.2s ease;
-}
-.btnsAdd button:hover:not(:disabled) { color: #1c2333; transform: translateY(-2px); }
-.btnsAdd button:disabled { cursor: default; }
-
-/* 发送：深色圆角按钮，带内高光 */
-.submit {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: 0;
-  border-radius: 10px;
-  background-image: linear-gradient(to top, #2b3242, #4a5568, #2b3242);
-  box-shadow: inset 0 6px 2px -4px rgba(255, 255, 255, 0.55);
-  color: #eef2f8;
-  cursor: pointer;
-  transition: transform 0.15s ease, filter 0.2s ease;
-}
-.submit:hover:not(:disabled) { filter: drop-shadow(0 0 5px rgba(28, 35, 51, 0.35)); }
-.submit:active:not(:disabled) { transform: scale(0.92); }
-.submit:disabled { opacity: 0.42; cursor: default; }
-
-.stop {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: 0;
-  border-radius: 10px;
-  background: rgba(28, 35, 51, 0.08);
-  color: #1c2333;
-  cursor: pointer;
-}
-.stop:hover { background: rgba(28, 35, 51, 0.14); }
 
 /* ---------- 折叠态圆钮 ---------- */
 /* 折叠态圆钮：落点由内联 left/top 给出；
-   入场时从窗口原位置（--from-x/--from-y）以 overshoot 弹性飞过来。
-   用 CSS keyframes 而不是 WAAPI：页面被后台冻结时 WAAPI 时间轴会卡住。 */
+   入场时从窗口原位置（--from-x/--from-y）弹性飞到落点。
+   关键：默认状态就是「可见 + 在落点」，动画只负责位移过程。
+   不能用 fill-mode:both —— 动画时间轴被冻结时（后台标签页）会永远停在
+   opacity:0 的初始帧，按钮直接消失。 */
 .launcher {
   position: fixed;
   z-index: 60;
@@ -250,7 +171,8 @@
   -webkit-backdrop-filter: blur(14px);
   box-shadow: 0 8px 24px rgba(16, 24, 40, 0.18);
   cursor: pointer;
-  animation: dockCollapse 460ms cubic-bezier(0.22, 1.18, 0.36, 1) both;
+  opacity: 1;
+  animation: dockCollapse 460ms cubic-bezier(0.22, 1.18, 0.36, 1);
 }
 
 @keyframes dockCollapse {
@@ -258,12 +180,10 @@
     transform: translate(
       calc(var(--from-x, 0px) - var(--spot-x, 0px)),
       calc(var(--from-y, 0px) - var(--spot-y, 0px))
-    ) scale(0.42);
-    opacity: 0;
+    ) scale(0.5);
   }
-  55% { opacity: 1; }
-  75% { transform: translate(-4px, 3px) scale(1.06); }
-  100% { transform: translate(0, 0) scale(1); opacity: 1; }
+  75% { transform: translate(-3px, 2px) scale(1.05); }
+  100% { transform: translate(0, 0) scale(1); }
 }
 .launcher img { border-radius: 7px; display: block; }
 .launcherDot {
@@ -287,7 +207,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .spin, .busyDot { animation: none; }
-  .submit, .btnsAdd button { transition: none; }
 }
 
 /* 拖动中：关掉子元素过渡，避免跟手有延迟 */
