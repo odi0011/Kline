@@ -359,10 +359,12 @@ def test_new_message_merges_into_pending_reply(tmp_path, monkeypatch):
             assert "看下BTC" in joined and "顺便说下ETH" in joined, \
                 f"两次提问没有合并进同一轮上下文: {joined!r}"
             assert [m for m in manager.chat if m.get("status") in ("running", "queued")] == []
-            # 合并后只应剩一条用户消息（含两句），不能把前一句再显示一遍
+            # 会话里两条用户消息都要保留：界面上每句话是独立气泡，
+            # 不能被拼成一条「看下BTC（补充）顺便说下ETH」。
             users = [m for m in manager.chat if m.get("role") == "user"]
-            assert len(users) == 1, f"合并后残留了重复的用户消息: {users!r}"
-            assert users[0]["content"] == joined, "会话里的用户消息与模型看到的上下文不一致"
+            assert [u["content"] for u in users] == ["看下BTC", "顺便说下ETH"], users
+            # 但发给模型的那份要合并成一条（user/assistant 必须交替）
+            assert "（补充）" not in joined
             # 不存在的 id 取消仍然报错
             assert not (await manager.handle("cancel_chat", {"id": "other"}))["ok"]
         finally:

@@ -96,10 +96,12 @@ def test_merge_accepts_previous_message_without_text(tmp_path, monkeypatch):
             assert await wait_for(lambda: not manager.chat_runners)
             joined = prompts[-1]
             assert "这是什么形态" in joined, f"补充的话没进上下文: {joined!r}"
+            # 两条用户消息都保留（界面各自独立气泡），
+            # 但发给模型的合并成了一条。
             users = [m for m in manager.chat if m.get("role") == "user"]
-            assert len(users) == 1, f"合并后不该残留两条: {users!r}"
-            assert users[0]["content"] == "这是什么形态"
-            assert users[0].get("attachments"), "上一条的附件要带到合并后的消息里"
+            assert len(users) == 2, f"每句话都该保留独立消息: {users!r}"
+            assert users[0].get("attachments"), "第一条的附件要留在它自己身上"
+            assert users[1]["content"] == "这是什么形态"
         finally:
             slow.release.set()
             await manager.stop()

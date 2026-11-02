@@ -192,6 +192,38 @@ def _status_line(prompt: str, tool: str = "", round_number: int = 1) -> str:
     return "在理解你的问题…"
 
 
+def _join_consecutive_users(messages: list[dict]) -> list[dict]:
+    """把连续的用户消息并成一条，只用在发给模型的请求里。
+
+    界面上一句话一个气泡才是对的；但模型接口要求 user/assistant 交替，
+    连续两条 user 会被部分服务商拒绝。这里把它们的文本拼起来（各占一行），
+    会话记录不受影响。多模态 content 保持原样拼接。
+    """
+    out: list[dict] = []
+    for item in messages:
+        previous = out[-1] if out else None
+        if (previous and previous.get("role") == "user" and item.get("role") == "user"):
+            merged = _concat_user_content(previous.get("content"), item.get("content"))
+            out[-1] = {"role": "user", "content": merged}
+            continue
+        out.append(item)
+    return out
+
+
+def _concat_user_content(first, second):
+    """拼接两条 user content，兼容纯文本与多模态数组。"""
+    if first is None:
+        return second
+    if second is None:
+        return first
+    if isinstance(first, str) and isinstance(second, str):
+        return f"{first}\n{second}"
+    # 多模态：把第二段的 text/图片追加到第一段后面
+    left = first if isinstance(first, list) else [{"type": "text", "text": str(first)}]
+    right = second if isinstance(second, list) else [{"type": "text", "text": str(second)}]
+    return list(left) + list(right)
+
+
 def _system_content(custom) -> str:
     """把部署者配置的身份设定并进系统提示词，作为同一条 system 消息。
 
@@ -930,17 +962,17 @@ class AgentManager:
         return assistant_id
 
     def _absorb_pending(self, prompt: str, prepared: list[dict]):
-        """若上一条回复还在进行，把它取消并把两次提问合并成一次。
+        """上一条回复还没完成时又发了一句：取消旧回复，让模型带着全部上下文重答。
 
-        返回 (被取消的消息 id, 新 prompt, 新附件列表) 表示已合并；
-        返回 None 表示没有进行中的回复。
-        合并而不是排队：用户补一句话通常是纠正或追加要求，让模型看到完整的两句
-        才能一次答对；排队会导致"第一句答一半，第二句另起一轮"。
+        **不改动会话里已有的用户消息**——用户发过的每句话都该各自显示成
+        独立气泡，不能被拼成一条「A（补充）B」。这里只负责取消那条没答完的
+        assistant，把本轮新问题原样交回去；上下文由会话历史自然携带。
+
+        返回 (被取消的消息 id, 本轮 prompt, 本轮附件)；没有进行中的回复返回 None。
         """
         if not self.chat_runners:
             return None
         base = str(prompt or "").strip()
-        # 找最后一条还在跑/排队的 assistant，以及它前面那条 user
         pending_id = None
         for item in reversed(self.chat):
             if item.get("role") == "assistant" and item.get("status") in ("running", "queued"):
@@ -948,54 +980,16 @@ class AgentManager:
                 break
         if pending_id is None:
             return None
-        ids = [m.get("id") for m in self.chat]
-        index = ids.index(pending_id) if pending_id in ids else -1
-        previous_user = ""
-        previous_id = None
-        previous_refs: list[dict] = []
-        # 从那条 assistant 往前找最近的 user，就是待合并的问题
-        for item in reversed(self.chat[:index] if index > 0 else []):
-            if item.get("role") == "user":
-                previous_user = str(item.get("content") or "").strip()
-                previous_id = item.get("id")
-                previous_refs = [r for r in (item.get("attachments") or []) if isinstance(r, dict)]
-                break
-        # 上一条可能只带附件、没有文字（content 为空串），那也是有效提问，
-        # 不能因为 previous_user 为空就放弃合并。
-        if previous_id is None:
-            return None
-        # 取消进行中的回复，并把这条空 assistant 连同它对应的 user 一起从会话里摘掉：
-        # 合并后的新消息已经包含了前一句，否则用户会看到自己说了两遍。
+        # 取消进行中的回复并把它从会话里摘掉：它没答完，留着只会是一句
+        # 半截的空壳。用户此前发的话一律保留。
         runner = self._chat_tasks.pop(pending_id, None)
         if runner is not None:
             self._cancel_runner(runner)
             self.chat_runners.discard(runner)
-        drop = {pending_id, previous_id}
-        self.chat = [m for m in self.chat if m.get("id") not in drop]
+        self.chat = [m for m in self.chat if m.get("id") != pending_id]
         if self._chat_id == pending_id:
             self._chat_id = None
-        # 两边都可能只有附件没有文字，拼装时要处理空串
-        if previous_user and base:
-            merged_prompt = f"{previous_user}\n\n（补充）{base}"
-        else:
-            merged_prompt = previous_user or base
-        # 附件沿用上一条 user 的图片/文本引用，再拼上本次新加的
-        merged_attachments = list(prepared or [])
-        for ref in previous_refs:
-            if ref.get("kind") == "image" and ref.get("url"):
-                # 已落盘的图片：按 base64 读回来给模型
-                local = os.path.join(self.attachments_dir,
-                                     ref["url"].replace("/agent-attachments/", ""))
-                try:
-                    with open(local, "rb") as handle:
-                        merged_attachments.append({
-                            "kind": "image", "name": ref.get("name", "image"),
-                            "mime": ref.get("mime", "image/png"),
-                            "data": base64.b64encode(handle.read()).decode(),
-                        })
-                except OSError:
-                    pass
-        return pending_id, merged_prompt[:6000], merged_attachments
+        return pending_id, base, list(prepared or [])
 
     async def ask_and_wait(self, prompt: str, model: str = "", timeout: float = 300,
                            attachments: list[dict] | None = None) -> str:
@@ -1275,6 +1269,10 @@ class AgentManager:
         for item in history or []:
             messages.append({"role": item["role"], "content": item["content"][:8000]})
         messages.append({"role": "user", "content": _user_content(prompt, attachments or [])})
+        # 会话里可能有多条连续的用户消息（上一句还没答完就又问了一句，
+        # 界面按独立气泡显示它们）。模型接口要求 user/assistant 交替，
+        # 这里把它们并成一条，只影响发给模型的那份，不动会话记录。
+        messages = _join_consecutive_users(messages)
         deadline = time.monotonic() + TASK_TIMEOUT
         usage = {}
         # 性能统计：多轮工具调用累加，写进消息里给前端的状态条读
