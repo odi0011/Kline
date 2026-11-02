@@ -32,9 +32,28 @@ def test_read_advice_is_empty_for_unwatched_symbol(tmp_path, monkeypatch):
     async def scenario():
         manager, _ = make_manager(tmp_path, monkeypatch)
         manager.advice_fn = lambda sym: {}
+        manager.symbols_fn = lambda: ["btcusdt"]
         out = manager._read_advice({"symbol": "dogeusdt"})
         assert out["available"] is False
-        assert "暂无建议" in out["reason"]
+        assert out["monitored"] is False
+        assert "不在当前监控列表" in out["reason"]
+        await manager.stop()
+    asyncio.run(scenario())
+
+
+def test_read_advice_distinguishes_not_ready_from_not_watched(tmp_path, monkeypatch):
+    """在监控列表但还没算出来 ≠ 不在监控范围。
+
+    混成一句话会让模型说"BTC 已不在监控范围"（实际只是回补没跟上）。
+    """
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch)
+        manager.advice_fn = lambda sym: {}
+        manager.symbols_fn = lambda: ["btcusdt"]
+        out = manager._read_advice({"symbol": "btcusdt"})
+        assert out["available"] is False
+        assert out["monitored"] is True
+        assert "还没算出来" in out["reason"]
         await manager.stop()
     asyncio.run(scenario())
 
@@ -99,3 +118,37 @@ def test_tool_is_exposed_and_dispatched(tmp_path, monkeypatch):
     assert tool_msgs, "第二轮请求里应该有工具结果"
     payload = json.loads(tool_msgs[0]["content"])
     assert payload["data"]["advice"]["action"] == "short"
+
+
+def test_read_advice_reports_age(tmp_path, monkeypatch):
+    """建议要带上数据年龄：评分每 5 秒重算，模型必须知道是不是最新。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch)
+        stale = {**ADVICE, "ts": 1000}          # 很久以前的快照
+        manager.advice_fn = lambda sym: stale
+        manager.symbols_fn = lambda: ["btcusdt"]
+        out = manager._read_advice({"symbol": "btcusdt"})
+        assert out["available"] is True
+        assert out["ageSeconds"] is not None
+        assert out["ageSeconds"] > 0
+        assert "每 5 秒重算" in out["note"]
+        await manager.stop()
+    asyncio.run(scenario())
+
+
+def test_read_candles_distinguishes_not_ready_from_not_watched(tmp_path, monkeypatch):
+    """K线的空结果同样要能区分两种情况。"""
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch)
+        manager.bars_fn = lambda sym, iv="": []
+        manager.symbols_fn = lambda: ["btcusdt"]
+
+        watched = manager._read_candles({"symbol": "btcusdt"})
+        assert watched["available"] is False and watched["monitored"] is True
+        assert "还没攒够" in watched["reason"]
+
+        other = manager._read_candles({"symbol": "dogeusdt"})
+        assert other["available"] is False and other["monitored"] is False
+        assert "不在当前监控列表" in other["reason"]
+        await manager.stop()
+    asyncio.run(scenario())

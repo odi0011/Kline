@@ -740,8 +740,17 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     # Agent 读K线的入口：直接从聚合器取，不联网；interval 为空时用当前检测周期
     def _agent_bars(symbol: str, interval: str = ""):
-        iv = interval or engine.detect_interval or iv0
-        agg = aggs.get((symbol, iv)) or aggs.get((symbol, iv0))
+        """给 Agent 读K线的入口。
+
+        **不用 engine.detect_interval**：那个值会随行情在 1m/3m 之间来回切，
+        同一句"BTC 现在怎么样"隔几秒问一次，拿到的可能是不同周期的K线，
+        结论自然反转。模型没指定周期时，固定用配置里的第一个周期。
+        """
+        iv = interval or iv0
+        agg = aggs.get((symbol, iv))
+        if not agg:
+            # 指定周期没建聚合器时退回默认周期，而不是直接给空
+            agg = aggs.get((symbol, iv0))
         if not agg:
             return []
         hist = list(agg.history)
@@ -750,15 +759,28 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         return hist
 
     agent.bars_fn = _agent_bars
+    # 让 Agent 能区分"币不在监控列表"和"在列表但数据还没回来"
+    agent.symbols_fn = lambda: list(symbols)
 
     def _agent_advice(symbol: str) -> dict:
         """胶囊同款建议：直接复用 quant 的计算，保证两边结论永远一致。
 
         以前 Agent 只看原始指标自己判断，胶囊看系统评分，两边经常给出
         相反方向（胶囊做空、Agent 说做多），用户只会觉得系统坏了。
+
+        附带 ts：advice 本身不带时间戳，但它是从 liveEvaluations 算出来的，
+        把评估的时刻一起返回，模型才能判断"这个方向是几秒前的"。
         """
-        advice = (quant.snapshot().get("analysis") or {}).get("advice") or {}
-        return advice.get(str(symbol or "").lower()) or {}
+        key = str(symbol or "").lower()
+        analysis = quant.snapshot().get("analysis") or {}
+        advice = (analysis.get("advice") or {}).get(key)
+        if not advice:
+            return {}
+        evaluation = (analysis.get("liveEvaluations") or {}).get(key) or {}
+        if evaluation.get("ts"):
+            advice = dict(advice)
+            advice["ts"] = evaluation["ts"]
+        return advice
 
     agent.advice_fn = _agent_advice
 

@@ -108,6 +108,13 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
 用户问"该做多还是做空""系统怎么建议""胶囊为什么这么说"时，
 必须先 read_advice 读系统结论，回答里给出方向和关键价位即可，
 不要把评分、gap、杠杆、理由逐项念一遍。
+**评分每 5 秒重算一次，方向会随行情变。** 所以：
+ · 用户问"刚才还说空，怎么现在多了"时，看 ageSeconds 和当前 direction，
+   直接说"行情变了，现在是 X"，不要装作从没变过
+ · 工具返回 available=false 时，要区分 monitored 字段：
+   monitored=true → 是数据还没攒够（刚启动），说"稍等几十秒"；
+   monitored=false → 真的不在监控列表，说"这个币没在监控里"
+   绝不要把前者说成"不在监控范围"，也不要编一个方向
 你的个人判断和系统建议不一致时，一句话点明分歧："系统偏空，我看多，因为××"，
 绝不假装一致、也不要只讲自己那套。
 你只能读取行情、账户、风险、事件、新闻，以及保存/读取用户明确同意的白名单偏好。
@@ -461,6 +468,7 @@ class AgentManager:
         self.context_fn, self.broadcast = context_fn, broadcast
         self.bars_fn = None             # (symbol, interval) -> list[Candle]，main 注入
         self.advice_fn = None           # (symbol) -> 胶囊同款建议，main 注入
+        self.symbols_fn = None          # () -> 当前监控币种列表，main 注入
         self.state_path = state_path
         # 图片附件落盘目录：会话里只存 url，绝不把 base64 写进状态文件
         self.attachments_dir = os.path.join(os.path.dirname(state_path) or ".", "agent-attachments")
@@ -1415,8 +1423,25 @@ class AgentManager:
         except Exception as exc:
             return {"available": False, "reason": f"读取失败: {str(clean(str(exc)))[:120]}"}
         if not isinstance(advice, dict) or not advice:
-            return {"available": False, "symbol": symbol, "reason": "该币暂无建议（可能未监控）"}
-        return {"available": True, "untrusted": False, "advice": advice}
+            # 区分"不在监控"和"还没算出来"：模型经常把前者当成后者，
+            # 或者反过来，说成"读不到了"。
+            monitored = bool(self.symbols_fn and symbol in (self.symbols_fn() or []))
+            if monitored:
+                reason = (f"{symbol} 在监控列表里，但建议还没算出来"
+                          "（指标需要至少 30 根K线，刚启动时要等一会）")
+            else:
+                reason = f"{symbol} 不在当前监控列表里，没有它的建议"
+            return {"available": False, "symbol": symbol, "monitored": monitored,
+                    "reason": reason}
+        # 带上数据时刻与年龄：评分每 5 秒重算一次，隔一会问方向可能变，
+        # 模型必须知道"这是几秒前的结论"，不能把它当成永久状态。
+        ts = _num(advice.get("ts")) or _num(advice.get("updatedAt"))
+        now = now_ms()
+        age_s = round((now - ts) / 1000, 1) if ts else None
+        return {"available": True, "untrusted": False, "advice": advice,
+                "ageSeconds": age_s,
+                "note": ("评分每 5 秒重算，方向是当前快照的结论；"
+                         "如果 ageSeconds 较大，说明数据不是最新")}
 
     def _read_candles(self, arguments: dict) -> dict:
         """读某个币的最近K线。数据源由 main 注入（走聚合器，不联网）。
@@ -1442,8 +1467,17 @@ class AgentManager:
         except Exception as exc:
             return {"available": False, "reason": f"读取失败: {str(clean(str(exc)))[:120]}"}
         if not bars:
-            return {"available": False, "symbol": symbol,
-                    "reason": "该币种暂无K线（可能不在当前监控范围，或历史尚未回补）"}
+            # 区分"不在监控列表"和"在列表但还没攒够数据"——两者对用户的
+            # 含义完全不同。混成一句会让模型说出"BTC 已不在监控范围"
+            # 这种误导性结论（实际只是回补还没跟上）。
+            monitored = bool(self.symbols_fn and symbol in (self.symbols_fn() or []))
+            if monitored:
+                reason = (f"{symbol} 在监控列表里，但K线还没攒够（刚启动或正在回补），"
+                          "稍等几十秒再读")
+            else:
+                reason = f"{symbol} 不在当前监控列表里，没有它的K线"
+            return {"available": False, "symbol": symbol, "monitored": monitored,
+                    "reason": reason}
         rows = []
         for candle in bars[-raw_limit:]:
             rows.append({
