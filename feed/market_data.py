@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 PUBLIC_BASE = "https://fapi.binance.com"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -177,6 +178,46 @@ def _first_row(path: str, params: dict, proxy: str | None) -> dict | None:
     return None
 
 
+def _first_row_value(rows) -> dict | None:
+    """已经是响应体时取第一行（并发版用，避免再发一次请求）。"""
+    if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+        return rows[0]
+    return None
+
+
+# 小时级序列的缓存：数据本身一小时才更新一次，没必要每轮都重拉。
+# 之前每 60 秒给每个币重新请求一次 24 点序列，五个币就是一次多余的并发风暴，
+# 很容易触发交易所限流，表现就是整块数据"取数失败"。
+_SERIES_TTL_MS = 10 * 60_000
+_series_cache: dict[str, tuple[int, list]] = {}
+
+
+def top_long_series(symbol: str, proxy: str | None = None) -> list:
+    """大户多头占比的近 24 小时序列（小时粒度，缓存 10 分钟）。"""
+    sym = symbol.upper()
+    now = int(time.time() * 1000)
+    cached = _series_cache.get(sym)
+    if cached and now - cached[0] < _SERIES_TTL_MS:
+        return cached[1]
+    history = _get_json("/futures/data/topLongShortPositionRatio",
+                        {"symbol": sym, "period": "1h", "limit": 24}, proxy)
+    series: list = []
+    if isinstance(history, list):
+        for item in history:
+            try:
+                series.append({
+                    "ts": int(item.get("timestamp") or 0),
+                    "longPct": round(float(item.get("longAccount") or 0) * 100, 2),
+                })
+            except (TypeError, ValueError):
+                continue
+    if len(series) >= 2:
+        _series_cache[sym] = (now, series)
+        return series
+    # 失败时退回上一次成功的序列，别让卡片突然空掉
+    return cached[1] if cached else []
+
+
 def _ratio(long_side, short_side):
     """多空账户比：交易所给的是两侧占比，这里换算成 多/空 比值。"""
     try:
@@ -200,43 +241,50 @@ def derivatives_snapshot(symbol: str, period: str = "5m",
     sym = symbol.upper()
     out: dict = {"symbol": sym.lower(), "ts": int(time.time() * 1000), "period": period}
 
-    row = _first_row("/futures/data/globalLongShortAccountRatio",
-                     {"symbol": sym, "period": period, "limit": 1}, proxy)
+    # 这些接口互相独立，必须并发取：串行时单币要 12 秒，
+    # 线上稍慢就撞到 12 秒超时，整块数据表现为"取数失败/无数据"。
+    jobs = {
+        "account": ("/futures/data/globalLongShortAccountRatio",
+                    {"symbol": sym, "period": period, "limit": 1}),
+        "topPos": ("/futures/data/topLongShortPositionRatio",
+                   {"symbol": sym, "period": period, "limit": 1}),
+        "taker": ("/futures/data/takerlongshortRatio",
+                  {"symbol": sym, "period": period, "limit": 1}),
+        "oi": ("/fapi/v1/openInterest", {"symbol": sym}),
+        "oiHist": ("/futures/data/openInterestHist",
+                   {"symbol": sym, "period": period, "limit": 12}),
+        "premium": ("/fapi/v1/premiumIndex", {"symbol": sym}),
+        "ticker": ("/fapi/v1/ticker/24hr", {"symbol": sym}),
+    }
+    got: dict = {}
+    with ThreadPoolExecutor(max_workers=len(jobs) + 1) as pool:
+        futures = {name: pool.submit(_get_json, path, params, proxy)
+                   for name, (path, params) in jobs.items()}
+        futures["series"] = pool.submit(top_long_series, sym, proxy)
+        for name, future in futures.items():
+            try:
+                got[name] = future.result()
+            except Exception:
+                got[name] = None
+
+    row = _first_row_value(got.get("account"))
     if row:
         out["accountLongShort"] = _ratio(row.get("longAccount"), row.get("shortAccount"))
         out["accountLongPct"] = round(float(row.get("longAccount") or 0) * 100, 2)
 
-    row = _first_row("/futures/data/topLongShortPositionRatio",
-                     {"symbol": sym, "period": period, "limit": 1}, proxy)
+    row = _first_row_value(got.get("topPos"))
     if row:
         out["topPositionLongShort"] = _ratio(row.get("longAccount"), row.get("shortAccount"))
         out["topPositionLongPct"] = round(float(row.get("longAccount") or 0) * 100, 2)
 
     # 大户多头占比的近 24 小时走势：列表卡片用来判断"在加仓还是在减仓"
-    history = _get_json("/futures/data/topLongShortPositionRatio",
-                        {"symbol": sym, "period": "1h", "limit": 24}, proxy)
-    if isinstance(history, list) and len(history) >= 2:
-        series = []
-        for item in history:
-            try:
-                series.append({
-                    "ts": int(item.get("timestamp") or 0),
-                    "longPct": round(float(item.get("longAccount") or 0) * 100, 2),
-                })
-            except (TypeError, ValueError):
-                continue
-        if len(series) >= 2:
-            out["topLongSeries"] = series
-            first, last = series[0]["longPct"], series[-1]["longPct"]
-            out["topLongChange24h"] = round(last - first, 2)
+    series = got.get("series") or []
+    if len(series) >= 2:
+        out["topLongSeries"] = series
+        first, last = series[0]["longPct"], series[-1]["longPct"]
+        out["topLongChange24h"] = round(last - first, 2)
 
-    row = _first_row("/futures/data/topLongShortAccountRatio",
-                     {"symbol": sym, "period": period, "limit": 1}, proxy)
-    if row:
-        out["topAccountLongShort"] = _ratio(row.get("longAccount"), row.get("shortAccount"))
-
-    row = _first_row("/futures/data/takerlongshortRatio",
-                     {"symbol": sym, "period": period, "limit": 1}, proxy)
+    row = _first_row_value(got.get("taker"))
     if row:
         try:
             out["takerBuySellRatio"] = round(float(row.get("buySellRatio") or 0), 3)
@@ -248,15 +296,14 @@ def derivatives_snapshot(symbol: str, period: str = "5m",
         except (TypeError, ValueError):
             pass
 
-    row = _get_json("/fapi/v1/openInterest", {"symbol": sym}, proxy)
+    row = got.get("oi")
     if isinstance(row, dict):
         try:
             out["openInterest"] = float(row.get("openInterest") or 0)
         except (TypeError, ValueError):
             pass
 
-    oi_hist = _get_json("/futures/data/openInterestHist",
-                        {"symbol": sym, "period": period, "limit": 12}, proxy)
+    oi_hist = got.get("oiHist")
     if isinstance(oi_hist, list) and len(oi_hist) >= 2:
         try:
             values = [float(r.get("sumOpenInterest") or 0) for r in oi_hist]
@@ -265,7 +312,7 @@ def derivatives_snapshot(symbol: str, period: str = "5m",
         except (TypeError, ValueError):
             pass
 
-    row = _get_json("/fapi/v1/premiumIndex", {"symbol": sym}, proxy)
+    row = got.get("premium")
     if isinstance(row, dict):
         try:
             out["fundingRate"] = float(row.get("lastFundingRate") or 0)
@@ -273,7 +320,7 @@ def derivatives_snapshot(symbol: str, period: str = "5m",
         except (TypeError, ValueError):
             pass
 
-    row = _get_json("/fapi/v1/ticker/24hr", {"symbol": sym}, proxy)
+    row = got.get("ticker")
     if isinstance(row, dict):
         try:
             out["price"] = float(row.get("lastPrice") or 0)

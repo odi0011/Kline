@@ -39,7 +39,12 @@ def analyze(item: dict, cfg: dict, proxy: str | None = None) -> dict:
         return {"ok": False, "error": "未配置 AI 模型"}
 
     title = _clean(item.get("title"))[:300]
-    prompt = f"标题：{title}\n来源：{item.get('source') or '未知'}\n正文：\n{content}"
+    # 正文抓不到时也要能用 RSS 摘要分析——线上源站会 429/451，
+    # 一直等正文等于这块永远空着。明确告诉模型资料不完整，避免它编造细节。
+    is_summary = item.get("content") is None or item.get("partial") is True
+    header = "【注意：以下是 RSS 摘要，不是全文；不要推断摘要之外的事实】\n" if is_summary else ""
+    prompt = (f"{header}标题：{title}\n来源：{item.get('source') or '未知'}\n"
+              f"{'摘要' if is_summary else '正文'}：\n{content}")
     result = chat_completion(
         cfg, selected["id"],
         [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],

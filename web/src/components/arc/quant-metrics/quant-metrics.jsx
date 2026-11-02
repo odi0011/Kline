@@ -72,7 +72,7 @@ function MetricRow({ symbol, row, chartColors, selected, onOpen }) {
   )
 }
 
-export default function QuantMetrics({ rows, symbols, chartColors, selected = [], error = "" }) {
+export default function QuantMetrics({ rows, symbols, chartColors, selected = [] }) {
   const [open, setOpen] = useState(null)
   const list = useMemo(() => {
     const order = Array.isArray(symbols) && symbols.length ? symbols : Object.keys(rows || {})
@@ -85,11 +85,6 @@ export default function QuantMetrics({ rows, symbols, chartColors, selected = []
     <section className={styles.root} aria-label="币安衍生品量化指标">
       <ScrollArea orientation="vertical" fade={14} scrollbars="auto" label="币安衍生品量化指标"
         className={styles.scroll} viewportClassName={styles.viewport}>
-        {list.length === 0 && (
-          <p className={styles.empty} title={error || undefined}>
-            {error ? `衍生品数据取数失败：${error}` : "等待币安衍生品数据…"}
-          </p>
-        )}
         {list.map(([sym, row]) => (
           <MetricRow key={sym} symbol={sym} row={row} chartColors={chartColors}
             selected={selected.includes(sym)} onOpen={setOpen} />

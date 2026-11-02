@@ -25,8 +25,10 @@ from feed.depth import DepthStream
 from feed.liquidation import LiquidationStream
 from feed.market_data import (
     funding_snapshot, onboard_dates, open_interest_history, ticker_24h,
-    usdt_perpetuals, max_leverage_map, derivatives_snapshot,
+    usdt_perpetuals, max_leverage_map,
 )
+# 衍生品指标走带回退的入口：币安被地区限制时自动改用欧易
+from feed.derivatives import derivatives_snapshot
 from feed.news import fetch_all as fetch_news, fetch_article
 from feed.news_ai import analyze as analyze_news
 from feed.source import BinanceFuturesStream

@@ -627,13 +627,18 @@ class Storage:
         return {"text": text or "", "state": state or "pending", "ts": ts or 0}
 
     def news_ai_pending(self, limit: int = 6) -> list[dict]:
-        """已有正文但还没分析过的新闻（按时间从新到旧）。"""
+        """还没分析过的新闻（正文或摘要皆可，按时间从新到旧）。
+
+        线上源站经常 429/451 拿不到正文，如果只挑"有正文"的去分析，
+        这一块会一直空着。摘要也能出方向判断，只是标注资料不完整。
+        """
         rows = self._qall(
-            "SELECT url,source,title,ts,content,summary FROM news "
-            "WHERE content IS NOT NULL AND (ai_state='pending' OR ai_state IS NULL) "
+            "SELECT url,source,title,ts,content,summary,partial FROM news "
+            "WHERE (ai_state='pending' OR ai_state IS NULL) "
+            "AND (content IS NOT NULL OR (summary IS NOT NULL AND summary <> '')) "
             "ORDER BY ts DESC LIMIT %s", (min(int(limit), 30),))
         return [{"url": r[0], "source": r[1], "title": r[2], "ts": r[3],
-                 "content": r[4], "desc": r[5] or ""} for r in rows]
+                 "content": r[4], "desc": r[5] or "", "partial": bool(r[6])} for r in rows]
 
     @staticmethod
     def _keep_since(now_ms: int, days: float) -> int:

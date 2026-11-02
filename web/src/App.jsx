@@ -145,7 +145,6 @@ export default function App() {
   const [agentChat, setAgentChat] = useState([])                // ODDD 会话（悬浮窗气泡）
   const [agentNotice, setAgentNotice] = useState("")
   const [derivatives, setDerivatives] = useState({})          // 币安衍生品指标快照
-  const [derivativesError, setDerivativesError] = useState("")  // 取数失败原因（线上排查用）
   const [structureVersion, setStructureVersion] = useState(0)   // 结构位更新触发决策流刷新
   const liveRef = useRef(null)
   const cardsViewportRef = useRef(null)
@@ -276,10 +275,7 @@ export default function App() {
       setQuantTrades((cur) => [t, ...(cur || [])].slice(0, 500))
     })
     const offNews = live.on('news', (m) => setNewsItems(m.items || []))
-    const offDeriv = live.on('derivatives', (m) => {
-      setDerivatives(m.rows || {})
-      setDerivativesError(m.error || "")
-    })
+    const offDeriv = live.on('derivatives', (m) => setDerivatives(m.rows || {}))
     const offAgent = live.on('agent_state', (m) => {
       setAgentTasks(m.tasks || [])
       setAgentChat(m.chat || [])
@@ -319,7 +315,6 @@ export default function App() {
       setQuantTrades(live.quantTrades || [])
       setNewsItems(live.news || [])
       setDerivatives(live.derivatives || {})
-      setDerivativesError(live.derivativesError || "")
       setAgentTasks(live.agentTasks || [])
       setAgentChat(live.agentChat || [])
       setStructureVersion((v) => v + 1)
@@ -843,7 +838,6 @@ export default function App() {
         </div>
         <div className="row2-reserved">
           <QuantMetrics rows={derivatives} symbols={orderedSymbols}
-            error={derivativesError}
             chartColors={chartColors} selected={shownSymbols} onToggle={toggleSymbol} />
         </div>
       </div>
@@ -853,8 +847,7 @@ export default function App() {
           flashRow={flashRow} streamRef={streamRef}
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
         <div className="row3-stack">
-          <TopHolders rows={derivatives} symbols={orderedSymbols} chartColors={chartColors}
-            error={derivativesError} />
+          <TopHolders rows={derivatives} symbols={orderedSymbols} chartColors={chartColors} />
           <PositionHistory trades={quantTrades} chartColors={chartColors} />
         </div>
         <NewsFeed items={newsItems}
