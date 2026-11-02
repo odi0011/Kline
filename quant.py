@@ -99,6 +99,9 @@ GATE_MAX_LOG = 40        # 保留最近的拦截理由条数（给前端展示�
 # 计算流水保留条数。5 秒一轮 × 5 币 × 约 15 行 ≈ 75 行/轮，
 # 3000 条够翻好几轮历史；只在内存里，不落库。
 CALC_MAX_ROWS = 3000
+# 方向切换的最小分差。低于这个值维持上一轮方向——否则每 5 秒
+# 一重算、谁高 0.1 分就翻，用户跟着做就是来回交手续费。
+HYSTERESIS_GAP = 8.0
 # 计算流水里分项的单字标签（列很窄，放不下英文）
 SHORT_TAG = {"trend": "势", "momentum": "能", "volume": "量", "structure": "构"}
 
@@ -675,11 +678,29 @@ class QuantEngine:
                     if self.decision_cfg.scoring_enabled:
                         bull = score_signal("bullish", state, features, self.decision_cfg)
                         bear = score_signal("bearish", state, features, self.decision_cfg)
-                        direction = "bullish" if bull.score >= bear.score else "bearish"
+                        # 方向要**带滞后**，不能每 5 秒按分数大小硬翻：
+                        # bull 50.1 / bear 50.0 就翻成做多，下一秒反过来——
+                        # 用户按这个开仓，手续费就能把本金磨光。
+                        # 规则：新方向必须比当前方向高出 HYSTERESIS_GAP 分才切换，
+                        # 否则保持上一轮方向（信号不动，用户的操作也不会被晃）。
+                        raw_dir = "bullish" if bull.score >= bear.score else "bearish"
+                        prev = (self.live_evaluations.get(sym) or {}).get("direction")
+                        if prev in ("bullish", "bearish") and prev != raw_dir:
+                            cur = bull.score if prev == "bullish" else bear.score
+                            alt = bear.score if prev == "bullish" else bull.score
+                            if abs(alt - cur) < HYSTERESIS_GAP:
+                                direction = prev      # 优势不明显，维持原方向
+                            else:
+                                direction = raw_dir
+                        else:
+                            direction = raw_dir
                         side_score = bull if direction == "bullish" else bear
                         self.live_evaluations[sym] = {
                             "ts": _now_ms(),
                             "direction": direction,
+                            # 本轮是否因为"分差不够"而维持了上一轮方向
+                            "latched": direction != raw_dir,
+                            "rawDirection": raw_dir,
                             "score": side_score.score,
                             "oppositeScore": side_score.opposite_score,
                             "gap": side_score.gap,

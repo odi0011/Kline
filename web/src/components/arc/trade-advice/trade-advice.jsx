@@ -30,9 +30,17 @@ export default function TradeAdvice({ advice, chartColors }) {
   if (!advice) return null
   const trade = advice.action === "long" || advice.action === "short"
   const price = advice.price
+  // 入场时机：now = 现价可入；wait = 等回到区间
+  const zone = Array.isArray(advice.entryZone) ? advice.entryZone : null
+  const entryText = !trade ? ""
+    : advice.timing === "wait" && zone
+      ? `等 ${fmt(zone[0])}-${fmt(zone[1])}`
+      : "可入"
 
   const label = trade
-    ? `建议${meta.label}：杠杆 ${advice.leverage ?? "--"} 倍，止损 ${fmt(advice.sl)}，止盈 ${fmt(advice.tp)}`
+    ? `建议${meta.label}：${advice.timing === "wait" ? "等回落到入场区" : "现价可入"}，`
+      + `${advice.holdMin ? `持有约 ${Math.round(advice.holdMin)} 分钟，` : ""}`
+      + `杠杆 ${advice.leverage ?? "--"} 倍，止损 ${fmt(advice.sl)}，止盈 ${fmt(advice.tp)}`
     : `建议${meta.label}${advice.reason ? `：${advice.reason}` : ""}`
 
   return (
@@ -42,16 +50,26 @@ export default function TradeAdvice({ advice, chartColors }) {
       <span className={styles.side} style={tone ? { color: tone } : undefined}>
         <i style={tone ? { background: tone } : undefined} aria-hidden />
         {meta.label}
+        {/* 方向被锁住（分差不够没翻）：标一个小锁，说明"上一轮就是这个方向" */}
+        {trade && advice.directionLatched && (
+          <span className={styles.latch} title="信号优势不明显，维持上一轮方向">锁</span>
+        )}
       </span>
       {!trade && advice.reason && (
         <span className={styles.reason}>{advice.reason}</span>
       )}
       {trade && <>
         <span className={styles.sep} aria-hidden />
+        {/* 入场时机：这是最关键的一条——什么时候进比进不进方向更重要 */}
+        <span className={styles.item} data-tone={advice.timing === "wait" ? "wait" : "entry"}
+          title={advice.entryNote || "入场时机"}>
+          {entryText}
+        </span>
+        <span className={styles.sep} aria-hidden />
         <span className={styles.item} title={`交易所该合约最高 ${advice.maxLeverage ?? "?"}x`}>
           <b>{advice.leverage ?? "--"}</b>x
         </span>
-        <span className={styles.item} title="建议持有时长">
+        <span className={styles.item} title="建议持有时长（超时未达目标就平掉）">
           {advice.holdMin != null ? `${Math.round(advice.holdMin)}m` : "--"}
         </span>
         <span className={styles.sep} aria-hidden />

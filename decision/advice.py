@@ -109,6 +109,43 @@ def _suggest_leverage(max_lev: int | None, score: float, sl_pct: float,
     return max(1, min(max_lev, lev))
 
 
+def _entry_hint(price: float, bullish: bool, atr: float | None,
+                plan: dict) -> dict:
+    """入场时机：现在就能进，还是等回踩/反弹。
+
+    为什么需要它：只给方向不给时机，用户看到「做多」就市价追进去，
+    而价格往往正好在短期高点——止损一点点就够不着，持仓时间也白搭。
+    这里用 ATR 的一半作为"理想回撤幅度"：当前价距离理想入场区
+    超过阈值就说"等回踩"，否则说"可以进"。
+
+    返回 {timing, entryZone:[low, high], note}：
+      timing = "now"（可以进）| "wait"（等更好价位）
+    """
+    if not price or price <= 0:
+        return {}
+    # 理想入场区：多头在现价下方 half-ATR，空头在上方
+    offset = (atr * 0.5) if (atr and atr > 0) else price * 0.002
+    if bullish:
+        zone = [price - offset, price - offset * 0.2]
+    else:
+        zone = [price + offset * 0.2, price + offset]
+    lo, hi = sorted(zone)
+    # 距离理想区中点还有多远（百分比）
+    mid = (lo + hi) / 2
+    drift = abs(price - mid) / price * 100
+    timing = "wait" if drift > 0.15 else "now"
+    if timing == "now":
+        note = "现价可入"
+    else:
+        note = "等回落到区间" if bullish else "等反弹到区间"
+    return {
+        "timing": timing,
+        "entryZone": [_round_price(lo), _round_price(hi)],
+        "entryNote": note,
+        "entryDriftPct": round(drift, 2),
+    }
+
+
 def _hold_minutes(score: float, bullish: bool, regime: str | None,
                   atr_pct: float | None) -> int:
     """建议持有时长：引擎最长 60 分钟强平，趋势/强信号给更长的目标。"""
@@ -178,4 +215,8 @@ def build_advice(symbol: str, state: dict, evaluation: dict,
         "slPct": plan["slPct"], "tpPct": plan["tpPct"],
         "rr": plan["rr"],
         "holdMin": _hold_minutes(score, bullish, state.get("regime"), atr_pct),
+        # 入场时机：现在能不能进、理想区间在哪
+        **_entry_hint(price, bullish, atr, plan),
+        # 方向锁定状态：上一轮是什么方向、这轮有没有被"绑住"
+        "directionLatched": bool(evaluation.get("latched")),
     }
