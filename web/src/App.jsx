@@ -16,7 +16,7 @@ import QuantPanel from '@/components/arc/quant-panel/quant-panel'
 import PositionHistory from '@/components/arc/position-history/position-history'
 import TopHolders from '@/components/arc/top-holders/top-holders'
 import NewsFeed from '@/components/arc/news-feed/news-feed'
-import QuantMetrics from '@/components/arc/quant-metrics/quant-metrics'
+import ComputeTrace from '@/components/arc/compute-trace/compute-trace'
 import ChatDock from '@/components/arc/chat-dock/chat-dock'
 import StrategyPanel from '@/components/arc/strategy-panel/strategy-panel' 
 import DecisionOrchestrator from '@/components/arc/decision-orchestrator/decision-orchestrator'
@@ -847,8 +847,10 @@ export default function App() {
             symbols={orderedSymbols} events={visibleEvents} />
         </div>
         <div className="row2-reserved">
-          <QuantMetrics rows={derivatives} symbols={orderedSymbols}
-            chartColors={chartColors} selected={shownSymbols} onToggle={toggleSymbol} />
+          {/* 这块原先是衍生品指标（只有 5 行，撑不满整个高度）。
+              换成计算流水：把每次评分的真实算式摊开，密集滚动。 */}
+          <ComputeTrace analysis={quantSnap && quantSnap.analysis}
+            symbols={orderedSymbols} stats={agentStats} />
         </div>
       </div>
       {/* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3） */}

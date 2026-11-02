@@ -156,6 +156,8 @@ body {
   gap: var(--gap);
   flex: 1 1 auto;
   min-height: 0;
+  /* 行高由视窗决定，不能被子元素的内容顶开 */
+  overflow: hidden;
 }
 
 /* 第二行：原有币种分析 30%，实时决策编排 50%，右侧预留给后续板块 20%。 */
@@ -175,7 +177,11 @@ body {
   min-width: 0;
   min-height: 0;
   display: flex;
+  /* 这一格的子组件自己撑高会把整个 row2 顶开；这里给死一条上界，
+     让内部的 ScrollArea 真正产生滚动而不是把页面撑长。 */
+  overflow: hidden;
 }
+.row2-reserved > * { flex: 1 1 0; min-width: 0; min-height: 0; }
 
 /* 第三行中栏：上=大户持仓，下=仓位历史 */
 .row3-stack {
