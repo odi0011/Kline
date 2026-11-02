@@ -1,10 +1,14 @@
-/* 大户持仓（右下板块上半）：横向卡片，每张 = 一个币的大户多空结构。
+/* 大户持仓（右侧板块）：横向卡片流，与「K线形态图鉴」完全同一套卡片语言。
    数据来自币安 /futures/data/topLongShortPositionRatio（名义价值前 20% 的
    账户按持仓量统计），含近 24 小时走势。
-   横向滚动沿用「K线形态图鉴」那套 ScrollArea（scrollButtons + fade）。 */
+
+   布局刻意和形态卡片对齐：
+     · 用同一个 Card 组件（同圆角、同描边、同 media 高度、同标题/描述排版）
+     · 卡宽 176px、间距 12px，与 .cards-grid 一致
+     · 横向滚动沿用同一个 ScrollArea（scrollButtons + fade） */
 import { useMemo } from "react"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
-import CoinAvatar from "@/components/ui/coin-avatar"
+import { Card } from "@/components/arc/card/card"
 import styles from "./top-holders.module.css"
 
 const num = (v) => {
@@ -21,7 +25,7 @@ function Sparkline({ series, color }) {
     const max = Math.max(...values)
     const span = max - min || 1
     const W = 100
-    const H = 24
+    const H = 30
     return values.map((v, i) => {
       const x = (i / (values.length - 1)) * W
       const y = H - ((v - min) / span) * H
@@ -30,10 +34,24 @@ function Sparkline({ series, color }) {
   }, [series])
   if (!path) return <div className={styles.sparkEmpty} aria-hidden />
   return (
-    <svg className={styles.spark} viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden>
+    <svg className={styles.spark} viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden>
       <path d={path} fill="none" stroke={color} strokeWidth="1.4"
         strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
     </svg>
+  )
+}
+
+/** media 区：多空占比条（主角）+ 24h 走势。
+    形态卡片的 media 放的是 K 线图形；这里放这张卡的"图形"，
+    所以占据同样的高度位置，视觉节奏一致。 */
+function HolderMedia({ longPct, series, color }) {
+  return (
+    <div className={styles.media}>
+      <div className={styles.track} aria-hidden>
+        <i style={{ width: `${longPct ?? 0}%`, background: color }} />
+      </div>
+      <Sparkline series={series} color={color} />
+    </div>
   )
 }
 
@@ -46,28 +64,20 @@ function HolderCard({ symbol, row, chartColors }) {
   // 大户多头占比是这张卡的唯一主角：柱长 = 占比，颜色 = 相对 50% 的偏向
   const color = longPct == null ? "rgba(16,24,40,0.4)" : longPct >= 50 ? up : down
 
+  const tone = change == null ? "flat" : change > 0 ? "up" : change < 0 ? "down" : "flat"
+  const changeText = change == null ? "--" : `${change > 0 ? "+" : ""}${change.toFixed(2)}%`
+
   return (
-    <article className={styles.card} title={`${symbol.toUpperCase()} · 大户多头 ${longPct ?? "--"}%`
-      + ` · 多空比 ${ratio ?? "--"} · 24h ${change == null ? "--" : `${change > 0 ? "+" : ""}${change}%`}`}>
-      <header className={styles.cardHead}>
-        <CoinAvatar symbol={symbol} size={15} />
-        <b>{symbol.replace(/usdt$/i, "").toUpperCase()}</b>
-        <span className={styles.pct} style={{ color }}>{longPct == null ? "--" : `${longPct.toFixed(1)}%`}</span>
-      </header>
-
-      <div className={styles.track} aria-hidden>
-        <i style={{ width: `${longPct ?? 0}%`, background: color }} />
-      </div>
-
-      <Sparkline series={row.topLongSeries} color={color} />
-
-      <footer className={styles.cardFoot}>
-        <span>多空 {ratio == null ? "--" : ratio.toFixed(2)}</span>
-        <span style={{ color: change > 0 ? up : change < 0 ? down : "rgba(16,24,40,0.4)" }}>
-          {change == null ? "--" : `${change > 0 ? "+" : ""}${change.toFixed(2)}%`}
-        </span>
-      </footer>
-    </article>
+    <div className={styles.cell}>
+      <Card
+        title={<span className={styles.title}>{symbol.replace(/usdt$/i, "").toUpperCase()}</span>}
+        media={<HolderMedia longPct={longPct} series={row.topLongSeries} color={color} />}
+        // 描述只放"这是什么"，不重复页脚已经给出的数字
+        description={`多头账户占比 · 多空比 ${ratio == null ? "--" : ratio.toFixed(2)}`}
+        meta={<span className={styles.meta} style={{ color }}>{longPct == null ? "--" : `${longPct.toFixed(1)}%`}</span>}
+        action={<span className={styles.change} data-tone={tone}>24h {changeText}</span>}
+      />
+    </div>
   )
 }
 

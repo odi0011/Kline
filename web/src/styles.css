@@ -186,7 +186,11 @@ body {
   flex-direction: column;
   gap: var(--gap);
 }
-.row3-stack > * { flex: 1 1 0; min-height: 0; }
+
+/* 上格是横向卡片流（要放得下 media + 标题 + 描述 + 页脚，约 190px），
+   下格是流水列表（行高固定，矮一点不影响阅读）。按内容需要分配，不是简单对半。 */
+.row3-stack > *:first-child { flex: 0 0 auto; }
+.row3-stack > *:last-child { flex: 1 1 0; min-height: 0; }
 
 /* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3）。
    高度随视窗自适应：小屏收缩（下限 220），高屏回到 340 上限，
