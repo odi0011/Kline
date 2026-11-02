@@ -68,6 +68,7 @@ class BroadcastHub:
         self._article_slots = asyncio.Semaphore(2)
         self.quant_fn = None              # 量化快照（main 注入）
         self.quant_events_fn = None       # 决策流水查询（main 注入）：(acct, limit) -> list
+        self.paper_refresh_fn = None      # 模拟仓手动刷新（main 注入）：symbol -> position
         self.analysis_fn = None           # 结构分析（main 注入）：(sym, iv, candles) -> dict
         self.depths: dict[str, dict] = {}      # symbol -> 订单簿深度快照（真实挂单）
         self.depth_dirty: set[str] = set()     # 待广播的深度
@@ -360,6 +361,12 @@ class BroadcastHub:
                     elif mtype == "query_depths":
                         await ws.send(json.dumps({
                             "type": "depths", "depths": self.depths,
+                        }, separators=(",", ":")))
+                    elif mtype == "paper_refresh" and self.paper_refresh_fn:
+                        sym = str(msg.get("symbol") or "").lower()[:24]
+                        result = await asyncio.to_thread(self.paper_refresh_fn, sym)
+                        await ws.send(json.dumps({
+                            "type": "paper_refreshed", "symbol": sym, "position": result,
                         }, separators=(",", ":")))
                     elif mtype == "query_quant_events" and self.quant_events_fn:
                         acct = str(msg.get("account") or "")

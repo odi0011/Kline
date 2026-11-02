@@ -31,6 +31,7 @@ from analysis import indicators as IND
 from decision.advice import build_advice
 from decision.config import DecisionConfig
 from decision.drift import ADWIN
+from decision.paper import PaperBook
 from decision.features import (
     cvd_metrics, funding_context, macd, open_interest_bias,
     order_book_imbalance, returns as return_series, squeeze_state,
@@ -143,6 +144,9 @@ class QuantEngine:
         # 只保留最近若干条（内存环形缓冲，不落库）——这是运算轨迹，
         # 不是业务数据，重算就能得到。
         self.calc_stream: deque = deque(maxlen=CALC_MAX_ROWS)
+        # 模拟仓：每个监控币跑一个 15 分钟的纸上交易，平仓即重开。
+        # 纯内存，不落库（每 15 分钟一条，量很小，但没必要进 DB）。
+        self.paper = PaperBook()
         self.dd_state = {"paused_until": 0, "current": 0.0, "max": 0.0, "peak": 0.0}
         # 交易范围：只处理前端实际展示的币种（None/空 = 不限制）。
         # 否则引擎会在用户没看K线的币上开仓，持仓出现"凭空冒出来"的仓位。
@@ -717,6 +721,13 @@ class QuantEngine:
                         history.append({"ts": _now_ms(), "score": side_score.score})
                         # 把这一轮的每条算式推进流水（内存环形缓冲，不落库）
                         self._push_calc_rows(sym, state, side_score, direction, history)
+                        # 模拟仓：每轮推进一次（开仓 / 更新盈亏 / 判离场）
+                        try:
+                            ctx = self._paper_context(sym)
+                            if ctx:
+                                self.paper.tick(sym, ctx)
+                        except Exception:
+                            pass
                     if self.decision_cfg.drift_enabled and state.get("roc") is not None:
                         bucket = int(getattr(cs[-1], "open_time", 0) or 0)
                         if self._vol_last_bar.get(sym) != bucket:
@@ -2036,6 +2047,53 @@ class QuantEngine:
                 "volState", "squeeze")
         return {k: st.get(k) for k in keys if k in st}
 
+    def _paper_context(self, sym: str) -> dict:
+        """给模拟仓一轮所需的上下文。数据不全时返回空 dict（不编）。"""
+        state = self.indicators.get(sym) or {}
+        evaluation = self.live_evaluations.get(sym) or {}
+        if not state.get("price") or not evaluation.get("direction"):
+            return {}
+        advice = {}
+        try:
+            max_lev = int(self.max_leverage_fn(sym) or 0) if self.max_leverage_fn else 0
+            advice = build_advice(sym, state, evaluation, max_lev or None)
+        except Exception:
+            advice = {}
+        vetoes = evaluation.get("vetoes") or []
+        if vetoes:
+            reason = str(vetoes[0])[:40]
+        elif evaluation.get("grade"):
+            reason = f"{evaluation.get('grade')} 信号"
+        else:
+            reason = str(advice.get("reason") or "")[:40]
+        return {
+            "price": state.get("price"),
+            "atr": state.get("atr"),
+            "score": evaluation.get("score"),
+            "gap": evaluation.get("gap"),
+            "grade": evaluation.get("grade"),
+            "direction": evaluation.get("direction"),
+            "reason": reason,
+            "regime": state.get("regime"),
+            "pattern": advice.get("pattern") or "",
+            "patternStats": self.pattern_stats_fn() if self.pattern_stats_fn else {},
+            "maxLeverage": advice.get("maxLeverage"),
+        }
+
+    def paper_refresh(self, symbol: str) -> dict | None:
+        """手动刷新某个币的模拟仓：平掉当前、立刻按现状重开。
+
+        前端每个盒子上有一个小按钮，点一下就是"按当前数据再开一次仓"。
+        """
+        ctx = self._paper_context(symbol)
+        if not ctx:
+            return None
+        try:
+            return self.paper.force(symbol, ctx)
+        except Exception as e:
+            self._event("error", f"模拟仓刷新失败({symbol}): {e}", symbol=symbol)
+            return None
+
     def _advice_map(self) -> dict:
         """把评估结果 + 真实杠杆上限压成前端可直接展示的一句话建议。
 
@@ -2132,6 +2190,12 @@ class QuantEngine:
                 },
                 # 每币一句话建议（K线图右上角胶囊）：方向 / 杠杆 / 时长 / 止损止盈
                 "advice": self._advice_map(),
+                # 模拟仓：每个监控币一个 15 分钟的纸上交易，附最近 10 根K线
+                "paper": self.paper.snapshot(
+                    list(self.symbol_filter or self.indicators.keys()),
+                    lambda s: self.bars_fn(s) if self.bars_fn else []),
+                "paperStats": dict(self.paper.stats),
+                "paperHistory": self.paper.history_list()[-30:],
                 # 当前持仓的开仓依据（供"为什么开了这个仓"回看）
                 "positionPlans": [
                     {k: p.get(k) for k in ("symbol", "side", "entry", "sl", "tp", "slPct",

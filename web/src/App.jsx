@@ -14,7 +14,7 @@ import CoinAvatar from '@/components/ui/coin-avatar'
 import SettingsDialog from '@/components/arc/settings-dialog/settings-dialog'
 import QuantPanel from '@/components/arc/quant-panel/quant-panel'
 import PositionHistory from '@/components/arc/position-history/position-history'
-import TopHolders from '@/components/arc/top-holders/top-holders'
+import PaperTrade from '@/components/arc/paper-trade/paper-trade'
 import NewsFeed from '@/components/arc/news-feed/news-feed'
 import ComputeTrace from '@/components/arc/compute-trace/compute-trace'
 import ChatDock from '@/components/arc/chat-dock/chat-dock'
@@ -279,6 +279,8 @@ export default function App() {
     })
     const offNews = live.on('news', (m) => setNewsItems(m.items || []))
     const offDeriv = live.on('derivatives', (m) => setDerivatives(m.rows || {}))
+    // 模拟仓手动刷新完成：立刻解除按钮的忙碌态（不必等下一次全量快照）
+    const offPaper = live.on('paper_refreshed', () => setPaperBusy(''))
     const offAgent = live.on('agent_state', (m) => {
       setAgentTasks(m.tasks || [])
       setAgentChat(m.chat || [])
@@ -325,7 +327,7 @@ export default function App() {
       setStructureVersion((v) => v + 1)
     })
     live.connect()
-    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offStructureInit(); offStructure(); offQEvent(); offTrades(); offTrade(); offNews(); offDeriv(); offAgent(); offAgentAck(); offAiModels(); offAiTest(); offResume(); live.close() }
+    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offStructureInit(); offStructure(); offQEvent(); offTrades(); offTrade(); offNews(); offDeriv(); offPaper(); offAgent(); offAgentAck(); offAiModels(); offAiTest(); offResume(); live.close() }
   }, [])
 
   // ==================== 命中动画：串行队列 ====================
@@ -657,6 +659,16 @@ export default function App() {
   const agentRequest = (msg) => liveRef.current?.request(msg)
     || Promise.resolve({ ok: false, error: '尚未连接服务端' })
 
+  // 模拟仓手动刷新：点一下就是"平掉当前仓、按最新数据重开"
+  const [paperBusy, setPaperBusy] = useState('')
+  const refreshPaper = (symbol) => {
+    setPaperBusy(symbol)
+    liveRef.current?.send({ type: 'paper_refresh', symbol })
+    // 后端会在几十毫秒内回 paper_refreshed；这里兜一个超时释放，
+    // 避免请求失败时按钮永远转圈
+    setTimeout(() => setPaperBusy(''), 2500)
+  }
+
   // 币种勾选：最少 MIN_SYMBOLS 个、最多 MAX_SYMBOLS 个，超限直接忽略
   const toggleSymbol = (sym) => setSettings((s) => {
     const cur = s.symbols || []
@@ -857,7 +869,8 @@ export default function App() {
           flashRow={flashRow} streamRef={streamRef}
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
         <div className="row3-stack">
-          <TopHolders rows={derivatives} symbols={orderedSymbols} chartColors={chartColors} />
+          <PaperTrade rows={quantSnap?.analysis?.paper}
+            onRefresh={refreshPaper} busySymbol={paperBusy} />
           <PositionHistory trades={quantTrades} chartColors={chartColors} />
         </div>
         <NewsFeed items={newsItems}

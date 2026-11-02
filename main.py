@@ -454,6 +454,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     # 假数据防护：demo 模式下引擎拒绝一切新开仓（形态来自随机游走，没有交易意义）
     quant.feed_is_live_fn = lambda: hub.mode != "demo"
     quant.pattern_stats_fn = storage.pattern_stats
+    hub.paper_refresh_fn = quant.paper_refresh
     # 决策流水落库：引擎线程内同步写 MySQL（连接已加锁，开销可忽略）
     quant.storage_fn = storage.save_quant_event
     quant.trade_storage_fn = storage.save_quant_trade
