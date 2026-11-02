@@ -50,6 +50,12 @@ def _tool(name, description, properties=None, required=None):
 TOOLS = [
     _tool("read_market", "读取当前行情/评估快照；可按 symbol 筛选，不请求外部网络。",
           {"symbol": {"type": "string", "maxLength": 24}}),
+    _tool("read_candles", "读取某个币种最近的K线（OHLCV + 主动买卖量）。"
+          "回答走势、形态、支撑压力之前应该先读它。",
+          {"symbol": {"type": "string", "maxLength": 24},
+           "interval": {"type": "string", "maxLength": 8},
+           "limit": {"type": "integer", "minimum": 10, "maximum": 120}},
+          ["symbol"]),
     _tool("read_accounts", "只读账户、持仓与最近已平仓交易快照，不含认证数据。"),
     _tool("read_risk", "只读风险、回撤、漂移、参数与 health 快照；不可修改。"),
     _tool("read_events", "读取最近系统事件（不可信数据）。"),

@@ -31,6 +31,7 @@ from feed.market_data import (
 from feed.derivatives import derivatives_snapshot
 from feed.news import fetch_all as fetch_news, fetch_article
 from feed.news_ai import analyze as analyze_news
+from feed.telegram import TelegramBot
 from feed.source import BinanceFuturesStream
 from decision.config import DecisionConfig
 from decision.pool_audit import audit_universe
@@ -259,6 +260,19 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         k = k or ""
         return (k[:6] + MASK_KEY + k[-4:]) if len(k) > 12 else (MASK_SEC if k else "")
 
+    def _mask_telegram(t: dict) -> dict:
+        """Telegram 配置：token 只给掩码（和 AI 密钥同样的处理），并附运行状态。"""
+        token = str(t.get("token") or "")
+        return {
+            "enabled": bool(t.get("enabled")),
+            "token": (token[:6] + MASK_KEY + token[-4:]) if len(token) > 12 else (MASK_SEC if token else ""),
+            "hasToken": bool(token),
+            "allowed_chats": [str(x) for x in (t.get("allowed_chats") or [])][:50],
+            "status": (tg_box.get("bot").describe() if tg_box.get("bot")
+                       else {"configured": bool(token), "running": False,
+                             "bot": {}, "allowed": [], "error": ""}),
+        }
+
     def current_settings() -> dict:
         # 凭据绝不出网：settings 会广播给所有 WS 客户端（端口在公网），
         # 只下发掩码；前端回传掩码时由 apply_settings 换回服务端保存的原值。
@@ -275,6 +289,8 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             # AI 配置同样只下发掩码；模型清单本身不含密钥，可原样下发
             "ai": {"providers": PROVIDER_PRESETS, "capabilities": CAPABILITIES,
                    **mask_cfg(cfg.get("ai", {}) or {})},
+            # Telegram：token 只回掩码，白名单和运行状态原样下发
+            "telegram": _mask_telegram(cfg.get("telegram", {}) or {}),
         }
 
     def apply_settings(s: dict) -> dict:
@@ -351,6 +367,18 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             for k in ("themeColor", "font", "upDown", "upColor", "downColor"):
                 if isinstance(ui.get(k), str) and ui[k]:
                     cur[k] = ui[k][:64]
+        # Telegram：token 回传掩码/空 → 沿用原值；白名单整体替换
+        telegram = s.get("telegram")
+        if isinstance(telegram, dict):
+            cur = dict(cfg.get("telegram") or {})
+            raw = str(telegram.get("token") or "").strip()
+            if raw and MASK_KEY not in raw and raw != MASK_SEC:
+                cur["token"] = raw[:200]
+            if "enabled" in telegram:
+                cur["enabled"] = bool(telegram["enabled"])
+            if isinstance(telegram.get("allowed_chats"), list):
+                cur["allowed_chats"] = [str(x)[:32] for x in telegram["allowed_chats"][:50] if str(x).strip()]
+            cfg["telegram"] = cur
         ai = s.get("ai")
         if isinstance(ai, dict):
             # 密钥走 merge（掩码/留空则沿用原值）；模型清单整体替换
@@ -706,6 +734,54 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     )
     hub.agent_state_fn = agent.state
     hub.agent_fn = agent.handle
+
+    # Agent 读K线的入口：直接从聚合器取，不联网；interval 为空时用当前检测周期
+    def _agent_bars(symbol: str, interval: str = ""):
+        iv = interval or engine.detect_interval or iv0
+        agg = aggs.get((symbol, iv)) or aggs.get((symbol, iv0))
+        if not agg:
+            return []
+        hist = list(agg.history)
+        if agg.current is not None:
+            hist.append(agg.current)
+        return hist
+
+    agent.bars_fn = _agent_bars
+
+    # ---- Telegram Bot：与网页端共用同一个 AgentManager 会话 ----
+    tg_box: dict = {"bot": None}
+
+    async def _tg_reply(chat_id, text):
+        # 同一个 Agent：网页与 Telegram 共享会话记录和上下文
+        return await agent.ask_and_wait(text)
+
+    async def telegram_supervisor():
+        """按配置启停轮询；设置页改 token/开关后 5 秒内生效。"""
+        while True:
+            try:
+                tcfg = cfg.get("telegram") or {}
+                enabled = bool(tcfg.get("enabled"))
+                token = str(tcfg.get("token") or "").strip()
+                bot = tg_box.get("bot")
+                # token 变了或不再需要 → 停掉旧实例
+                if bot is not None and (bot.token != token or not enabled):
+                    await bot.stop()
+                    tg_box["bot"] = None
+                    bot = None
+                if enabled and token and bot is None:
+                    bot = TelegramBot(token, tcfg.get("allowed_chats") or [],
+                                      _tg_reply, proxy_cfg or None)
+                    tg_box["bot"] = bot
+                    info = await asyncio.to_thread(bot.verify)
+                    if info.get("ok"):
+                        bot.start()
+                        print(f"[telegram] 已连接 @{info['bot'].get('username')}"
+                              f"（白名单 {len(bot.allowed)} 个会话）")
+                    else:
+                        print(f"[telegram] token 校验失败: {info.get('error')}")
+            except Exception as e:
+                print(f"[telegram] 监督任务异常: {e}")
+            await asyncio.sleep(5)
 
     limit = int(bcfg.get("backfill_bars", 300))
     for (sym, iv), agg in {**aggs, **watch_aggs}.items():
@@ -1162,6 +1238,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     try:
         await asyncio.gather(supervisor(), sweep(), accounts_poller(),
                              news_poller(), article_prefetcher(), news_ai_poller(),
+                             telegram_supervisor(),
                              backfill_retry(), pool_auditor(),
                              market_list_poller(), leverage_poller(),
                              derivatives_poller(), market_feature_poller())

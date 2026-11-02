@@ -1,0 +1,53 @@
+/* Telegram 设置面板：与 AI 面板同一套行布局和间距。 */
+
+.root { display: flex; flex-direction: column; gap: 12px; padding: 2px 0 8px; }
+
+.note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text-muted, #8b949e);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: rgba(28, 35, 51, 0.04);
+  border: 1px solid rgba(28, 35, 51, 0.06);
+}
+.rowLabel { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rowName { font-size: 13px; color: #1c2333; }
+.rowHint { font-size: 11px; color: var(--text-muted, #8b949e); }
+.rowControl { flex: 1 1 220px; min-width: 0; display: flex; justify-content: flex-end; }
+.rowControl :global(input) { width: 100%; }
+
+.switch { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: #1c2333; cursor: pointer; }
+.switch input { width: 15px; height: 15px; accent-color: var(--accent, #f0b90b); cursor: pointer; }
+
+.status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 999px;
+  background: rgba(28, 35, 51, 0.06);
+  color: var(--text-muted, #8b949e);
+  font-size: 11px;
+}
+.badge[data-on] { background: rgba(22, 163, 74, 0.12); color: #15803d; }
+.botName { font-size: 11.5px; color: #1c2333; font-weight: 600; }
+.hint { margin: 0; font-size: 11px; line-height: 1.6; color: var(--text-muted, #8b949e); }
+.error { margin: 0; font-size: 11px; color: #b91c1c; overflow-wrap: anywhere; }
+
+.actions { display: flex; justify-content: flex-end; }
+.save {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 7px 16px;
+  border: 0; border-radius: 9px;
+  background: #1c2333; color: #fff;
+  font: inherit; font-size: 12px;
+  cursor: pointer;
+}
+.save:hover { background: #2b3346; }
