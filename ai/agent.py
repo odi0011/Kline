@@ -139,6 +139,12 @@ def _says_no_tools(text: str) -> bool:
     return bool(_NO_TOOL_CLAIM.search(str(text or "")))
 
 
+# 对话上下文的窗口：最近多少条原文进模型，更早的压进摘要
+CONTEXT_MESSAGES = 20
+CONTEXT_SUMMARY_CHARS = 4000
+# 同时允许多少轮对话在跑；其余排队，而不是直接拒绝
+MAX_CHAT_CONCURRENT = 2
+
 MAX_ATTACHMENTS = 4
 MAX_IMAGE_BYTES = 2_000_000      # 单张图解码后上限；再大 base64 会把状态文件和 WS 撑爆
 MAX_TEXT_FILE_BYTES = 200_000
@@ -237,13 +243,18 @@ class AgentManager:
         self.tasks: list[dict] = []
         self.chat: list[dict] = []
         self.memory: dict = {}
+        self.chat_summary: str = ""     # 滑出窗口的旧对话压缩摘要（持久化）
         self.runners: dict[str, asyncio.Task] = {}
         self.chat_runners: set[asyncio.Task] = set()
+        self._chat_tasks: dict[str, asyncio.Task] = {}   # message_id -> runner，供按 id 取消
         self._wakeups: dict[str, asyncio.Event] = {}
         self._executing: set[str] = set()
         self._admitted: set[str] = set()
         self._availability = asyncio.Event()
         self._http_slots = asyncio.Semaphore(MAX_INFLIGHT)
+        # 对话并发：允许同时进行 MAX_CHAT_CONCURRENT 轮，其余在 _chat_slots 上排队。
+        # 原来是"已有回复进行中"直接拒绝，用户连发两条就报错。
+        self._chat_slots = asyncio.Semaphore(MAX_CHAT_CONCURRENT)
         self._action_lock = asyncio.Lock()
         self._chat_id = None
         self._closing = False
@@ -259,6 +270,9 @@ class AgentManager:
                     or not isinstance(state.get("tasks"), list) or not isinstance(state.get("chat"), list)):
                 raise ValueError("状态格式/版本不支持")
             tasks, chat, memory = state["tasks"], state["chat"], state.get("memory", {})
+            summary = state.get("chatSummary", "")
+            if not isinstance(summary, str) or len(summary) > CONTEXT_SUMMARY_CHARS:
+                raise ValueError("chatSummary 格式无效")
             if len(tasks) > MAX_TASKS or len(chat) > 40 or not isinstance(memory, dict) or len(memory) > 4:
                 raise ValueError("状态容量或 memory 格式无效")
             seen = set()
@@ -302,6 +316,7 @@ class AgentManager:
             for key, value in memory.items():
                 validate_preference(key, value)
             self.tasks, self.chat, self.memory = tasks, chat, memory
+            self.chat_summary = summary
         except FileNotFoundError:
             self.tasks, self.chat, self.memory = [], [], {}
         except (OSError, ValueError, TypeError, RecursionError) as exc:
@@ -321,7 +336,9 @@ class AgentManager:
             temporary = f"{self.state_path}.tmp"
             with open(temporary, "w", encoding="utf-8") as handle:
                 json.dump({"version": 2, "tasks": self.tasks, "chat": self.chat[-40:],
-                           "memory": self.memory}, handle, ensure_ascii=False, allow_nan=False,
+                           "memory": self.memory,
+                           "chatSummary": self.chat_summary or ""},
+                          handle, ensure_ascii=False, allow_nan=False,
                           separators=(",", ":"))
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -478,12 +495,16 @@ class AgentManager:
                                                 payload.get("attachments"))
                     return {"ok": True, "id": message_id}
                 if action == "cancel_chat":
+                    # 支持按 id 取消任意一条进行中/排队中的回复（并发后不止一条）
                     message_id = _text(payload.get("id", ""), "id", 100)
-                    if not self.chat_runners or (message_id and message_id != self._chat_id):
+                    target = next((m for m in self.chat
+                                   if m.get("id") == message_id
+                                   and m.get("status") in ("running", "queued")), None)
+                    if target is None:
                         raise ValueError("没有对应的进行中回复")
-                    message = next(item for item in self.chat if item["id"] == self._chat_id)
-                    message.update(status="cancelled", error="用户取消")
-                    for runner in self.chat_runners:
+                    target.update(status="cancelled", error="用户取消")
+                    runner = self._chat_tasks.get(message_id)
+                    if runner is not None:
                         self._cancel_runner(runner)
                     await self._emit()
                     return {"ok": True}
@@ -505,17 +526,60 @@ class AgentManager:
         if self.persistence_error:
             raise PersistenceError(self.persistence_error)
 
+    def _context_window(self) -> list[dict]:
+        """给模型的历史上下文：滚动摘要 + 最近若干轮原文。
+
+        原来只带最近 6 条，一旦超过模型就"忘了"前面聊过什么。现在保留
+        最近 CONTEXT_MESSAGES 条原文，更早的压成一段摘要挂在最前面。
+        """
+        usable = [item for item in self.chat
+                  if item.get("role") == "user"
+                  or (item.get("role") == "assistant" and item.get("status") == "succeeded")]
+        recent = usable[-CONTEXT_MESSAGES:]
+        out: list[dict] = []
+        summary = str(getattr(self, "chat_summary", "") or "").strip()
+        if summary:
+            out.append({"role": "user",
+                        "content": f"【更早的对话摘要，供你保持上下文】\n{summary[:CONTEXT_SUMMARY_CHARS]}"})
+        return out + [{"role": item["role"], "content": str(item.get("content") or "")[:8000]}
+                      for item in recent]
+
+    def _refresh_summary(self) -> None:
+        """把滑出窗口的旧消息并进摘要（纯文本拼接，不额外调用模型）。
+
+        不调模型是刻意的：每次对话都多打一次 API 成本高且慢。这里做的是
+        "保留要点"的机械压缩——保留用户问过什么、助手给过的结论片段。
+        """
+        usable = [item for item in self.chat
+                  if item.get("role") == "user"
+                  or (item.get("role") == "assistant" and item.get("status") == "succeeded")]
+        overflow = usable[:-CONTEXT_MESSAGES]
+        if not overflow:
+            return
+        lines = []
+        existing = str(getattr(self, "chat_summary", "") or "").strip()
+        if existing:
+            lines.append(existing)
+        for item in overflow:
+            text = str(item.get("content") or "").strip()
+            if not text:
+                continue
+            who = "用户" if item.get("role") == "user" else "你"
+            lines.append(f"- {who}：{text[:200]}")
+        joined = "\n".join(lines)
+        # 只留尾部：摘要本身也要有上限，否则会越滚越大
+        self.chat_summary = joined[-CONTEXT_SUMMARY_CHARS:]
+
     async def ask(self, prompt, model="", attachments=None):
         self._writable()
         prompt = _text(prompt, "问题", 6000, True)
         model = _text(model, "model", 200)
         prepared = _attachments(attachments)
         _, selected = self._model(model)
-        if self.chat_runners:
-            raise ValueError("已有回复进行中（取消后仍需等待底层请求结束）")
+        # 同一时间只留一个回复在跑（避免并发写同一份状态）；排队见下方 busy 处理
         assistant_id = uuid.uuid4().hex[:12]
         self._reserve(assistant_id)
-        history = [item for item in self.chat if item.get("role") == "user" or item.get("status") == "succeeded"][-6:]
+        history = self._context_window()
         # 附件只随本次请求进模型；会话里只留名字，避免 base64 撑爆状态文件与广播
         names = [a["name"] for a in prepared]
         previous_chat = self.chat
@@ -536,8 +600,10 @@ class AgentManager:
         runner = asyncio.create_task(
             self._run_chat(assistant_id, prompt, selected["id"], history, prepared))
         self.chat_runners.add(runner)
+        self._chat_tasks[assistant_id] = runner
         def done(_):
             self.chat_runners.discard(runner)
+            self._chat_tasks.pop(assistant_id, None)
             self._release(assistant_id)
             if self._chat_id == assistant_id:
                 self._chat_id = None
@@ -817,8 +883,13 @@ class AgentManager:
 
     async def _run_chat(self, message_id, prompt, model, history, attachments=None):
         message = next(item for item in self.chat if item["id"] == message_id)
+        acquired = False
         try:
+            # 槽位满了就在这里排着（status 保持 queued），不拒绝用户
+            await self._chat_slots.acquire()
+            acquired = True
             message.update(status="running", startedAt=now_ms())
+            await self._emit()
             result = await asyncio.wait_for(
                 self._agent_loop(message, prompt, model, history, attachments), TASK_TIMEOUT)
             # 长回复切成多条：第一条挂在原消息上，其余作为后续气泡追加。
@@ -844,10 +915,15 @@ class AgentManager:
             message.update(status="failed", error="任务超过 15 分钟时间限制" if isinstance(exc, TimeoutError)
                            else str(clean(str(exc)))[:600])
         finally:
+            # 只有真正拿到槽位才归还，避免 release 次数多于 acquire
+            if acquired:
+                self._chat_slots.release()
             message["finishedAt"] = now_ms()
             message["ms"] = message["finishedAt"] - message.get("startedAt", message["ts"])
             message.setdefault("progress", {})["phase"] = message["status"]
             self._finish_steps(message, message["status"])
+            # 每轮结束后把滑出窗口的旧消息并进摘要，保证下一轮还"记得"
+            self._refresh_summary()
             # HTTP 已完全结束；最终广播应明确 chatBusy=false。
             self.chat_runners.discard(asyncio.current_task())
             self._release(message_id)

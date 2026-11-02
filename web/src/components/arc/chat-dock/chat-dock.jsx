@@ -58,17 +58,12 @@ const MessageBubble = memo(function MessageBubble({ message }) {
   const mine = message.role === "user"
   const text = typeof message.content === "string" ? message.content : ""
   const busy = message.status === "running" || message.status === "queued"
-  // 还没出字的回复只显示三点，不写"正在处理"——那行字挤在气泡里很难看
-  const waiting = busy && !text
+  // 还在等回复且没出字：整个气泡不渲染，不要三点也不要"正在处理"
+  if (busy && !text) return null
   return (
     <div className={styles.bubbleRow} data-role={mine ? "user" : "bot"}>
-      <div className={styles.bubble} data-role={mine ? "user" : "bot"} data-waiting={waiting || undefined}>
+      <div className={styles.bubble} data-role={mine ? "user" : "bot"}>
         {text ? <p className={styles.text}>{text}</p> : null}
-        {waiting && (
-          <span className={styles.typing} aria-label="正在生成回复">
-            <i /><i /><i />
-          </span>
-        )}
         {message.status === "failed" && (
           <p className={styles.error} role="alert">{message.error || STATUS_TEXT.failed}</p>
         )}

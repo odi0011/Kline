@@ -306,25 +306,29 @@ def test_cancel_slow_http_retains_global_slots_and_no_task_overlap(tmp_path, mon
     asyncio.run(scenario())
 
 
-def test_chat_single_concurrency_cancel_and_slow_drain(tmp_path, monkeypatch):
+def test_chat_allows_two_concurrent_then_queues(tmp_path, monkeypatch):
+    """并发已放开：两条同时发都接受，第三条排队，不再直接拒绝。"""
     slow = SlowHTTP()
     async def scenario():
         manager, _ = make_manager(tmp_path, monkeypatch, provider=slow)
         try:
-            first, second = await asyncio.gather(manager.handle("chat", {"prompt": "a"}), manager.handle("chat", {"prompt": "b"}))
-            assert first["ok"] and not second["ok"]
-            assert await wait_for(lambda: slow.active == 1)
+            first, second = await asyncio.gather(
+                manager.handle("chat", {"prompt": "a"}),
+                manager.handle("chat", {"prompt": "b"}))
+            assert first["ok"] and second["ok"]
+            # 两个槽位都进入运行
+            assert await wait_for(lambda: slow.active == 2)
+            # 第三条排队但仍被接受
+            third = await manager.handle("chat", {"prompt": "c"})
+            assert third["ok"]
+            # 按 id 取消排队中的那条
+            assert (await manager.handle("cancel_chat", {"id": third["id"]}))["ok"]
+            assert await wait_for(lambda: any(m.get("status") == "cancelled" for m in manager.chat))
+            # 不存在的 id 要报错
             assert not (await manager.handle("cancel_chat", {"id": "other"}))["ok"]
-            assert (await manager.handle("cancel_chat", {"id": first["id"]}))["ok"]
-            assert not (await manager.handle("chat", {"prompt": "c"}))["ok"]
-            assert manager.chat[-1]["status"] == "cancelled"
-            assert manager.state()["chatBusy"]
             slow.release.set()
             assert await wait_for(lambda: not manager.chat_runners)
-            assert manager.chat[-1]["content"] == ""
-            assert (await manager.handle("chat", {"prompt": "d"}))["ok"]
-            assert await wait_for(lambda: not manager.chat_runners)
-            assert manager.chat[-1]["status"] == "succeeded"
+            assert await wait_for(lambda: any(m.get("status") == "succeeded" for m in manager.chat))
         finally:
             slow.release.set()
             await manager.stop()
@@ -768,5 +772,36 @@ def test_provider_without_tools_falls_back_instead_of_failing(tmp_path, monkeypa
         assert calls[0]["tools"] is not None
         assert calls[1]["tools"] is None
         await manager.stop()
+
+    asyncio.run(scenario())
+
+
+def test_context_summary_keeps_early_turns_in_prompt(tmp_path, monkeypatch):
+    """超出窗口的旧对话要被压进摘要并送进下一轮 prompt，而不是直接丢掉。"""
+    seen = []
+
+    def provider(*args, **kwargs):
+        messages = kwargs.get("messages")
+        if messages is None and len(args) >= 3:
+            messages = args[2]
+        seen.append(messages)
+        return {"ok": True, "reply": "收到。"}
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch, provider=provider)
+        try:
+            for i in range(15):
+                ack = await manager.handle("chat", {"prompt": f"第{i}个问题"})
+                assert ack["ok"]
+                await wait_for(lambda: not manager.chat_runners)
+            # 最后一次请求里应能看到早期问题的摘要
+            last = seen[-1]
+            joined = "\n".join(str(m.get("content") or "") for m in last)
+            assert "第0个问题" in joined, "早期对话没有进入上下文"
+            assert manager.chat_summary, "摘要没有被生成"
+            # 快照里也带上了摘要（可持久化）
+            await manager.stop()
+        finally:
+            await manager.stop()
 
     asyncio.run(scenario())
