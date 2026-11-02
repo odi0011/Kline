@@ -151,22 +151,14 @@ export default function ComputeTrace({ analysis, symbols, stats }) {
 
   return (
     <section className={styles.root} aria-label="计算流水">
-      <header className={styles.head}>
-        <b>计算流水</b>
-        <span className={styles.hint}>实时算式 · 不落库</span>
-      </header>
-
       <div className={styles.body}>
         <ScrollArea orientation="vertical" fade={14} scrollbars="auto" label="计算流水"
           viewportRef={viewportRef} className={styles.scroll}
           viewportClassName={styles.viewport} onScroll={onScroll}>
-          {/* 系统级：模型与缓存的实际计量 */}
+          {/* 模型侧的实际计量。不加"模型/上次"这类标题——这一栏就是数据本身，
+              多一行说明只会挤掉算式。 */}
           {stats ? (
             <section className={styles.block}>
-              <header className={styles.blockHead}>
-                <b className={styles.sym}>模型</b>
-                <span className={styles.grade}>{stats.live ? "实时" : "上次"}</span>
-              </header>
               <Row tag="tps" expr="completion_tokens ÷ 解码秒"
                 value={stats.tps == null ? "--" : f1(stats.tps)} />
               <Row tag="hit" expr="cache_hit ÷ prompt_tokens"
@@ -184,7 +176,9 @@ export default function ComputeTrace({ analysis, symbols, stats }) {
           ))}
         </ScrollArea>
 
-        {!atLatest && <JumpLatest onClick={jump} className={styles.jump} />}
+        {/* 不传 className：JumpLatest 自己带绝对定位和水平居中，
+            外面再写 left/right:0 会把按钮拉满宽度、只留中间一小块玻璃。 */}
+        {!atLatest && <JumpLatest onClick={jump} />}
       </div>
     </section>
   )

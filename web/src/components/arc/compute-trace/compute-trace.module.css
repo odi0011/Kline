@@ -11,23 +11,6 @@
   overflow: hidden;
 }
 
-.head {
-  flex: none;
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 0 2px 4px;
-  font-size: 11px;
-  color: #1c2333;
-}
-.head b { font-weight: 600; letter-spacing: 0.01em; }
-.hint {
-  margin-left: auto;
-  font-size: 9px;
-  color: rgba(16, 24, 40, 0.34);
-  font-variant-numeric: tabular-nums;
-}
-
 .body {
   position: relative;
   flex: 1 1 0;
@@ -131,6 +114,3 @@
   font-size: 10px;
   color: rgba(16, 24, 40, 0.34);
 }
-
-/* 「最新」按钮：与新闻/流水账同一枚，贴底部居中 */
-.jump { position: absolute; left: 0; right: 0; bottom: 6px; }
