@@ -143,7 +143,7 @@ const MessageGroup = memo(function MessageGroup({ items }) {
       {/* 表情包：独立一枚，无气泡底色——贴纸本身就是内容 */}
       {stickers.map((name, index) => (
         <div key={`${name}-${index}`} className={styles.stickerRow} data-role={mine ? "user" : "bot"}>
-          <Sticker name={name} size={46} />
+          <Sticker name={name} max={132} />
         </div>
       ))}
       {/* 图片：单独的宫格气泡 */}

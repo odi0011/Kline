@@ -186,14 +186,13 @@
 .bubbleRow[data-role="user"] { justify-content: flex-end; }
 .bubbleRow[data-role="bot"] { justify-content: flex-start; }
 
-/* 表情包：没有气泡底色，贴纸本身就是内容。
-   比气泡略大一点、带轻微阴影，像贴上去的一张图。 */
+/* 表情包：没有气泡底色，图本身就是内容。
+   圆角 + 轻微阴影，像贴上去的一张图。 */
 .stickerRow { display: flex; }
 .stickerRow[data-role="user"] { justify-content: flex-end; }
 .stickerRow[data-role="bot"] { justify-content: flex-start; }
-.stickerRow svg {
-  filter: drop-shadow(0 2px 6px rgba(16, 24, 40, 0.12));
-  border-radius: 50%;
+.stickerRow img {
+  filter: drop-shadow(0 2px 8px rgba(16, 24, 40, 0.12));
 }
 
 .bubble {

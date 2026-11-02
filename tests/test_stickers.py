@@ -11,7 +11,7 @@ from ai.agent import STICKER_NAMES, _system_content
 
 
 def test_sticker_names_are_nonempty_and_unique():
-    assert len(STICKER_NAMES) >= 4
+    assert len(STICKER_NAMES) >= 3, "至少要有几个可选，否则等于没得挑"
     assert len(set(STICKER_NAMES)) == len(STICKER_NAMES), "名字不能重复"
 
 
@@ -58,7 +58,24 @@ def test_frontend_names_match_backend():
     if not path.exists():
         return          # 前端目录不在时跳过（例如只跑后端）
     src = path.read_text(encoding="utf-8")
-    # 抓 STICKERS 对象里的键：行首两空格 + 中文名 + 冒号
-    found = set(re.findall(r"\n  ([^\s:：]+)\s*:", src.split("export const STICKERS")[1].split("export const STICKER_NAMES")[0]))
+    block = src.split("export const STICKERS")[1].split("export const STICKER_NAMES")[0]
+    # 抓映射里的键：行首两空格 + 名字 + 冒号
+    found = set(re.findall(r"\n  ([^\s:/]+)\s*:", block))
     backend = set(STICKER_NAMES)
     assert found == backend, f"前端多出 {found - backend}，后端多出 {backend - found}"
+
+
+def test_every_sticker_file_exists():
+    """每个表情都要有对应图片文件，不能指向一个 404。"""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1] / "web"
+    path = root / "src/components/arc/chat-dock/stickers.jsx"
+    if not path.exists():
+        return
+    src = path.read_text(encoding="utf-8")
+    block = src.split("export const STICKERS")[1].split("export const STICKER_NAMES")[0]
+    refs = re.findall(r'"(/stickers/[^"]+)"', block)
+    assert refs, "没有找到任何图片路径"
+    for ref in refs:
+        target = root / "public" / ref.lstrip("/")
+        assert target.exists(), f"表情图片不存在: {target}"

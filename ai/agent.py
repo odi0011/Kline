@@ -101,9 +101,10 @@ def split_reply(text, detailed: bool = True, identity: bool = False) -> list[str
     return _split_by_sentences(raw)
 
 
-# 可用表情包的名字。前端 web/src/components/arc/chat-dock/stickers.jsx
-# 里定义了同名 SVG；两处必须一致，改一处要同步另一处。
-STICKER_NAMES = ("哭", "摆手", "震惊", "笑", "无语", "疑惑", "得意", "冷汗")
+# 可用表情包的名字。素材在 web/public/stickers/，
+# 映射见 web/src/components/arc/chat-dock/stickers.jsx；两处必须一致，
+# 改一处要同步另一处（tests/test_stickers.py 会校验）。
+STICKER_NAMES = ("崩溃", "疑问", "嘲讽")
 
 SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依据、可追踪的分析。
 必须通过提供的真实工具读取所需数据，不得编造工具执行、行情或持仓。
@@ -195,8 +196,9 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
    可用的名字（只用这些，不要编）：
    {{STICKER_NAMES}}
  · 一条回复最多一个表情包。发了表情包就可以少说话，甚至只发表情包。
-   例：用户「又亏了草」→ 你可以只回 `[sticker:哭]`
-   例：用户「BTC 还能涨吗」→「不知道，别问我。」然后 `[sticker:摆手]`
+   例：用户「又亏了草」→ 你可以只回 `[sticker:崩溃]`
+   例：用户「BTC 还能涨吗」→「不知道，别问我。」然后 `[sticker:疑问]`
+   例：用户「这策略真稳」→「老实赚钱很枯燥吧？」然后 `[sticker:嘲讽]`
 
 需要分成多条时说「|||」切分，客户端会逐条发出；但默认就该一条说完，
 不要靠切分来容纳废话。"""
