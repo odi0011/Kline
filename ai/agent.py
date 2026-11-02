@@ -119,6 +119,18 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
 每次最多 8 轮模型请求；先读必要工具，再给出实际结论。缺数据/工具失败必须明确说明。
 任务由服务端运行，与页面连接无关；不得假称有未提供的能力或任务已永久监控。
 
+【后台任务】你有 create_watch / list_watches / stop_watch 三个工具，
+可以给用户建**真正的后台常驻监控**——它由服务端定时重跑，不依赖网页开着，
+结果会出现在「后台任务」里。
+用户说「帮我盯着 BTC」「有入场机会告诉我」「定时检查一下」时，
+必须用 create_watch 真的建一个，而不是回答"做不到"或"我没法后台运行"。
+建的时候：
+ · intervalSec 取 300（5 分钟）这种合理间隔，别小于 60
+ · prompt 写成一条能独立执行的完整指令，比如
+   「检查 BTC 是否满足入场条件：方向、关键价位、是否触发否决；满足就说清楚做什么」
+ · 建完一句话确认（标题 + 间隔），不要把指令原文复述一遍
+用户问「你在盯什么」就 list_watches，说「别盯了」就 stop_watch。
+
 【身份】被问到"你是谁""你是什么模型"这类问题时，直接用身份设定里的名字和模型标识
 回答，语气自然，一句话带过。禁止出现下面这些说法：
  · "那只是外部文本 / 配置文件 / 系统里写着"
@@ -1186,6 +1198,77 @@ class AgentManager:
         finally:
             self._http_slots.release()
 
+    async def _create_watch(self, arguments: dict) -> dict:
+        """让模型给用户建一个后台常驻监控任务。
+
+        底层 create_task 早就存在（定时、循环、暂停、取消都齐），但模型没有
+        任何工具能碰到它——所以用户说"帮我盯着 BTC"时它只能回"做不到"。
+        这个工具就是那座桥。
+        """
+        if not isinstance(arguments, dict):
+            raise ValueError("create_watch 参数需为对象")
+        if set(arguments) - {"title", "prompt", "intervalSec"}:
+            raise ValueError("create_watch 包含不支持的参数")
+        title = _text(arguments.get("title", ""), "title", 40, True)
+        prompt = _text(arguments.get("prompt", ""), "prompt", 500, True)
+        raw = arguments.get("intervalSec")
+        if type(raw) is not int or not 60 <= raw <= 86400:
+            # 低于 1 分钟没有意义：行情不会每秒变一次，只会白烧 token
+            raise ValueError("intervalSec 需为 60–86400 的整数（秒）")
+        # 幂等：同名同间隔的循环任务已经存在时不再建第二个。
+        # 模型在工具轮里可能被重试（provider 降级/重试），
+        # 没有这道闸就会给用户堆出一串重复的监控。
+        for task in self.tasks:
+            if (task.get("title") == title
+                    and task.get("intervalSec") == raw
+                    and task.get("status") not in ("cancelled", "failed")):
+                return {"created": False, "existing": True,
+                        "id": task.get("id"), "title": title,
+                        "intervalSec": raw, "status": task.get("status"),
+                        "note": "同名同间隔的任务已在运行，未重复创建"}
+        result = await self.create_task({"title": title, "prompt": prompt,
+                                         "intervalSec": raw})
+        task = result.get("task") or {}
+        return {"created": True, "id": task.get("id"), "title": task.get("title"),
+                "intervalSec": raw, "status": task.get("status"),
+                "nextRunAt": task.get("nextRunAt")}
+
+    def _list_watches(self, arguments: dict) -> dict:
+        if set(arguments or {}):
+            raise ValueError("list_watches 不接受参数")
+        items = []
+        for task in self.tasks:
+            items.append({
+                "id": task.get("id"),
+                "title": task.get("title"),
+                "status": task.get("status"),
+                "intervalSec": task.get("intervalSec") or 0,
+                "runCount": task.get("runCount") or 0,
+                "lastResult": str(task.get("result") or "")[:300],
+                "lastError": str(task.get("error") or "")[:200],
+                "nextRunAt": task.get("nextRunAt"),
+            })
+        # 最近的跑过的排在前面，用户更关心"刚才那轮说了什么"
+        items.sort(key=lambda x: (x["runCount"] or 0, x["nextRunAt"] or 0), reverse=True)
+        return {"count": len(items), "tasks": items[:20]}
+
+    async def _stop_watch(self, arguments: dict) -> dict:
+        if not isinstance(arguments, dict) or set(arguments) - {"id"}:
+            raise ValueError("stop_watch 参数需为 {id}")
+        task_id = _text(arguments.get("id", ""), "id", 40, True)
+        task = self._find(task_id)
+        if task is None:
+            raise ValueError("没有这个任务；先用 list_watches 看一下有哪些")
+        title = task.get("title")
+        # 直接改状态，不回调 self.handle("delete")：
+        # 工具已经在 _action_lock 里跑，再进 handle 会自锁。
+        self._writable()
+        task.update(status="cancelled", nextRunAt=None)
+        self.tasks.remove(task)
+        self._cancel_runner(self.runners.get(task_id))
+        await self._emit()
+        return {"stopped": True, "id": task_id, "title": title}
+
     def _read_advice(self, arguments: dict) -> dict:
         """读系统给这个币的实时交易建议——和 K 线图右上角胶囊同一份数据。
 
@@ -1406,7 +1489,8 @@ class AgentManager:
             snapshot = None
             snapshot_error = ""
             if any(call["function"]["name"]
-                   in TOOL_NAMES - {"read_memory", "save_preference", "read_candles", "read_advice"}
+                   in TOOL_NAMES - {"read_memory", "save_preference", "read_candles", "read_advice",
+                                    "create_watch", "list_watches", "stop_watch"}
                    for call in normalized):
                 try:
                     # 先投影/脱敏再复制；绝不把整个上下文或配置拼到 prompt。
@@ -1454,6 +1538,12 @@ class AgentManager:
                         output = self._read_candles(arguments)
                     elif name == "read_advice":
                         output = self._read_advice(arguments)
+                    elif name == "create_watch":
+                        output = await self._create_watch(arguments)
+                    elif name == "list_watches":
+                        output = self._list_watches(arguments)
+                    elif name == "stop_watch":
+                        output = await self._stop_watch(arguments)
                     else:
                         if snapshot_error:
                             raise ValueError(snapshot_error)
