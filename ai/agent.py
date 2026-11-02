@@ -240,6 +240,8 @@ class AgentManager:
         self.config_fn, self.proxy_fn = config_fn, proxy_fn
         self.context_fn, self.broadcast = context_fn, broadcast
         self.state_path = state_path
+        # 图片附件落盘目录：会话里只存 url，绝不把 base64 写进状态文件
+        self.attachments_dir = os.path.join(os.path.dirname(state_path) or ".", "agent-attachments")
         self.tasks: list[dict] = []
         self.chat: list[dict] = []
         self.memory: dict = {}
@@ -261,6 +263,38 @@ class AgentManager:
         self.persistence_error = ""
         self._load_blocked = False
         self._load()
+
+    def _store_attachments(self, prepared: list[dict]) -> list[dict]:
+        """把本次附件存成可以在前端渲染的引用。
+
+        图片写进 agent-attachments/{随机}.{ext}，会话里只留 url，
+        这样气泡能显示缩略图，而状态文件不会被 base64 撑爆。
+        文本文件不留原文（体积大且没必要回显），只记录名字和大小。
+        """
+        refs = []
+        if not prepared:
+            return refs
+        image_dir = os.path.join(self.attachments_dir, "img")
+        for item in prepared:
+            ref = {"kind": item["kind"], "name": item["name"], "mime": item.get("mime", "")}
+            if item["kind"] == "text":
+                ref["size"] = len(item.get("text") or "")
+                refs.append(ref)
+                continue
+            ext = {"image/png": "png", "image/jpeg": "jpg",
+                   "image/webp": "webp", "image/gif": "gif"}.get(item.get("mime"), "bin")
+            try:
+                os.makedirs(image_dir, exist_ok=True)
+                filename = f"{uuid.uuid4().hex[:16]}.{ext}"
+                with open(os.path.join(image_dir, filename), "wb") as handle:
+                    handle.write(base64.b64decode(item["data"]))
+                ref["url"] = f"/agent-attachments/img/{filename}"
+                ref["size"] = len(item["data"]) * 3 // 4
+            except (OSError, ValueError, KeyError):
+                # 存不下来也不能让消息发不出去：退化成只有名字
+                pass
+            refs.append(ref)
+        return refs
 
     def _load(self):
         try:
@@ -313,6 +347,20 @@ class AgentManager:
                 if (not isinstance(item, dict) or item.get("role") not in ("user", "assistant")
                         or not isinstance(item.get("content"), str) or not isinstance(item.get("id"), str)):
                     raise ValueError("聊天格式无效")
+                # 附件引用：图片带 url，文本只有名字；旧版本存的是纯字符串，两种都接
+                att = item.get("attachments")
+                if att is not None:
+                    if not isinstance(att, list) or len(att) > MAX_ATTACHMENTS:
+                        raise ValueError("聊天附件格式无效")
+                    for ref in att:
+                        if isinstance(ref, str):
+                            continue
+                        if not isinstance(ref, dict) or ref.get("kind") not in ("image", "text"):
+                            raise ValueError("聊天附件格式无效")
+                        if ref.get("kind") == "image":
+                            url = ref.get("url")
+                            if not isinstance(url, str) or not url.startswith("/agent-attachments/"):
+                                raise ValueError("聊天附件地址无效")
             for key, value in memory.items():
                 validate_preference(key, value)
             self.tasks, self.chat, self.memory = tasks, chat, memory
@@ -580,12 +628,12 @@ class AgentManager:
         assistant_id = uuid.uuid4().hex[:12]
         self._reserve(assistant_id)
         history = self._context_window()
-        # 附件只随本次请求进模型；会话里只留名字，避免 base64 撑爆状态文件与广播
-        names = [a["name"] for a in prepared]
+        # 附件只随本次请求进模型；会话里只留可渲染的引用（图片存盘后给 url）
+        refs = self._store_attachments(prepared)
         previous_chat = self.chat
         user_message = {"id": uuid.uuid4().hex[:12], "role": "user", "content": prompt, "ts": now_ms()}
-        if names:
-            user_message["attachments"] = names
+        if refs:
+            user_message["attachments"] = refs
         self.chat = (self.chat + [
             user_message,
             {"id": assistant_id, "role": "assistant", "content": "", "status": "queued",

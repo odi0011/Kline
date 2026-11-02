@@ -93,6 +93,9 @@ def load_config(path: str) -> dict:
 
 
 def start_static(dist_dir: str, port: int) -> None:
+    # 聊天图片附件放在配置目录下（不在 web/dist 里，构建会被覆盖）
+    attach_dir = os.path.join(os.path.dirname(os.path.abspath("config.yaml")), "agent-attachments")
+
     class Quiet(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=dist_dir, **kwargs)
@@ -101,6 +104,15 @@ def start_static(dist_dir: str, port: int) -> None:
             pass
 
         def translate_path(self, path):
+            # /agent-attachments/img/xxx.png → 配置目录下的同名文件，只允许读图片
+            if path.startswith("/agent-attachments/"):
+                sub = path[len("/agent-attachments/"):].split("?", 1)[0]
+                base = os.path.abspath(attach_dir)
+                target = os.path.abspath(os.path.join(base, sub))
+                inside = target == base or target.startswith(base + os.sep)
+                if not inside or not sub.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+                    return os.path.join(dist_dir, "__missing__")
+                return target
             # 畸形/恶意路径（含非法转义、NUL 字节等）会让标准实现抛 ValueError，
             # 这里兜底为根路径，避免异常日志污染并防止目录穿越
             try:

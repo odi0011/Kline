@@ -12,3 +12,6 @@ agent-access-token
 
 web/node_modules/
 web/dist/
+
+# 聊天图片附件（运行时生成，不入库）
+agent-attachments/

@@ -64,3 +64,54 @@ class AttachmentValidationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StoreAttachmentsTest(unittest.TestCase):
+    """图片落盘、会话只存引用，状态文件里不能出现 base64。"""
+
+    def setUp(self):
+        import asyncio, os, tempfile
+        from ai.agent import AgentManager
+
+        async def noop(*a, **k):
+            return None
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.manager = AgentManager(lambda: {}, lambda: None, lambda: {},
+                                    noop, os.path.join(self.tmp.name, "agent-state.json"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_image_saved_and_reference_returned(self):
+        import base64, os
+        prepared = _attachments([{"kind": "image", "name": "shot.png",
+                                  "mime": "image/png", "data": b64(PNG)}])
+        refs = self.manager._store_attachments(prepared)
+        self.assertEqual(len(refs), 1)
+        ref = refs[0]
+        self.assertEqual(ref["kind"], "image")
+        self.assertTrue(ref["url"].startswith("/agent-attachments/"), ref)
+        # 文件真的落盘了
+        local = self.manager.attachments_dir + ref["url"].replace("/agent-attachments", "")
+        self.assertTrue(os.path.exists(local), "图片没有落盘")
+
+    def test_state_never_contains_base64(self):
+        import base64
+        prepared = _attachments([{"kind": "image", "name": "shot.png",
+                                  "mime": "image/png", "data": b64(PNG)}])
+        refs = self.manager._store_attachments(prepared)
+        self.manager.chat = [{"id": "u1", "role": "user", "content": "看图",
+                              "ts": 1, "attachments": refs}]
+        self.manager._save()
+        raw = open(self.manager.state_path, encoding="utf-8").read()
+        self.assertNotIn(b64(PNG)[:40], raw, "状态文件里出现了 base64，会撑爆并泄露内容")
+
+    def test_text_file_keeps_name_and_size_only(self):
+        prepared = _attachments([{"kind": "text", "name": "a.log", "mime": "text/plain",
+                                  "data": b64(b"hello world")}])
+        refs = self.manager._store_attachments(prepared)
+        self.assertEqual(refs[0]["kind"], "text")
+        self.assertEqual(refs[0]["name"], "a.log")
+        self.assertGreater(refs[0]["size"], 0)
+        self.assertNotIn("url", refs[0], "文本文件不落盘，不该有 url")

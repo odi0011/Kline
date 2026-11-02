@@ -205,13 +205,70 @@
 /* ---------- 输入区 ---------- */
 .composer { flex: none; padding: 8px; padding-top: 4px; }
 
-/* 用户消息里附件的名字：只显示名字，不显示内容 */
-.attachNote {
-  display: block;
-  margin-top: 3px;
-  font-size: 9.5px;
-  color: rgba(247, 249, 252, 0.62);
+/* ---------- 附件气泡 ---------- */
+
+/* 图片气泡：内容就是宫格，内边距压到最小 */
+.imageBubble { padding: 3px; width: 190px; max-width: 90%; }
+
+/* 3 列宫格，超出自动换行。
+   必须给宫格一个明确宽度：气泡本身是 inline 收缩的，只写 1fr 时
+   列宽算不出参照，aspect-ratio 的容器会塌成 0×0。 */
+.imageGrid {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
 }
+.imageGrid[data-count="1"] { grid-template-columns: minmax(0, 1fr); }
+.imageGrid[data-count="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.thumb {
+  display: block;
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 6px;
+  background: rgba(28, 35, 51, 0.06);
+}
+/* 单张图不裁成正方形，保持原始比例 */
+.imageGrid[data-count="1"] .thumb { aspect-ratio: auto; max-height: 260px; }
+.thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  cursor: zoom-in;
+}
+.imageGrid[data-count="1"] .thumb img { height: auto; max-height: 260px; object-fit: contain; }
+
+/* 单个文件气泡：图标 + 名字 + 大小，横排 */
+.fileBubble {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 88%;
+}
+.fileIcon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.16);
+  color: inherit;
+}
+.bubble[data-role="bot"] .fileIcon { background: rgba(28, 35, 51, 0.08); }
+.fileMeta { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+.fileName {
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 170px;
+}
+.fileSize { font-size: 9.5px; opacity: 0.6; }
 
 /* ---------- 折叠态圆钮 ---------- */
 /* 折叠态圆钮：落点由内联 left/top 给出；

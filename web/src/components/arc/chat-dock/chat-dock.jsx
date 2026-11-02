@@ -5,7 +5,7 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { motion, useReducedMotion } from "motion/react"
-import { ChevronLeft, Loader2, MoreHorizontal } from "lucide-react"
+import { ChevronLeft, FileText, Loader2, MoreHorizontal } from "lucide-react"
 import ChatComposer from "./chat-composer"
 import styles from "./chat-dock.module.css"
 
@@ -53,6 +53,52 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
+/** 附件引用归一：新版是对象（图片带 url），旧版存的是纯字符串名字 */
+const asRef = (raw) => (typeof raw === "string"
+  ? { kind: "text", name: raw }
+  : (raw && typeof raw === "object" ? raw : null))
+
+const fmtBytes = (bytes) => {
+  const n = Number(bytes)
+  if (!Number.isFinite(n) || n <= 0) return ""
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)}MB`
+  if (n >= 1024) return `${Math.round(n / 1024)}KB`
+  return `${n}B`
+}
+
+/** 图片气泡：多张图按 3 列宫格排列，超出自动换行 */
+function ImageGrid({ items }) {
+  return (
+    <div className={styles.imageGrid} data-count={items.length}>
+      {items.map((item, index) => (
+        <a key={`${item.url}-${index}`} className={styles.thumb} href={item.url}
+          target="_blank" rel="noreferrer" title={item.name}>
+          {/* 不用 loading="lazy"：气泡本身就在滚动区内、数量很少，
+              懒加载在一些环境下不触发，图会一直是空白占位 */}
+          <img src={item.url} alt={item.name} decoding="async" />
+        </a>
+      ))}
+    </div>
+  )
+}
+
+/** 单个文件气泡：一个文件一枚，图标 + 名字 + 大小 */
+function FileBubble({ item, mine }) {
+  return (
+    <div className={styles.bubbleRow} data-role={mine ? "user" : "bot"}>
+      <div className={`${styles.bubble} ${styles.fileBubble}`} data-role={mine ? "user" : "bot"}>
+        <span className={styles.fileIcon} aria-hidden>
+          <FileText size={14} />
+        </span>
+        <span className={styles.fileMeta}>
+          <b className={styles.fileName}>{item.name}</b>
+          {item.size ? <span className={styles.fileSize}>{fmtBytes(item.size)}</span> : null}
+        </span>
+      </div>
+    </div>
+  )
+}
+
 // 消息气泡按内容记忆：只要这条消息没变就不重渲染，长对话不会随每次输入卡顿
 const MessageBubble = memo(function MessageBubble({ message }) {
   const mine = message.role === "user"
@@ -60,19 +106,37 @@ const MessageBubble = memo(function MessageBubble({ message }) {
   const busy = message.status === "running" || message.status === "queued"
   // 还在等回复且没出字：整个气泡不渲染，不要三点也不要"正在处理"
   if (busy && !text) return null
+  const refs = (Array.isArray(message.attachments) ? message.attachments : [])
+    .map(asRef).filter(Boolean)
+  const images = refs.filter((r) => r.kind === "image" && r.url)
+  const files = refs.filter((r) => r.kind !== "image" || !r.url)
   return (
-    <div className={styles.bubbleRow} data-role={mine ? "user" : "bot"}>
-      <div className={styles.bubble} data-role={mine ? "user" : "bot"}>
-        {text ? <p className={styles.text}>{text}</p> : null}
-        {message.status === "failed" && (
-          <p className={styles.error} role="alert">{message.error || STATUS_TEXT.failed}</p>
-        )}
-        {message.status === "cancelled" && <span className={styles.muted}>已停止</span>}
-        {Array.isArray(message.attachments) && message.attachments.length > 0 && (
-          <span className={styles.attachNote}>{message.attachments.join(" · ")}</span>
-        )}
-      </div>
-    </div>
+    <>
+      {/* 文字气泡：附件不再混在文字里 */}
+      {(text || message.status === "failed" || message.status === "cancelled") && (
+        <div className={styles.bubbleRow} data-role={mine ? "user" : "bot"}>
+          <div className={styles.bubble} data-role={mine ? "user" : "bot"}>
+            {text ? <p className={styles.text}>{text}</p> : null}
+            {message.status === "failed" && (
+              <p className={styles.error} role="alert">{message.error || STATUS_TEXT.failed}</p>
+            )}
+            {message.status === "cancelled" && <span className={styles.muted}>已停止</span>}
+          </div>
+        </div>
+      )}
+      {/* 图片：单独的宫格气泡 */}
+      {images.length > 0 && (
+        <div className={styles.bubbleRow} data-role={mine ? "user" : "bot"}>
+          <div className={`${styles.bubble} ${styles.imageBubble}`} data-role={mine ? "user" : "bot"}>
+            <ImageGrid items={images} />
+          </div>
+        </div>
+      )}
+      {/* 其它文件：每个文件一枚气泡 */}
+      {files.map((item, index) => (
+        <FileBubble key={`${item.name}-${index}`} item={item} mine={mine} />
+      ))}
+    </>
   )
 })
 
