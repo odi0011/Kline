@@ -168,3 +168,55 @@ def test_scored_signal_path_uses_confluence_gate(engine):
     assert trace["score"]["breakdown"]["bull"]["total"] > 50
     assert trace["risk"]["allowed"]
     assert any(stage["id"] == "execution" for stage in trace["stages"])
+
+
+def test_reconcile_drops_orphan_account_positions(tmp_path, monkeypatch):
+    """账户改名后旧名下的仓位必须被清掉，否则引擎一直管理幽灵仓位。"""
+    import quant as q
+
+    eng = q.QuantEngine({"list": []}, str(tmp_path / "q.json"))
+    # 配置里只有一个账户，但本地记录挂在已经不存在的老名字下
+    monkeypatch.setattr(eng, "_tradable_accounts", lambda: [
+        {"name": "新账户", "api_key": "k", "api_secret": "s"}])
+    eng._st("老账户")["positions"] = {
+        "btcusdt": {"symbol": "btcusdt", "side": "SELL", "qty": 1, "entry": 100},
+    }
+    saved = {}
+    monkeypatch.setattr(eng, "_save_positions", lambda: saved.setdefault("called", True))
+    eng.reconcile_positions()
+    assert eng._st("老账户")["positions"] == {}, "孤儿账户的仓位没有被清理"
+    assert saved.get("called"), "对账后应落盘"
+
+
+def test_reconcile_drops_positions_exchange_no_longer_holds(tmp_path, monkeypatch):
+    import quant as q
+
+    eng = q.QuantEngine({"list": []}, str(tmp_path / "q.json"))
+    monkeypatch.setattr(eng, "_tradable_accounts", lambda: [
+        {"name": "A", "api_key": "k", "api_secret": "s"}])
+    eng._st("A")["positions"] = {
+        "btcusdt": {"symbol": "btcusdt", "side": "SELL", "qty": 1, "entry": 100},
+        "ethusdt": {"symbol": "ethusdt", "side": "BUY", "qty": 1, "entry": 200},
+    }
+    # 交易所：BTC 已平（0），ETH 还有
+    monkeypatch.setattr(eng, "_live_amt",
+                        lambda k, s, sym: 0.0 if sym == "btcusdt" else 1.0)
+    monkeypatch.setattr(eng, "_save_positions", lambda: None)
+    eng.reconcile_positions()
+    left = eng._st("A")["positions"]
+    assert "btcusdt" not in left, "交易所已无持仓却没被清理"
+    assert "ethusdt" in left, "交易所仍在的仓位不能被误删"
+
+
+def test_reconcile_keeps_positions_when_exchange_unreachable(tmp_path, monkeypatch):
+    import quant as q
+
+    eng = q.QuantEngine({"list": []}, str(tmp_path / "q.json"))
+    monkeypatch.setattr(eng, "_tradable_accounts", lambda: [
+        {"name": "A", "api_key": "k", "api_secret": "s"}])
+    eng._st("A")["positions"] = {
+        "btcusdt": {"symbol": "btcusdt", "side": "SELL", "qty": 1, "entry": 100}}
+    monkeypatch.setattr(eng, "_live_amt", lambda k, s, sym: None)  # 查询失败
+    monkeypatch.setattr(eng, "_save_positions", lambda: None)
+    eng.reconcile_positions()
+    assert "btcusdt" in eng._st("A")["positions"], "查不到交易所数据时不能乱删"

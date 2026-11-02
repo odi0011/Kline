@@ -174,6 +174,7 @@ class QuantEngine:
         self._drift_shadow_until = 0
         self._vol_drift = ADWIN(self.decision_cfg.drift_delta)
         self._vol_last_bar: dict[str, int] = {}
+        self._last_reconcile = 0        # 上次与交易所对账的时刻（毫秒）
         self._load_trades()
         self._seed_risk_history()
         self._load_positions()
@@ -396,6 +397,43 @@ class QuantEngine:
                 self._event("system", f"已恢复上次未平的 {n} 个仓位，继续监控")
         except Exception as e:
             self._event("error", f"持仓状态恢复失败: {e}")
+
+    def reconcile_positions(self) -> None:
+        """和交易所对账：本地有、交易所没有的仓位一律清掉。
+
+        历史问题：持仓按「账户名」存盘，账户改名后旧名字下的记录永远恢复
+        不出来也删不掉，引擎会一直以为有名无实的仓位在跑（表现为 AI 说
+        有 3 笔空单、账户卡却是空仓、权益也不动）。这里以交易所为准。
+        """
+        tradable = {a.get("name"): a for a in self._tradable_accounts()}
+        if not tradable:
+            return
+        removed = []
+        for name in list(self.state.keys()):
+            positions = self._st(name)["positions"]
+            if not positions:
+                continue
+            account = tradable.get(name)
+            if account is None:
+                # 该账户在配置里已不存在（改名/删号）：这些仓位无法再被管理
+                removed.extend(f"{name}:{sym}" for sym in positions)
+                self.state[name]["positions"] = {}
+                continue
+            for symbol in list(positions.keys()):
+                live = self._live_amt(account["api_key"], account["api_secret"], symbol)
+                if live is None:
+                    continue                      # 查不到就别乱删
+                if abs(live) < 1e-12:
+                    positions.pop(symbol, None)
+                    removed.append(f"{name}:{symbol}")
+        if removed:
+            self._event("system",
+                        f"对账清理 {len(removed)} 个交易所已不存在的仓位："
+                        + ", ".join(removed[:6]))
+            try:
+                self._save_positions()
+            except Exception:
+                pass
 
     # ---------- 手动仓位注册表（文件热加载：外部脚本开仓后引擎自动放行） ----------
 
@@ -1505,6 +1543,13 @@ class QuantEngine:
             return
         self.refresh_indicators()
         now = _now_ms()
+        # 对账：本地记录与交易所有出入时以交易所为准（每小时一次即可）
+        if now - getattr(self, "_last_reconcile", 0) > 3600_000:
+            self._last_reconcile = now
+            try:
+                self.reconcile_positions()
+            except Exception as e:
+                self._event("error", f"持仓对账失败: {e}")
         # 只管理"参与交易"的账户（按 API Key 去重），避免别名账户重复平仓
         tradable = {a.get("name") for a in self._tradable_accounts()}
         for name in list(self.state.keys()):
