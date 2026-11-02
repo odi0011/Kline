@@ -1,0 +1,88 @@
+/* 输入框上方的性能条：从输入框顶边「拉出来」的一条标签。
+   形状要点：
+     · 上圆角与输入框一致，下沿平直，和输入框顶边贴住（负 margin 吃掉接缝）
+     · 左右各内缩一点，圆弧才不会和输入框的圆角打架，看起来是嵌进去的
+     · 材质比输入框略淡，视觉上退到后面，不抢输入框的注意力 */
+
+.bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* 与输入框左右对齐，不内缩：内缩会让它看起来是另一块面板而不是从输入框里拉出来的 */
+  margin: 0 0 -1px;
+  padding: 3px 11px 4px;
+  /* 上圆角 = 输入框的 18px，肩线直接顺着输入框的弧 */
+  border-radius: 18px 18px 0 0;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(28, 35, 51, 0.07);
+  border-bottom: 0;
+  backdrop-filter: blur(10px) saturate(150%);
+  -webkit-backdrop-filter: blur(10px) saturate(150%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  font-size: 9.5px;
+  color: rgba(28, 35, 51, 0.5);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  animation: statsIn 260ms cubic-bezier(0.2, 0, 0, 1);
+}
+/* 忙碌时整条淡一点，避免和气泡抢注意力；不做循环动画 */
+.bar[data-busy] { opacity: 0.75; }
+
+.item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.label { color: rgba(28, 35, 51, 0.34); }
+.value { font-weight: 600; color: rgba(28, 35, 51, 0.72); letter-spacing: 0.01em; }
+.item[data-tone="good"] .value { color: #0f766e; }
+/* 回复进行中：TPS 还是增量估算，用"拟定值"的淡色，结束后转为实色 */
+.item[data-tone="live"] .value { color: rgba(28, 35, 51, 0.42); font-weight: 500; }
+
+/* 最后一格（上下文）靠右，比例条挂在数字下面 */
+.item:last-of-type { margin-left: auto; flex-direction: row; }
+
+/* 上下文占用条：和数字同高的一条细轨 */
+.track {
+  position: relative;
+  display: block;
+  width: 34px;
+  height: 3px;
+  margin-left: 2px;
+  border-radius: 2px;
+  background: rgba(28, 35, 51, 0.1);
+  overflow: hidden;
+}
+.track i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+  border-radius: 2px;
+  background: rgba(28, 35, 51, 0.4);
+  transition: width 320ms cubic-bezier(0.2, 0, 0, 1);
+}
+.track[data-warn] i { background: #d97706; }
+
+/* 正在回复：右上角一颗呼吸点，替代循环动画 */
+.pulse {
+  position: absolute;
+  top: 5px;
+  right: 7px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent, #f0b90b);
+}
+
+@keyframes statsIn {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar { animation: none; }
+  .track i { transition: none; }
+}

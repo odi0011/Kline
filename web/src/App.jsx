@@ -144,6 +144,7 @@ export default function App() {
   const [newsItems, setNewsItems] = useState([])                // 交易所公告
   const [agentTasks, setAgentTasks] = useState([])              // ODDD 后台与定时任务
   const [agentChat, setAgentChat] = useState([])                // ODDD 会话（悬浮窗气泡）
+  const [agentStats, setAgentStats] = useState(null)            // 输入框上方性能条：TPS/首字/缓存/上下文
   const [agentNotice, setAgentNotice] = useState("")
   const [derivatives, setDerivatives] = useState({})          // 币安衍生品指标快照
   const [structureVersion, setStructureVersion] = useState(0)   // 结构位更新触发决策流刷新
@@ -281,6 +282,7 @@ export default function App() {
     const offAgent = live.on('agent_state', (m) => {
       setAgentTasks(m.tasks || [])
       setAgentChat(m.chat || [])
+      setAgentStats(m.stats || null)
     })
     const offAgentAck = live.on('agent_ack', (m) => {
       if (!m.requestId && m.result?.ok === false) setAgentNotice(m.result.error || '操作失败')
@@ -878,7 +880,7 @@ export default function App() {
       <HitFlight flight={flight} onLand={onFlightLand} onDone={onFlightDone} />
 
       {/* ODDD 悬浮对话窗：可拖动、可折叠到左下角设置按钮上方 */}
-      <ChatDock messages={agentChat} connected={connected}
+      <ChatDock messages={agentChat} connected={connected} stats={agentStats}
         onSend={agentRequest} busy={agentChatBusy}
         onClear={() => agentRequest({ type: 'agent_action', action: 'clear_chat', payload: {} })}
         onCancel={() => {

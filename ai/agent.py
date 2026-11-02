@@ -107,6 +107,14 @@ def _text(value, name, limit, required=False):
     return value
 
 
+def _num(value):
+    """取一个有限数值；其它类型（None、字符串、NaN）一律返回 None。
+    统计字段宁可缺失也不显示 0——0 会被当成真实测得的零。"""
+    if type(value) in (int, float) and math.isfinite(value):
+        return value
+    return None
+
+
 # 无工具模式：服务商忽略 tools 时，退回纯文本对话，并明确告知它没有能力。
 NO_TOOLS_NOTE = (
     "【本次对话没有可用的工具】你不要尝试调用任何工具，也无法读取实时行情、"
@@ -402,9 +410,83 @@ class AgentManager:
             raise PersistenceError(self.persistence_error) from None
         self.persistence_error = ""
 
+    def stats(self):
+        """输入框上方那条状态条的数据。全部来自真实调用，不做估算填充：
+
+          tps       最近一次成功回复的解码速度（token/秒）
+          ttftMs    最近一次的首字延迟（首个内容 chunk 到达时刻）
+          cacheHit  最近一次的提示词缓存命中率（服务商回报的 usage）
+          ctx       本轮上下文占用 / 模型窗口上限
+          tokens    本轮 prompt / completion 实际用量
+
+        没有产生的字段一律返回 None，前端显示"—"而不是 0 —— 0 会被误读成
+        "测出来是 0"，而实际是"没有数据"。
+        """
+        def empty():
+            return {"tps": None, "ttftMs": None, "cacheHit": None,
+                    "ctxUsed": None, "ctxMax": None, "promptTokens": None,
+                    "completionTokens": None, "perfAt": None}
+
+        done = [m for m in self.chat
+                if m.get("role") == "assistant" and m.get("status") in ("succeeded", "running")]
+        if not done:
+            return empty()
+        # 长回复会被拆成 `原id-2`、`原id-3`…，那些续气泡没有 usage/perf。
+        # 取最后一条真正带数据的，而不是数组末尾那条。
+        with_data = [m for m in done if m.get("usage") or m.get("perf")]
+        last = (with_data or done)[-1]
+        usage = last.get("usage") if isinstance(last.get("usage"), dict) else {}
+        perf = last.get("perf") if isinstance(last.get("perf"), dict) else {}
+
+        completion_tokens = _num(usage.get("completion_tokens"))
+        decode_ms = _num(perf.get("decodeMs"))
+        tps = None
+        if completion_tokens and decode_ms and decode_ms > 0:
+            # 只有流式才量得到真实解码窗口；非流式整个耗时里含预填充，算出来会偏低。
+            # 进行中不给 TPS：服务商的 token 数要到最后一帧才给，用帧数估算
+            # 在 DeepSeek 这类"一帧多个 token"的服务商上会低一个数量级，
+            # 与其显示一个错数字，不如先空着。
+            tps = round(completion_tokens / (decode_ms / 1000), 1)
+
+        prompt_tokens = _num(usage.get("prompt_tokens"))
+        hit = _num(usage.get("prompt_cache_hit_tokens"))
+        cache_hit = None
+        if hit is not None and prompt_tokens:
+            cache_hit = round(hit / prompt_tokens * 100, 1)
+
+        _, selected = None, None
+        try:
+            _, selected = self._model(last.get("model") or "")
+        except ValueError:
+            pass
+        ctx_max = _num((selected or {}).get("ctx")) or None
+        ctx_used = prompt_tokens or _num(perf.get("chars"))
+        # 配置里的 ctx 常常小于实际用量（线上配 2000、真实 prompt 已 15000+）。
+        # 这时按"已用量向上取整到常见窗口"兜底，否则会显示 780% 这种假数字。
+        if ctx_max and ctx_used and ctx_used > ctx_max:
+            for size in (8192, 16384, 32768, 65536, 131072, 262144, 1048576):
+                if ctx_used <= size:
+                    ctx_max = size
+                    break
+            else:
+                ctx_max = ctx_used
+        return {
+            "tps": tps,
+            "ttftMs": _num(perf.get("ttftMs")) or None,
+            "cacheHit": cache_hit,
+            "ctxUsed": ctx_used,
+            "ctxMax": ctx_max,
+            "promptTokens": prompt_tokens,
+            "completionTokens": completion_tokens,
+            "perfAt": last.get("finishedAt") or last.get("ts"),
+            # 回复进行中：TPS 是增量估算，前端据此把数字显示成「暂定」
+            "live": bool(perf.get("live")),
+        }
+
     def state(self):
         tasks = sorted(self.tasks, key=lambda item: item.get("createdAt") or 0, reverse=True)
         return {"tasks": copy.deepcopy(tasks), "chat": copy.deepcopy(self.chat[-40:]),
+                "stats": self.stats(),
                 "persistenceError": self.persistence_error, "readOnly": bool(self.persistence_error),
                 "chatBusy": bool(self.chat_runners),
                 "limits": {"maxTasks": MAX_TASKS, "maxQueue": MAX_QUEUE,
@@ -885,7 +967,7 @@ class AgentManager:
         await self._emit()
         return {"ok": True}
 
-    async def _http(self, config, model, messages, proxy, deadline, first):
+    async def _http(self, config, model, messages, proxy, deadline, first, on_progress=None):
         await self._http_slots.acquire()
         try:
             choice = "required" if first else "auto"
@@ -898,6 +980,10 @@ class AgentManager:
                                                   copy.deepcopy(messages),
                                                   proxy=proxy, tools=copy.deepcopy(TOOLS),
                                                   tool_choice=choice,
+                                                  # 流式只为拿到首字延迟与解码速度；
+                                                  # 服务商不支持时会自动退回非流式
+                                                  stream=True,
+                                                  on_progress=on_progress,
                                                   timeout=min(STEP_TIMEOUT, remaining)))
                 try:
                     result = await asyncio.shield(future)
@@ -994,15 +1080,55 @@ class AgentManager:
         messages.append({"role": "user", "content": _user_content(prompt, attachments or [])})
         deadline = time.monotonic() + TASK_TIMEOUT
         usage = {}
+        # 性能统计：多轮工具调用累加，写进消息里给前端的状态条读
+        perf = {"ttftMs": 0, "decodeMs": 0, "chars": 0, "requests": 0, "streamed": False}
+        live = {"ttftMs": 0, "chars": 0, "deltas": 0, "latchedAt": 0.0}
+        loop = asyncio.get_running_loop()
+
+        def progress(chars, ttft_ms, deltas, elapsed_ms):
+            """流式增量回调——跑在 HTTP 线程里，所以只写纯数据，再用
+            call_soon_threadsafe 把广播投回事件循环。
+
+            每 400ms 才推一次：状态条是给人看的，推太密只会让 WS 和渲染空转。
+            """
+            now = time.monotonic()
+            live["chars"] = chars
+            live["deltas"] = deltas
+            live["ttftMs"] = ttft_ms or live["ttftMs"]
+            if now - live["latchedAt"] < 0.4:
+                return
+            live["latchedAt"] = now
+            decode_ms = elapsed_ms - (ttft_ms or 0)
+            target["perf"] = {
+                "ttftMs": ttft_ms, "chars": chars, "deltas": deltas,
+                # 解码窗口刚开始那一下只有几十毫秒，拿来算 TPS 会得出上千的假数字
+                "decodeMs": decode_ms if decode_ms >= 600 else 0,
+                "streamed": True, "requests": 1, "live": True,
+            }
+            try:
+                loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._broadcast()))
+            except RuntimeError:
+                pass          # 事件循环已关闭：回复结束时的正常竞态
+
         for round_number in range(1, MAX_ROUNDS + 1):
             target["progress"] = {"phase": "model", "round": round_number, "maxRounds": MAX_ROUNDS,
                                   "toolCalls": len(target["steps"])}
             await self._emit()
-            result = await self._http(config, selected["id"], messages, proxy, deadline, round_number == 1)
+            result = await self._http(config, selected["id"], messages, proxy, deadline,
+                                      round_number == 1, progress)
             if not isinstance(result, dict) or not result.get("ok"):
                 error = result.get("error", "模型请求失败") if isinstance(result, dict) else "模型响应格式无效"
                 key = config.get("key")
                 raise RuntimeError(str(error).replace(key, "[REDACTED]") if key else str(error))
+            perf["requests"] += 1
+            if result.get("streamed"):
+                perf["streamed"] = True
+                perf["decodeMs"] += int(result.get("decodeMs") or 0)
+                perf["chars"] += int(result.get("chars") or 0)
+                # 只有第一轮的等待才算"首字延迟"：后续轮是工具调用往返，
+                # 混进去会让数字虚高，看的人会以为模型变慢了
+                if not perf["ttftMs"]:
+                    perf["ttftMs"] = int(result.get("ttftMs") or 0)
             for key, value in (result.get("usage") or {}).items():
                 if type(value) in (int, float) and math.isfinite(value):
                     usage[key] = usage.get(key, 0) + value
@@ -1019,7 +1145,7 @@ class AgentManager:
                 usable = (isinstance(reply, str) and reply.strip()
                           and not _claims_execution(reply) and not _says_no_tools(reply))
                 if usable:
-                    return {"reply": reply[:20000], "usage": usage, "model": selected["id"]}
+                    return {"reply": reply[:20000], "usage": usage, "perf": perf, "model": selected["id"]}
                 if round_number == 1:
                     # 模型说"我没有工具"或声称已执行 → 服务商很可能忽略了 tools。
                     # 换成无工具模式重问一次，并明确告知它没有任何能力。
@@ -1028,7 +1154,7 @@ class AgentManager:
                     reply2 = result2.get("reply") if isinstance(result2, dict) else ""
                     if (isinstance(reply2, str) and reply2.strip()
                             and not _claims_execution(reply2)):
-                        return {"reply": reply2[:20000], "usage": usage, "model": selected["id"]}
+                        return {"reply": reply2[:20000], "usage": usage, "perf": perf, "model": selected["id"]}
                     raise RuntimeError("服务商不支持工具调用，改为无工具模式后仍无法给出可信回答")
                 raise RuntimeError("模型既未调用工具，也没有给出回答")
             normalized = []
@@ -1124,7 +1250,8 @@ class AgentManager:
             # 模型即使不听提示词，也不会把几千字塞进一个气泡。
             pieces = split_reply(result["reply"]) or [""]
             message.update(status="succeeded", content=pieces[0],
-                           usage=result["usage"], model=result["model"])
+                           usage=result["usage"], perf=result.get("perf") or {},
+                           model=result["model"])
             if len(pieces) > 1:
                 extra = []
                 for idx, piece in enumerate(pieces[1:], start=2):

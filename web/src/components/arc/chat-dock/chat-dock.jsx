@@ -7,6 +7,7 @@ import { createPortal } from "react-dom"
 import { motion, useReducedMotion } from "motion/react"
 import { FileText, Minimize2, MoreHorizontal, RotateCcw, Trash2 } from "lucide-react"
 import ChatComposer from "./chat-composer"
+import ChatStats from "./chat-stats"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import { GlassMenu } from "@/components/arc/glass-menu/glass-menu"
 import styles from "./chat-dock.module.css"
@@ -194,7 +195,8 @@ const dayLabel = (ts) => {
   return `${d.getMonth() + 1}/${d.getDate()} ${hm}`
 }
 
-export default function ChatDock({ messages = [], onSend, connected = true, onCancel, busy = false, onClear }) {
+export default function ChatDock({ messages = [], onSend, connected = true, stats = null,
+                                  onCancel, busy = false, onClear }) {
   const reduced = useReducedMotion()
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState(() => loadPos() || defaultPos())
@@ -413,6 +415,7 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
         </ScrollArea>
 
         <div className={styles.composer}>
+          <ChatStats stats={stats} busy={busy} />
           <ChatComposer onSend={send} busy={busy} disabled={!connected}
             onCancel={onCancel} />
         </div>

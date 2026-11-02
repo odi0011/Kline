@@ -182,11 +182,177 @@ def test_model(cfg: dict, model_id: str, proxy: str | None = None) -> dict:
     return {"ok": True, "ms": ms, "reply": str(reply)[:100]}
 
 
+def _chat_completion_stream(base: str, key: str, model_id: str, payload: dict,
+                            proxy: str | None, timeout: float, on_progress):
+    """SSE 流式请求。返回 None 表示流式这条路走不通，调用方应退回非流式。
+
+    只有真正拿到事件才算走通；服务商忽略 stream 参数、返回 JSON、瞬间断流
+    都按「走不通」处理，交给非流式重来，不让统计影响对话本身。
+
+    on_progress(chars, ttft_ms, deltas, elapsed_ms) 在每次收到可见内容时回调
+    （跑在请求线程里）：
+      ttft_ms   从请求发出算起、到第一个 token（含思维链）为止，和最终 ttftMs 同一定义；
+      deltas    已收到的内容增量帧数，OpenAI 协议下通常一帧一个 token，用来估实时 TPS；
+      elapsed_ms 从请求发出到现在，用于算解码窗口。
+    """
+    import urllib.request
+
+    body_payload = dict(payload)
+    body_payload["stream"] = True
+    # 多数服务商默认不在流里带 usage；显式要求，拿不到就只算得出耗时
+    body_payload["stream_options"] = {"include_usage": True}
+    headers = {"User-Agent": UA, "Accept": "text/event-stream",
+               "Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    url = _join(base, "/chat/completions")
+    data = json.dumps(body_payload).encode("utf-8")
+    request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
+    started = time.monotonic()
+    try:
+        if proxy:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler(
+                {"http": proxy, "https": proxy}))
+            response = opener.open(request, timeout=min(180, max(1, timeout)))
+        else:
+            response = urllib.request.urlopen(request, timeout=min(180, max(1, timeout)))
+    except urllib.error.HTTPError as e:
+        # 服务商明确拒绝：这是真实答复，不能重试（否则会打两次）
+        raw = ""
+        try:
+            raw = e.read(2000).decode("utf-8", "replace")[:500]
+        except Exception:
+            pass
+        response = None
+        ms = int((time.monotonic() - started) * 1000)
+        body = _maybe_json(raw) if raw else None
+        return _interpret(e.code, body, ms, key, model_id, payload.get("tools"),
+                          payload.get("tool_choice"))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+
+    parts: list[str] = []
+    calls: dict[int, dict] = {}
+    usage: dict = {}
+    model_out = ""
+    finish = None
+    first_at = None
+    last_at = None
+    events = 0
+    chars = 0
+    deltas = 0
+    try:
+        with response:
+            buffer = b""
+            while True:
+                chunk = response.read(8192)
+                if not chunk:
+                    break
+                buffer += chunk
+                # 按换行切帧：一次 read 可能带回多帧，readline 的 framing 不可依赖
+                while b"\n" in buffer:
+                    raw_line, buffer = buffer.split(b"\n", 1)
+                    line = raw_line.strip()
+                    if not line.startswith(b"data:"):
+                        continue
+                    text = line[5:].strip().decode("utf-8", "replace")
+                    if text == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(text)
+                    except Exception:
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    events += 1
+                    if isinstance(event.get("usage"), dict):
+                        usage = event["usage"]
+                    if not model_out and isinstance(event.get("model"), str):
+                        model_out = event["model"]
+                    for choice in event.get("choices") or []:
+                        if not isinstance(choice, dict):
+                            continue
+                        if choice.get("finish_reason"):
+                            finish = choice["finish_reason"]
+                        delta = choice.get("delta") or {}
+                        if not isinstance(delta, dict):
+                            continue
+                        # reasoning_content 也是模型在吐 token（思考型模型的思维链），
+                        # 首字延迟和解码窗口都得把它算进去，否则 TPS 会虚高一截
+                        reasoning = delta.get("reasoning_content")
+                        if isinstance(reasoning, str) and reasoning:
+                            now = time.monotonic()
+                            if first_at is None:
+                                first_at = now
+                            last_at = now
+                        piece = delta.get("content")
+                        if isinstance(piece, str) and piece:
+                            now = time.monotonic()
+                            if first_at is None:
+                                first_at = now
+                            last_at = now
+                            parts.append(piece)
+                            chars += len(piece)
+                            deltas += 1
+                            if on_progress:
+                                # 首字按 first_at 算（含思维链），与最终 ttftMs 一致；
+                                # 用 now 会让实时值偏大，结束后数字突然变小
+                                ttft = int(((first_at or now) - started) * 1000)
+                                on_progress(chars, ttft, deltas, int((now - started) * 1000))
+                        for delta_call in delta.get("tool_calls") or []:
+                            if not isinstance(delta_call, dict):
+                                continue
+                            index = delta_call.get("index", 0)
+                            slot = calls.setdefault(index, {"id": "", "type": "function",
+                                                            "function": {"name": "", "arguments": ""}})
+                            if delta_call.get("id"):
+                                slot["id"] = delta_call["id"]
+                            fn = delta_call.get("function") or {}
+                            if isinstance(fn.get("name"), str):
+                                slot["function"]["name"] += fn["name"]
+                            if isinstance(fn.get("arguments"), str):
+                                slot["function"]["arguments"] += fn["arguments"]
+    except Exception:
+        # 读到一半断开：已经拿到的内容仍然可用，交给下面的统一校验判断
+        pass
+
+    if events == 0:
+        return None                      # 服务商没按流式回，改走非流式
+
+    ms = int((time.monotonic() - started) * 1000)
+    timing = {
+        "streamed": True,
+        "ttftMs": int((first_at - started) * 1000) if first_at else 0,
+        "decodeMs": int((last_at - first_at) * 1000) if first_at and last_at else 0,
+        "chars": chars,
+    }
+    body = {
+        "model": model_out,
+        "usage": usage,
+        "choices": [{
+            "finish_reason": finish,
+            "message": {"role": "assistant",
+                        "content": "".join(parts) or None,
+                        **({"tool_calls": [calls[k] for k in sorted(calls)]} if calls else {})},
+        }],
+    }
+    return _interpret(200, body, ms, key, model_id, payload.get("tools"),
+                      payload.get("tool_choice"), timing)
+
+
 def chat_completion(cfg: dict, model_id: str, messages: list[dict],
                     proxy: str | None = None, max_tokens: int = 1800,
                     timeout: float = 150, tools: list[dict] | None = None,
-                    tool_choice: str | dict | None = None) -> dict:
-    """非流式 OpenAI 协议；保留 tool_calls，绝不降级重试为纯文本执行。"""
+                    tool_choice: str | dict | None = None,
+                    stream: bool = False, on_progress=None) -> dict:
+    """OpenAI 兼容对话请求；保留 tool_calls，绝不降级重试为纯文本执行。
+
+    stream=True 时走 SSE：同一条链路上能拿到真实的「首 token 延迟」和
+    「解码速度」，非流式只能算端到端耗时（含提示词预填充，偏低）。
+    流式不可用（服务商不支持 / 代理异常 / 没吐出任何事件）时自动退回非流式，
+    保证对话本身绝不因为统计而失败。
+    """
     base = (cfg.get("base") or "").strip()
     key = (cfg.get("key") or "").strip()
     if not base or not model_id:
@@ -195,17 +361,31 @@ def chat_completion(cfg: dict, model_id: str, messages: list[dict],
                "max_tokens": max_tokens, "stream": False}
     if tools is not None:
         payload.update(tools=tools, tool_choice=tool_choice or "auto")
+    if stream:
+        result = _chat_completion_stream(base, key, model_id, payload, proxy,
+                                         timeout, on_progress)
+        # 只有「完全没拿到响应」才退回非流式；4xx/5xx 是服务商的真实答复，不能重试。
+        if result is not None:
+            return result
     started = time.monotonic()
     status, body = _request(_join(base, "/chat/completions"), key, payload,
                             proxy=proxy, timeout=min(180, max(1, timeout)))
     ms = int((time.monotonic() - started) * 1000)
+    return _interpret(status, body, ms, key, model_id, tools, tool_choice)
 
+
+def _interpret(status: int, body, ms: int, key: str, model_id: str,
+               tools: list[dict] | None, tool_choice, timing: dict | None = None) -> dict:
+    """把服务商返回归一化成统一结果，流式与非流式共用同一套校验。"""
     def failure(detail):
         # 服务商可能回显认证数据；不能进入聊天/持久化状态。
         text = str(detail)
         if key:
             text = text.replace(key, "[REDACTED]")
-        return {"ok": False, "error": text[:600], "ms": ms, "status": status}
+        out = {"ok": False, "error": text[:600], "ms": ms, "status": status}
+        if timing:
+            out.update(timing)
+        return out
 
     if status == 0:
         return failure(f"连接失败：{body}")
@@ -251,11 +431,14 @@ def chat_completion(cfg: dict, model_id: str, messages: list[dict],
         return failure("模型输出被截断或过滤，不能作为已完成结果")
     if not reply and not calls:
         return failure("模型未返回文本或工具调用")
-    return {"ok": True, "reply": reply, "tool_calls": calls,
-            "message": {"role": "assistant", "content": reply or None,
-                        **({"tool_calls": calls} if calls else {})},
-            "finish_reason": choice.get("finish_reason"), "ms": ms,
-            "usage": body.get("usage") or {}, "model": body.get("model") or model_id}
+    out = {"ok": True, "reply": reply, "tool_calls": calls,
+           "message": {"role": "assistant", "content": reply or None,
+                       **({"tool_calls": calls} if calls else {})},
+           "finish_reason": choice.get("finish_reason"), "ms": ms,
+           "usage": body.get("usage") or {}, "model": body.get("model") or model_id}
+    if timing:
+        out.update(timing)
+    return out
 
 
 def mask_cfg(ai: dict) -> dict:
