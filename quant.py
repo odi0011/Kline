@@ -96,6 +96,9 @@ DD_LOOKBACK_MS = 24 * 3600_000   # 回撤统计窗口：24 小时
 # ---- 市场状态过滤（第二层，形态之外） ----
 USE_MARKET_GATE = True
 GATE_MAX_LOG = 40        # 保留最近的拦截理由条数（给前端展示）
+# 计算流水保留条数。5 秒一轮 × 5 币 × 约 15 行 ≈ 75 行/轮，
+# 3000 条够翻好几轮历史；只在内存里，不落库。
+CALC_MAX_ROWS = 3000
 
 
 def _now_ms() -> int:
@@ -131,6 +134,10 @@ class QuantEngine:
         self.live_evaluations: dict[str, dict] = {}
         self.live_score_history: dict[str, deque] = {}
         self.gate_log: deque = deque(maxlen=GATE_MAX_LOG)  # 最近的过滤器拦截记录
+        # 计算流水：每一轮每个币的**每一条**算式都记一行，供前端实时滚动。
+        # 只保留最近若干条（内存环形缓冲，不落库）——这是运算轨迹，
+        # 不是业务数据，重算就能得到。
+        self.calc_stream: deque = deque(maxlen=CALC_MAX_ROWS)
         self.dd_state = {"paused_until": 0, "current": 0.0, "max": 0.0, "peak": 0.0}
         # 交易范围：只处理前端实际展示的币种（None/空 = 不限制）。
         # 否则引擎会在用户没看K线的币上开仓，持仓出现"凭空冒出来"的仓位。
@@ -685,6 +692,8 @@ class QuantEngine:
                         history = self.live_score_history.setdefault(
                             sym, deque(maxlen=24))
                         history.append({"ts": _now_ms(), "score": side_score.score})
+                        # 把这一轮的每条算式推进流水（内存环形缓冲，不落库）
+                        self._push_calc_rows(sym, state, side_score, direction, history)
                     if self.decision_cfg.drift_enabled and state.get("roc") is not None:
                         bucket = int(getattr(cs[-1], "open_time", 0) or 0)
                         if self._vol_last_bar.get(sym) != bucket:
@@ -695,6 +704,88 @@ class QuantEngine:
             except Exception:
                 continue
         self._refresh_drawdown()
+
+    def _push_calc_rows(self, sym: str, state: dict, score, direction: str,
+                        history: deque) -> None:
+        """把一次评估拆成多条细粒度的计算行，推进实时流水。
+
+        设计要点：
+          · **按时间排，不按币分组**——前端要的是一条连续的计算流，
+            而不是每个币一段摘要。每行自带 symbol，渲染时用小图标表示。
+          · 每条都是真实算式（谁乘谁、谁减谁），不是给人看的摘要。
+          · 只进内存 deque，不落库：这是运算轨迹，重算即可得到。
+        """
+        ts = _now_ms()
+        b = score.breakdown or {}
+        side = b.get("bear") if direction == "bearish" else b.get("bull")
+        oppo = b.get("bull") if direction == "bearish" else b.get("bear")
+        w = b.get("weights") or {}
+        rows: list[dict] = []
+
+        def add(kind: str, tag: str, expr: str, value, tone: str = "") -> None:
+            rows.append({"ts": ts, "sym": sym, "kind": kind, "tag": tag,
+                         "expr": expr, "value": value, "tone": tone})
+
+        total = side.get("total") if side else None
+        opposite = oppo.get("total") if oppo else None
+        dir_label = "空" if direction == "bearish" else "多"
+        tone = "down" if direction == "bearish" else "up"
+
+        # 1) 原始输入：每个分项算出来的依据
+        add("in", "rsi", "RSI", round(state.get("rsi") or 0, 1) if state.get("rsi") is not None else None)
+        add("in", "adx", "ADX", round(state.get("adx") or 0, 1) if state.get("adx") is not None else None)
+        if state.get("plusDI") is not None and state.get("minusDI") is not None:
+            add("in", "di", "+DI − −DI",
+                round(float(state["plusDI"]) - float(state["minusDI"]), 2))
+        if state.get("atrPct") is not None:
+            add("in", "atr", "ATR 百分位", round(float(state["atrPct"]), 1))
+        if state.get("roc") is not None:
+            add("in", "roc", "ROC%", round(float(state["roc"]) * 100, 2))
+        if state.get("bwPct") is not None:
+            add("in", "bw", "带宽%", round(float(state["bwPct"]), 2))
+
+        # 2) 每个分项 × 权重
+        for key, label in (("trend", "趋势"), ("momentum", "动能"),
+                           ("volume", "量能"), ("structure", "结构")):
+            part = (side or {}).get(key)
+            weight = w.get(key)
+            if part is None or weight is None:
+                continue
+            add("w", key, f"{label} {part:.2f} × {weight:.2f}",
+                round(float(part) * float(weight), 2))
+
+        # 3) 合计 ÷ 权重和
+        if w:
+            add("sum", "wsum", "Σ权重", round(sum(float(x) for x in w.values()), 2))
+        if total is not None:
+            add("sum", "total", f"{dir_label}方合计 ÷ Σw", round(float(total), 2), tone)
+
+        # 4) 分离度
+        if total is not None and opposite is not None:
+            add("gap", "gap", f"{total:.2f} − {opposite:.2f}",
+                round(float(total) - float(opposite), 2))
+
+        # 5) 评分轨迹的稳定性与估算胜率
+        scores = [float(x.get("score")) for x in history if x.get("score") is not None]
+        if len(scores) > 1:
+            mean = sum(scores) / len(scores)
+            sd = (sum((x - mean) ** 2 for x in scores) / len(scores)) ** 0.5
+            add("sigma", "sd", f"σ 评分 (n={len(scores)})", round(sd, 2))
+            stability = max(0.0, min(100.0, 100 - sd * 5))
+            if total is not None:
+                est = (float(total) / 100) * (stability / 100) * 100
+                add("est", "est", f"估算 {total:.2f}% × 稳 {stability:.1f}%",
+                    round(est), tone)
+
+        # 6) 否决理由（有才记）
+        for veto in score.vetoes or []:
+            add("veto", "veto", str(veto)[:40], None, "warn")
+
+        # 尾行：本轮结论，方便在长流里定位
+        add("verdict", "verdict", f"结论 {dir_label} · {score.grade}",
+            round(float(score.score), 2), tone)
+
+        self.calc_stream.extend(rows)
 
     def _refresh_drawdown(self) -> None:
         """回撤熔断状态：从权益采样算当前/最大回撤，超阈值则暂停开仓一段时间。"""
@@ -1963,6 +2054,9 @@ class QuantEngine:
             "analysis": {
                 # 每个币种的完整指标与状态
                 "symbols": {sym: self._public_state(st) for sym, st in self.indicators.items()},
+                # 计算流水：每轮每个币的多条算式，按时间排列、不分组。
+                # 前端直接渲染成一条连续的滚动流，不要按币归类。
+                "calcStream": list(self.calc_stream)[-600:],
                 "liveFeatures": dict(self.live_features),
                 "liveEvaluations": dict(self.live_evaluations),
                 "liveScoreHistory": {

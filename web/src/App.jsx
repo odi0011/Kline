@@ -847,10 +847,8 @@ export default function App() {
             symbols={orderedSymbols} events={visibleEvents} />
         </div>
         <div className="row2-reserved">
-          {/* 这块原先是衍生品指标（只有 5 行，撑不满整个高度）。
-              换成计算流水：把每次评分的真实算式摊开，密集滚动。 */}
-          <ComputeTrace analysis={quantSnap && quantSnap.analysis}
-            symbols={orderedSymbols} stats={agentStats} />
+          {/* 计算流水：每轮运算的实时轨迹，一条连续的流（不按币分组） */}
+          <ComputeTrace analysis={quantSnap && quantSnap.analysis} stats={agentStats} />
         </div>
       </div>
       {/* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3） */}

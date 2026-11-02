@@ -1,6 +1,8 @@
-/* 计算流水：高密度实时算式列表。
-   行高 16px、字号 9.5px、等宽数字，一屏能塞下几十行——
-   这块的用途是"看系统在算什么"，不是"读摘要"，所以密度优先于留白。 */
+/* 计算流水：高密度实时运算轨迹。
+
+   这是一条**连续的流**，不是按币分组的分区表格。
+   每行 = 一次真实计算（一次乘法、一次减法、一次阈值比较）。
+   密度优先：17px 行高、10px 字号、等宽数字，一屏能看几十行。 */
 
 .root {
   flex: 1 1 0;
@@ -15,81 +17,52 @@
   position: relative;
   flex: 1 1 0;
   min-height: 0;
-  /* 必须裁住：否则 65 行内容会把整个 row2 顶高，ScrollArea 反而不滚 */
   overflow: hidden;
 }
 .scroll { flex: 1 1 0; min-height: 0; height: 100%; }
-.viewport { padding: 0 2px 6px; }
+.viewport { padding: 0 2px 8px; }
 
-/* 一组算式 = 一个币。组间用 1px 细线分隔，不额外留大空隙。 */
-.block {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 3px 0 4px;
-  border-bottom: 1px solid rgba(28, 35, 51, 0.055);
-}
-.block:last-child { border-bottom: 0; }
-
-.blockHead {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-  height: 14px;
-  margin-bottom: 1px;
-}
-.sym {
-  font-size: 10px;
-  font-weight: 700;
-  color: #1c2333;
-  letter-spacing: 0.02em;
-}
-.dir {
-  font-size: 9px;
-  font-weight: 700;
-  padding: 0 3px;
-  border-radius: 3px;
-  background: rgba(28, 35, 51, 0.06);
-  color: rgba(28, 35, 51, 0.7);
-}
-.dir[data-tone="up"] { background: rgba(22, 163, 74, 0.14); color: #15803d; }
-.dir[data-tone="down"] { background: rgba(220, 38, 38, 0.13); color: #b91c1c; }
-.grade {
-  margin-left: auto;
-  font-size: 9px;
-  color: rgba(16, 24, 40, 0.4);
-}
-.price {
-  flex: none;
-  font-size: 9px;
-  color: rgba(28, 35, 51, 0.55);
-  font-variant-numeric: tabular-nums;
-}
-
-/* 一行算式：标签 · 表达式 · 结果，三列等宽排布。
-   行高压到 13px：这块是"看系统在算什么"，密度优先，一屏要塞下几十行。 */
+/* 一行：时间 · 币种图标 · 标签 · 算式 · 结果 */
 .row {
   display: flex;
   align-items: center;
   gap: 4px;
-  height: 13px;
+  height: 17px;
   padding: 0 3px;
   border-radius: 3px;
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1;
-  color: rgba(28, 35, 51, 0.62);
+  color: rgba(28, 35, 51, 0.66);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  overflow: hidden;
 }
-.row:hover { background: rgba(28, 35, 51, 0.04); }
+.row:hover { background: rgba(28, 35, 51, 0.045); }
 
+/* 时间列：秒级，固定宽度避免每行抖动 */
+.time {
+  flex: none;
+  width: 44px;
+  font-size: 8.5px;
+  color: rgba(16, 24, 40, 0.3);
+}
+/* 没有币种时的占位圆点（模型侧的计量行） */
+.dot {
+  flex: none;
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: rgba(28, 35, 51, 0.12);
+}
+
+/* 标签列：固定宽度，让算式左边缘对齐成一列 */
 .tag {
   flex: none;
-  width: 16px;
+  width: 34px;
   font-size: 8.5px;
   font-weight: 700;
-  color: rgba(16, 24, 40, 0.3);
-  text-align: right;
+  color: rgba(16, 24, 40, 0.34);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .expr {
   flex: 1 1 auto;
@@ -106,8 +79,20 @@
 
 .row[data-tone="up"] .value { color: #15803d; }
 .row[data-tone="down"] .value { color: #b91c1c; }
-.row[data-tone="warn"] { color: #b45309; }
-.row[data-tone="warn"] .value { color: #b45309; font-weight: 500; }
+.row[data-tone="warn"] .value { color: #b45309; }
+.row[data-tone="warn"] .expr { color: #b45309; }
+
+/* 结论行：比普通行略重，方便在长流里定位每一轮的落点 */
+.row[data-kind="verdict"] {
+  margin-top: 3px;
+  border-top: 1px solid rgba(28, 35, 51, 0.06);
+  font-weight: 600;
+}
+.row[data-kind="verdict"] .tag { color: rgba(28, 35, 51, 0.55); }
+
+/* 模型侧计量行：浅一点，和交易所计算区分开 */
+.row[data-kind="model"] { color: rgba(28, 35, 51, 0.5); }
+.row[data-kind="model"] .value { color: rgba(28, 35, 51, 0.72); }
 
 .empty {
   margin: 8px 2px;
