@@ -593,6 +593,9 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             pass
 
     # 量化交易范围跟随前端实际展示的币种：避免在用户没看K线的币上开仓。
+    # 币种集合变化时唤醒衍生品轮询（避免新加的币等满一个周期）
+    deriv_wake = asyncio.Event()
+
     # 空列表不做限制（前端还没连上时保持原有行为）。
     # 前端可选全市场币种，因此这里收到配置外的币时会走 ensure_symbol() 按需订阅。
     def _set_quant_symbols(syms):
@@ -600,6 +603,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         if valid:
             quant.symbol_filter = set(valid)
             print(f"[quant] 交易范围更新: {', '.join(valid)}")
+            deriv_wake.set()        # 让衍生品轮询立刻补这些币的指标
     hub.on_quant_symbols = _set_quant_symbols
     # 决策流水查询：前端按账户拉历史（持久化，重启/刷新不清空）
     hub.quant_events_fn = storage.quant_events
@@ -1038,7 +1042,11 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     async def derivatives_poller():
         await asyncio.sleep(6)
         while True:
-            active = list(quant.symbol_filter or symbols)
+            # 每轮重读 symbol_filter：用户新加的币要立刻有指标，
+            # 否则它会在最长一个周期里显示「等待数据」。
+            scope = list(quant.symbol_filter or symbols)
+            missing = [s for s in scope if s not in hub.derivatives]
+            active = missing or scope
             try:
                 rows = await asyncio.gather(*[
                     asyncio.to_thread(derivatives_snapshot, sym, "5m", proxy_cfg or None)
@@ -1049,14 +1057,21 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                     if isinstance(row, dict) and row.get("price") is not None:
                         snap[sym] = row
                 if snap:
-                    hub.derivatives = snap
+                    # 合并进已有快照（补缺时不能把其它币冲掉），并扔掉不再展示的币
+                    merged = {**hub.derivatives, **snap}
+                    hub.derivatives = {k: v for k, v in merged.items() if k in set(scope)} or merged
                     hub.derivatives_ts = KlineAggregator.now_ms()
-                    await hub.broadcast({"type": "derivatives", "rows": snap,
+                    await hub.broadcast({"type": "derivatives", "rows": hub.derivatives,
                                          "ts": hub.derivatives_ts})
-                    print(f"[deriv] 衍生品指标已更新 {len(snap)} 个币")
+                    print(f"[deriv] 衍生品指标已更新 {len(hub.derivatives)} 个币")
             except Exception as e:
                 print(f"[deriv] 指标刷新失败: {e}")
-            await asyncio.sleep(60)
+            # 币种变化时立刻醒来补数据，否则等满 60 秒
+            try:
+                await asyncio.wait_for(deriv_wake.wait(), timeout=60)
+                deriv_wake.clear()
+            except asyncio.TimeoutError:
+                pass
 
     async def market_feature_poller():
         """Prefetch OI/funding without blocking the quant decision lock."""

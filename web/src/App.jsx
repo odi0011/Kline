@@ -17,7 +17,6 @@ import PositionHistory from '@/components/arc/position-history/position-history'
 import TopHolders from '@/components/arc/top-holders/top-holders'
 import NewsFeed from '@/components/arc/news-feed/news-feed'
 import QuantMetrics from '@/components/arc/quant-metrics/quant-metrics'
-import SymbolPicker from '@/components/arc/symbol-picker/symbol-picker'
 import ChatDock from '@/components/arc/chat-dock/chat-dock'
 import StrategyPanel from '@/components/arc/strategy-panel/strategy-panel' 
 import DecisionOrchestrator from '@/components/arc/decision-orchestrator/decision-orchestrator'
@@ -846,13 +845,8 @@ export default function App() {
             symbols={orderedSymbols} events={visibleEvents} />
         </div>
         <div className="row2-reserved">
-          <div className="reserved-stack">
-            <QuantMetrics rows={derivatives} symbols={orderedSymbols}
-              chartColors={chartColors} selected={shownSymbols} onToggle={toggleSymbol} />
-            <SymbolPicker pool={pool} selected={shownSymbols}
-              maxSymbols={MAX_SYMBOLS} minSymbols={MIN_SYMBOLS}
-              metrics={derivatives} chartColors={chartColors} onToggle={toggleSymbol} />
-          </div>
+          <QuantMetrics rows={derivatives} symbols={orderedSymbols}
+            chartColors={chartColors} selected={shownSymbols} onToggle={toggleSymbol} />
         </div>
       </div>
       {/* 第三行：决策流水 / 仓位历史 / 交易所公告（各 1/3） */}
