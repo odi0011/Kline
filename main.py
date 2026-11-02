@@ -28,6 +28,7 @@ from feed.market_data import (
     usdt_perpetuals, max_leverage_map, derivatives_snapshot,
 )
 from feed.news import fetch_all as fetch_news, fetch_article
+from feed.news_ai import analyze as analyze_news
 from feed.source import BinanceFuturesStream
 from decision.config import DecisionConfig
 from decision.pool_audit import audit_universe
@@ -666,6 +667,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     # 新闻正文：入库时/后台预取时抓取并落库，前端点开只读库（不再实时爬源站）。
     hub.news_lookup_fn = storage.news_full
+    hub.news_ai_fn = storage.news_ai          # 正文入库时已生成，这里只读
 
     # 正文预取队列：去重 + 单线程串行 + 间隔，避免对源站高频请求触发 429。
     article_queue: dict[str, dict] = {}
@@ -941,6 +943,43 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 print(f"[news] 拉取失败: {e}")
             await asyncio.sleep(60)
 
+    # 新闻 AI 分析：正文一入库就自动跑一次，结果落库；点开弹窗直接读。
+    ai_lock = asyncio.Lock()
+
+    async def _analyze_news(item: dict) -> None:
+        url = str(item.get("url") or "")[:512]
+        if not url:
+            return
+        async with ai_lock:
+            try:
+                res = await asyncio.to_thread(
+                    analyze_news, item, cfg.get("ai", {}) or {}, proxy_cfg or None)
+                if res.get("ok"):
+                    await asyncio.to_thread(storage.save_news_ai, url, res["text"], "done")
+                    print(f"[news] AI 分析已生成 {item.get('source', '?')}: {url[:50]}")
+                else:
+                    # 落 failed 而不是 pending：避免同一条反复重试烧 token
+                    await asyncio.to_thread(storage.save_news_ai, url,
+                                            f"分析失败：{res.get('error', '')}", "failed")
+            except Exception as e:
+                print(f"[news] AI 分析异常: {e}")
+                try:
+                    await asyncio.to_thread(storage.save_news_ai, url, f"分析异常：{e}", "failed")
+                except Exception:
+                    pass
+
+    async def news_ai_poller():
+        """补偿：已有正文但还没分析的新闻（启动前遗留、上次失败的除外）。"""
+        await asyncio.sleep(25)
+        while True:
+            try:
+                rows = await asyncio.to_thread(storage.news_ai_pending, 4)
+                for row in rows:
+                    await _analyze_news(row)
+            except Exception as e:
+                print(f"[news] AI 分析队列失败: {e}")
+            await asyncio.sleep(120)
+
     async def article_prefetcher():
         """后台抓正文：一次一条、间隔 4 秒，失败退避，绝不并发轰炸源站。
 
@@ -970,6 +1009,9 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 if res.get("ok") and content and not res.get("partial"):
                     await asyncio.to_thread(storage.save_news_content, url, content, False)
                     print(f"[news] 正文已入库 {item.get('source', '?')}: {url[:60]}")
+                    # 正文一入库就自动分析，用户点开直接看结果，不用点按钮
+                    ai_item = {**item, "content": content}
+                    asyncio.create_task(_analyze_news(ai_item))
                 else:
                     limited = "429" in error or "限流" in error
                     # 只拿到摘要/失败：也回写一次，避免 30 分钟内反复重试
@@ -1088,7 +1130,8 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     try:
         await asyncio.gather(supervisor(), sweep(), accounts_poller(),
-                             news_poller(), article_prefetcher(), backfill_retry(), pool_auditor(),
+                             news_poller(), article_prefetcher(), news_ai_poller(),
+                             backfill_retry(), pool_auditor(),
                              market_list_poller(), leverage_poller(),
                              derivatives_poller(), market_feature_poller())
     finally:

@@ -124,11 +124,16 @@ class Storage:
             ts BIGINT, summary TEXT, content MEDIUMTEXT,
             partial TINYINT DEFAULT 1, content_state VARCHAR(16) DEFAULT 'pending',
             fetched_ts BIGINT DEFAULT 0, sentiment DOUBLE DEFAULT 0,
+            ai_text MEDIUMTEXT, ai_state VARCHAR(16) DEFAULT 'pending',
+            ai_ts BIGINT DEFAULT 0,
             PRIMARY KEY(url), INDEX idx_news_ts(ts)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         for column, ddl in (
             ("content_state", "ALTER TABLE news ADD COLUMN content_state VARCHAR(16) DEFAULT 'pending'"),
             ("fetched_ts", "ALTER TABLE news ADD COLUMN fetched_ts BIGINT DEFAULT 0"),
             ("sentiment", "ALTER TABLE news ADD COLUMN sentiment DOUBLE DEFAULT 0"),
+            ("ai_text", "ALTER TABLE news ADD COLUMN ai_text MEDIUMTEXT"),
+            ("ai_state", "ALTER TABLE news ADD COLUMN ai_state VARCHAR(16) DEFAULT 'pending'"),
+            ("ai_ts", "ALTER TABLE news ADD COLUMN ai_ts BIGINT DEFAULT 0"),
         ):
             try:
                 self._q(ddl)
@@ -604,6 +609,31 @@ class Storage:
             "FROM news ORDER BY ts DESC LIMIT %s", (min(int(limit), 1000),))
         return [{"url": r[0], "source": r[1], "cat": r[2], "title": r[3],
                  "ts": r[4], "desc": r[5] or "", "hasContent": bool(r[6])} for r in rows]
+
+    # ---- 新闻 AI 分析（正文入库后自动生成，用户点开直接读） ----
+
+    def save_news_ai(self, url: str, text: str, state: str = "done") -> None:
+        if not self.enabled or not url:
+            return
+        self._q("UPDATE news SET ai_text=%s, ai_state=%s, ai_ts=%s WHERE url=%s",
+                ((text or "")[:200_000], state[:16], int(time.time() * 1000), url[:512]))
+
+    def news_ai(self, url: str) -> dict | None:
+        rows = self._qall("SELECT ai_text, ai_state, ai_ts FROM news WHERE url=%s",
+                          (url[:512],))
+        if not rows:
+            return None
+        text, state, ts = rows[0]
+        return {"text": text or "", "state": state or "pending", "ts": ts or 0}
+
+    def news_ai_pending(self, limit: int = 6) -> list[dict]:
+        """已有正文但还没分析过的新闻（按时间从新到旧）。"""
+        rows = self._qall(
+            "SELECT url,source,title,ts,content,summary FROM news "
+            "WHERE content IS NOT NULL AND (ai_state='pending' OR ai_state IS NULL) "
+            "ORDER BY ts DESC LIMIT %s", (min(int(limit), 30),))
+        return [{"url": r[0], "source": r[1], "title": r[2], "ts": r[3],
+                 "content": r[4], "desc": r[5] or ""} for r in rows]
 
     def prune(self, now_ms: int) -> None:
         if now_ms - self._last_prune < 60_000:

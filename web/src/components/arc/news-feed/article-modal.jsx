@@ -3,33 +3,10 @@ import { createPortal } from "react-dom"
 import { X } from "lucide-react"
 import { Button } from "@/components/base/buttons/button"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
-import { ANALYSIS_MODES, analysisKey, readResult, taskBusy, taskById } from "./news-state"
+import { readResult } from "./news-state"
 import styles from "./news-feed.module.css"
 
-const STATUS = { queued: "排队中", pending: "等待执行", running: "运行中", succeeded: "已完成",
-  completed: "已完成", failed: "失败", cancelled: "已取消", canceled: "已取消", paused: "已暂停" }
-const display = (value) => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value, null, 2)
-
-function TaskStatus({ entry, task, label }) {
-  if (!entry) return null
-  const status = task ? STATUS[task.status] || task.status || "等待状态" : "已提交，等待后台状态"
-  return <div className={styles.task} aria-live="polite">
-    <div className={styles.taskHead}>
-      {label && <span className={styles.taskLabel}>{label}</span>}
-      <span className={styles.taskMeta}>{status}{entry.id != null ? ` · 任务 ${entry.id}` : ""}</span>
-    </div>
-    {entry.pending && <p role="status">正在提交后台任务…</p>}
-    {entry.error && <p className={styles.error} role="alert">{entry.error}</p>}
-    {entry.id != null && <>
-      {task?.progress != null && <p className={styles.taskMeta}>后台进度：{display(task.progress)}</p>}
-      {task?.message && <p>{display(task.message)}</p>}
-      {task?.error && <p className={styles.error} role="alert">{display(task.error)}</p>}
-      {task?.result && <pre className={styles.result}>{display(task.result)}</pre>}
-    </>}
-  </div>
-}
-
-export default function ArticleModal({ item, onRead, onAnalyze, entries, tasks, onClose, fallbackFocus }) {
+export default function ArticleModal({ item, onRead, onClose, fallbackFocus }) {
   const dialogRef = useRef(null)
   const closeRef = useRef(null)
   const readRef = useRef(onRead)
@@ -38,6 +15,7 @@ export default function ArticleModal({ item, onRead, onAnalyze, entries, tasks, 
   const metaId = useId()
   const [retry, setRetry] = useState(0)
   const [reading, setReading] = useState({ loading: true, content: "", partial: true, pending: false, error: "" })
+  const [analysis, setAnalysis] = useState({ text: "", state: "" })
   const backdropDown = useRef(false)
 
   useLayoutEffect(() => {
@@ -61,12 +39,16 @@ export default function ArticleModal({ item, onRead, onAnalyze, entries, tasks, 
   useEffect(() => {
     let active = true
     setReading({ loading: true, content: "", partial: true, pending: false, error: "" })
+    setAnalysis({ text: "", state: "", })
     Promise.resolve().then(() => {
       if (!active) return
       if (typeof readRef.current !== "function") throw new Error("正文阅读接口尚未接入")
       return readRef.current(item)
     }).then((result) => {
-      if (active) setReading({ loading: false, ...readResult(result, item.desc || "") })
+      if (!active) return
+      setReading({ loading: false, ...readResult(result, item.desc || "") })
+      // AI 分析随正文一起下发（服务端在正文入库时已生成），这里只展示
+      setAnalysis({ text: String(result?.analysis?.text || ""), state: String(result?.analysis?.state || "") })
     }).catch((error) => {
       if (active) setReading({ loading: false, ...readResult({ ok: false, error: error?.message || "正文读取失败" }, item.desc || "") })
     })
@@ -119,29 +101,15 @@ export default function ArticleModal({ item, onRead, onAnalyze, entries, tasks, 
         <section className={styles.analysis} aria-label="新闻 AI 分析">
           <div className={styles.analysisHead}>
             <h3>AI 分析</h3>
-            <span className={styles.meta}>后台运行，关闭窗口不取消</span>
           </div>
-          {!onAnalyze && <p className={styles.meta}>AI 分析接口尚未接入。</p>}
-          <div className={styles.modeRow}>
-            {ANALYSIS_MODES.map(({ mode, label }) => {
-              const entry = entries.get(analysisKey(item, mode))
-              const task = taskById(tasks, entry?.id)
-              const busy = taskBusy(entry, task)
-              return <Button key={mode} variant={busy ? "secondary" : "primary"} size="small"
-                disabled={!onAnalyze || reading.loading || !reading.content || busy}
-                onClick={() => onAnalyze(item, mode, reading.partial
-                  ? `【仅摘要/部分正文，并非全文】\n${reading.content}` : reading.content)}>
-                {busy ? "分析中" : label}
-              </Button>
-            })}
-          </div>
-          <div className={styles.results}>
-            {ANALYSIS_MODES.map(({ mode, label }) => {
-              const entry = entries.get(analysisKey(item, mode))
-              const task = taskById(tasks, entry?.id)
-              return <TaskStatus key={mode} entry={entry} task={task} label={label} />
-            })}
-          </div>
+          {analysis.text
+            ? <p className={styles.analysisText}>{analysis.text}</p>
+            : <p className={styles.analysisWait}>
+                {reading.loading ? "读取中…"
+                  : reading.pending ? "正文抓取中，完成后自动分析"
+                  : analysis.state === "failed" ? "分析未生成，稍后会自动重试"
+                  : "分析生成中…"}
+              </p>}
         </section>
       </ScrollArea>
     </dialog>, document.body,

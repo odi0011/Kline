@@ -4,7 +4,7 @@ import { BookOpen } from "lucide-react"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import JumpLatest from "@/components/arc/jump-latest/jump-latest"
 import ArticleModal from "./article-modal"
-import { ROW_H, createAnalysisTracker, newsKey, scrollAnchor, sortNews, syncViewport } from "./news-state"
+import { ROW_H, newsKey, scrollAnchor, sortNews, syncViewport } from "./news-state"
 import styles from "./news-feed.module.css"
 
 const OVERSCAN = 10
@@ -63,18 +63,14 @@ function NewsRow({ it, onOpen }) {
 }
 
 /**
- * onRead(item) -> Promise<{ok, content, partial, error}>
- * onAnalyze(item, mode: interpret|impact|risk, content) -> Promise<{ok, id, error}>
- * tasks: server snapshots, matched strictly by the returned task.id.
+ * onRead(item) -> Promise<{ok, content, partial, error, analysis}>
+ * AI 分析由服务端在正文入库时生成，随 onRead 一起返回，前端不再单独触发。
  */
-export default function NewsFeed({ items = EMPTY, onRead, onAnalyze, tasks = EMPTY }) {
+export default function NewsFeed({ items = EMPTY, onRead }) {
   const [scrollTop, setScrollTop] = useState(0)
   const [viewH, setViewH] = useState(0)
   const [follow, setFollow] = useState(true)
   const [selected, setSelected] = useState(null)
-  const [entries, setEntries] = useState(() => new Map())
-  const trackerRef = useRef(null)
-  if (!trackerRef.current) trackerRef.current = createAnalysisTracker(setEntries)
   const viewportRef = useRef(null)
   const followRef = useRef(true)
   const anchorRef = useRef(null)
@@ -139,8 +135,6 @@ export default function NewsFeed({ items = EMPTY, onRead, onAnalyze, tasks = EMP
     setFollow(false)
   }
   const close = useCallback(() => setSelected(null), [])
-  const analyze = typeof onAnalyze === "function" ? (item, mode, content) =>
-    trackerRef.current.submit(item, mode, content, onAnalyze, tasks || EMPTY) : undefined
   const total = list.length
   const winH = Math.max(viewH, 160)
   const start = Math.min(total, Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN))
@@ -171,8 +165,8 @@ export default function NewsFeed({ items = EMPTY, onRead, onAnalyze, tasks = EMP
         )}
       </ScrollArea>
       {!follow && total > 0 && <JumpLatest onClick={jumpLatest} />}
-      {selected && <ArticleModal key={newsKey(selected)} item={selected} onRead={onRead} onAnalyze={analyze}
-        entries={entries} tasks={tasks || EMPTY} onClose={close} fallbackFocus={viewportRef} />}
+      {selected && <ArticleModal key={newsKey(selected)} item={selected} onRead={onRead}
+        onClose={close} fallbackFocus={viewportRef} />}
     </section>
   )
 }

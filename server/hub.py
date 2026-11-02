@@ -63,6 +63,7 @@ class BroadcastHub:
         self.news_article_fn = None        # 旧接口：按需抓正文（已不使用，保留兼容）
         self.news_lookup_fn = None         # url -> 存档（含正文）
         self.news_enqueue_fn = None        # url -> None：把缺正文的新闻排进后台预取队列
+        self.news_ai_fn = None             # url -> {text,state,ts}：已生成的 AI 分析
         self._article_cache: dict = {}
         self._article_slots = asyncio.Semaphore(2)
         self.quant_fn = None              # 量化快照（main 注入）
@@ -140,7 +141,10 @@ class BroadcastHub:
         return server
 
     async def _news_article(self, url: str) -> dict:
-        """新闻正文：优先存档里的正文；只有摘要时返回摘要并请求后台补抓。"""
+        """新闻正文 + 已生成的 AI 分析。
+
+        分析在正文入库时就已经跑好并落库，这里只读，不触发新的模型调用。
+        """
         # 只接受当前来源列表里的 URL：客户端不能拿任意字符串来探库。
         item = next((it for it in self.news if it.get("url") == url), None)
         if item is None:
@@ -158,10 +162,18 @@ class BroadcastHub:
         if not full:
             return {"ok": False, "error": "此新闻尚未存档，请稍后刷新"}
 
+        analysis = None
+        if self.news_ai_fn:
+            try:
+                analysis = await asyncio.to_thread(self.news_ai_fn, url)
+            except Exception:
+                analysis = None
+
         content = full.get("content")
         summary = full.get("desc") or ""
         if content:
             return {"ok": True, "content": content, "partial": bool(full.get("partial")),
+                    "analysis": analysis,
                     "error": "" if not full.get("partial") else "仅摘要 / 部分正文，并非全文"}
 
         # 只有摘要：让后台队列补抓一次（不在本请求里联网）
@@ -171,7 +183,7 @@ class BroadcastHub:
             except Exception:
                 pass
         return {"ok": bool(summary), "content": summary, "partial": True,
-                "pending": True,
+                "pending": True, "analysis": analysis,
                 "error": "正文仍在后台抓取，当前显示 RSS 摘要" if summary else "正文抓取中，请稍后重试"}
 
     def _snapshot(self) -> str:

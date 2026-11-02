@@ -7,6 +7,7 @@ import functools
 import json
 import logging
 import math
+import re
 import os
 import time
 import uuid
@@ -16,6 +17,43 @@ from datetime import datetime
 from ai.agent_tools import (TOOLS, TOOL_NAMES, bounded, clean, preference_update,
                             read_snapshot, validate_preference)
 from ai.provider import chat_completion
+
+# 回复长度硬限制：单条最多 MAX_SENTENCES 句；超长回复切成多条气泡发出。
+MAX_SENTENCES = 3
+# 模型按要求用这个分隔符自己切分；没切也由服务端兜底
+REPLY_SPLIT = "|||"
+
+
+def _split_by_sentences(text: str) -> list[str]:
+    """按中英文句末标点断句，每 MAX_SENTENCES 句一条。"""
+    parts = [seg.strip() for seg in re.split(r"(?<=[。！？!?])", text) if seg.strip()]
+    if not parts:
+        return [text.strip()] if text.strip() else []
+    out = []
+    for i in range(0, len(parts), MAX_SENTENCES):
+        piece = "".join(parts[i:i + MAX_SENTENCES]).strip()
+        if piece:
+            out.append(piece)
+    return out
+
+
+def split_reply(text) -> list[str]:
+    """把一条回复拆成多条短消息。
+
+    优先用模型给的 ||| 分隔；没有分隔就按句子边界切，每 MAX_SENTENCES 句一条。
+    绝不把几千字塞进一个气泡——前端会撑爆，人也没法读。
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    chunks = [part.strip() for part in raw.split(REPLY_SPLIT) if part.strip()]
+    if len(chunks) > 1:
+        out = []
+        for chunk in chunks:
+            out.extend(_split_by_sentences(chunk))
+        return out
+    return _split_by_sentences(raw)
+
 
 SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依据、可追踪的分析。
 必须通过提供的真实工具读取所需数据，不得编造工具执行、行情或持仓。
@@ -637,7 +675,23 @@ class AgentManager:
         try:
             message.update(status="running", startedAt=now_ms())
             result = await asyncio.wait_for(self._agent_loop(message, prompt, model, history), TASK_TIMEOUT)
-            message.update(status="succeeded", content=result["reply"], usage=result["usage"], model=result["model"])
+            # 长回复切成多条：第一条挂在原消息上，其余作为后续气泡追加。
+            # 模型即使不听提示词，也不会把几千字塞进一个气泡。
+            pieces = split_reply(result["reply"]) or [""]
+            message.update(status="succeeded", content=pieces[0],
+                           usage=result["usage"], model=result["model"])
+            if len(pieces) > 1:
+                extra = []
+                for idx, piece in enumerate(pieces[1:], start=2):
+                    extra.append({
+                        "id": f"{message_id}-{idx}", "role": "assistant",
+                        "content": piece, "status": "succeeded", "ts": now_ms(),
+                        "model": result["model"], "steps": [],
+                        "finishedAt": now_ms(), "ms": 0,
+                        "progress": {"phase": "succeeded", "round": 0, "maxRounds": MAX_ROUNDS},
+                    })
+                self.chat = (self.chat + extra)[-40:]
+                message["continued"] = len(pieces)
         except asyncio.CancelledError:
             message.update(status="cancelled", error="服务关闭，回复中断" if self._closing else "用户取消")
         except Exception as exc:
