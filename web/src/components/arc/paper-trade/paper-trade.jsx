@@ -13,6 +13,7 @@
 import { memo } from "react"
 import { RefreshCw } from "lucide-react"
 import CoinAvatar from "@/components/ui/coin-avatar"
+import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import styles from "./paper-trade.module.css"
 
 const fmt = (v, digits = 2) => {
@@ -27,28 +28,31 @@ const fmt = (v, digits = 2) => {
 }
 
 /** 10 根K线的小图：只画实体和影线，不引图表库——这里只要形状，不要交互。
-    四条水平线分别是 止盈 / 入场 / 止损 / 强平。 */
+    四条参考线分别是 止盈 / 入场 / 止损 / 强平。 */
 function MiniCandles({ candles, pos }) {
   const list = Array.isArray(candles) ? candles : []
   if (list.length < 2) return <div className={styles.chartEmpty} />
   const W = 168
   const H = 62
   const pad = 2
-  // 纵轴要把四条价位线都包进来，否则线会跑出画面
-  const prices = []
+
+  // 纵轴**只按K线的最高最低**算，不把价位线算进去。
+  // 之前把强平价也纳入范围：BTC 多 20x 的强平在入场下方 4.7%，
+  // 而 10 根K线的波动只有 0.2%，结果K线被压成一条细线（截图里那个样子）。
+  const highs = [], lows = []
   for (const c of list) {
-    for (const k of ["h", "l"]) {
-      const v = Number(c?.[k])
-      if (Number.isFinite(v)) prices.push(v)
-    }
+    const h = Number(c?.h), l = Number(c?.l)
+    if (Number.isFinite(h)) highs.push(h)
+    if (Number.isFinite(l)) lows.push(l)
   }
-  for (const k of ["tp", "sl", "entry", "liq"]) {
-    const v = Number(pos?.[k])
-    if (Number.isFinite(v)) prices.push(v)
-  }
-  if (!prices.length) return <div className={styles.chartEmpty} />
-  const lo = Math.min(...prices)
-  const hi = Math.max(...prices)
+  if (!highs.length || !lows.length) return <div className={styles.chartEmpty} />
+  let lo = Math.min(...lows)
+  let hi = Math.max(...highs)
+  // 留一点上下留白，同时保证范围不为 0
+  const rawSpan = hi - lo
+  const breathe = rawSpan > 0 ? rawSpan * 0.18 : Math.max(1e-9, hi * 0.001)
+  lo -= breathe
+  hi += breathe
   const span = hi - lo || 1
   const y = (v) => pad + (H - pad * 2) * (1 - (Number(v) - lo) / span)
   const step = W / list.length
@@ -64,7 +68,23 @@ function MiniCandles({ candles, pos }) {
   return (
     <svg className={styles.chart} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden>
       {lines.map((l) => {
-        const yy = y(pos[l.key])
+        const v = Number(pos[l.key])
+        // 价位在可视区外时贴边画一条短标记，而不是把整个纵轴撑开
+        const above = v > hi
+        const below = v < lo
+        const yy = above ? pad + 3 : below ? H - pad - 3 : y(v)
+        if (above || below) {
+          const ty = above ? yy + 6.5 : yy - 1.5
+          return (
+            <g key={l.key}>
+              <line x1={0} x2={W} y1={yy} y2={yy} stroke={l.color}
+                strokeWidth="0.8" strokeDasharray="2 2" opacity="0.45" />
+              <text x={W - 2} y={ty} fill={l.color} fontSize="5" textAnchor="end" opacity="0.8">
+                {l.label}{above ? "↑" : "↓"}
+              </text>
+            </g>
+          )
+        }
         return (
           <g key={l.key}>
             <line x1={0} x2={W} y1={yy} y2={yy} stroke={l.color}
@@ -95,11 +115,18 @@ function MiniCandles({ candles, pos }) {
   )
 }
 
-const PaperCard = memo(function PaperCard({ pos, onRefresh, busy }) {
+const PaperCard = memo(function PaperCard({ pos, onRefresh, busy, price }) {
   if (!pos) return null
   const long = pos.direction === "long"
-  const pnl = Number(pos.upnl) || 0
-  const pnlPct = Number(pos.upnlPct) || 0
+  // 实时价：订单簿中间价每 200ms 一推，比 5 秒一轮的 quant 快照新得多。
+  // 拿不到时退回快照里的 mark，再退入场价。
+  const mark = Number.isFinite(Number(price)) && Number(price) > 0
+    ? Number(price)
+    : (Number(pos.mark) || Number(pos.entry))
+  // 浮盈用实时价在本地重算——不然数字要等 5 秒才跳一次
+  const pnl = (mark - Number(pos.entry)) * Number(pos.qty) * (long ? 1 : -1)
+  const margin = Number(pos.margin) || 0
+  const pnlPct = margin ? (pnl / margin) * 100 : 0
   const tone = pnl > 0 ? "up" : pnl < 0 ? "down" : "flat"
   // 剩余时间
   const leftMs = Math.max(0, (Number(pos.expires_ts) || 0) - Date.now())
@@ -164,18 +191,32 @@ const PaperCard = memo(function PaperCard({ pos, onRefresh, busy }) {
   )
 })
 
-export default function PaperTrade({ rows, onRefresh, busySymbol }) {
+export default function PaperTrade({ rows, depths, onRefresh, busySymbol }) {
   const list = Array.isArray(rows) ? rows : []
+  // 订单簿中间价：bids/asks 都是真实挂单，取最优买一卖一的中点
+  const midOf = (sym) => {
+    const d = depths?.[sym]
+    if (!d) return null
+    const bid = Number(d.bids?.[0]?.[0])
+    const ask = Number(d.asks?.[0]?.[0])
+    if (Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0) return (bid + ask) / 2
+    if (Number.isFinite(bid) && bid > 0) return bid
+    if (Number.isFinite(ask) && ask > 0) return ask
+    return null
+  }
   return (
     <section className={styles.root} aria-label="模拟仓">
-      <div className={styles.cards}>
+      {/* 横向滚动沿用统一的 ScrollArea（右上角玻璃箭头翻页 + 边缘渐隐），
+          和 K线形态图鉴、大户持仓是同一套，不自己写 overflow。 */}
+      <ScrollArea orientation="horizontal" scrollbars="auto" scrollButtons fade={14}
+        label="模拟仓" className={styles.scroll} viewportClassName={styles.cards}>
         {list.length === 0
           ? <p className={styles.empty}>等待评估数据…</p>
           : list.map((pos) => (
-            <PaperCard key={pos.symbol} pos={pos} onRefresh={onRefresh}
-              busy={busySymbol === pos.symbol} />
+            <PaperCard key={pos.symbol} pos={pos} price={midOf(pos.symbol)}
+              onRefresh={onRefresh} busy={busySymbol === pos.symbol} />
           ))}
-      </div>
+      </ScrollArea>
     </section>
   )
 }

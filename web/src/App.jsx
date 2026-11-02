@@ -147,6 +147,7 @@ export default function App() {
   const [agentStats, setAgentStats] = useState(null)            // 输入框上方性能条：TPS/首字/缓存/上下文
   const [agentNotice, setAgentNotice] = useState("")
   const [derivatives, setDerivatives] = useState({})          // 币安衍生品指标快照
+  const [depths, setDepths] = useState({})                    // 订单簿（实时买一卖一，用于模拟仓实时盈亏）
   const [structureVersion, setStructureVersion] = useState(0)   // 结构位更新触发决策流刷新
   const liveRef = useRef(null)
   const cardsViewportRef = useRef(null)
@@ -279,6 +280,9 @@ export default function App() {
     })
     const offNews = live.on('news', (m) => setNewsItems(m.items || []))
     const offDeriv = live.on('derivatives', (m) => setDerivatives(m.rows || {}))
+    // 订单簿每 200ms 一推：模拟仓用它的中间价算实时盈亏，
+    // 不用等 5 秒一轮的 quant 快照
+    const offDepths = live.on('depths', (m) => setDepths(m.depths || {}))
     // 模拟仓手动刷新完成：立刻解除按钮的忙碌态（不必等下一次全量快照）
     const offPaper = live.on('paper_refreshed', () => setPaperBusy(''))
     const offAgent = live.on('agent_state', (m) => {
@@ -327,7 +331,7 @@ export default function App() {
       setStructureVersion((v) => v + 1)
     })
     live.connect()
-    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offStructureInit(); offStructure(); offQEvent(); offTrades(); offTrade(); offNews(); offDeriv(); offPaper(); offAgent(); offAgentAck(); offAiModels(); offAiTest(); offResume(); live.close() }
+    return () => { offHit(); offStats(); offSymStats(); offAcc(); offSettings(); offQuant(); offQEvents(); offStructureInit(); offStructure(); offQEvent(); offTrades(); offTrade(); offNews(); offDeriv(); offDepths(); offPaper(); offAgent(); offAgentAck(); offAiModels(); offAiTest(); offResume(); live.close() }
   }, [])
 
   // ==================== 命中动画：串行队列 ====================
@@ -869,7 +873,7 @@ export default function App() {
           flashRow={flashRow} streamRef={streamRef}
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
         <div className="row3-stack">
-          <PaperTrade rows={quantSnap?.analysis?.paper}
+          <PaperTrade rows={quantSnap?.analysis?.paper} depths={depths}
             onRefresh={refreshPaper} busySymbol={paperBusy} />
           <PositionHistory trades={quantTrades} chartColors={chartColors} />
         </div>
