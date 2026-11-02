@@ -635,17 +635,33 @@ class Storage:
         return [{"url": r[0], "source": r[1], "title": r[2], "ts": r[3],
                  "content": r[4], "desc": r[5] or ""} for r in rows]
 
+    @staticmethod
+    def _keep_since(now_ms: int, days: float) -> int:
+        """保留 N 个完整自然日（向下对齐到整点边界）。
+
+        原来直接用 now - N*86400000 截断，会把第 N 天上午的数据削掉一半，
+        看起来就像"站点突然被清空了一段"。按整天对齐后，被保留的那一天
+        永远是完整的。
+        """
+        delta = int(days * 86400_000)
+        cutoff = int(now_ms) - delta
+        if days >= 1:
+            # 对齐到 UTC 零点：那一天整天都保留
+            return cutoff - (cutoff % 86400_000)
+        return cutoff
+
     def prune(self, now_ms: int) -> None:
         if now_ms - self._last_prune < 60_000:
             return
         self._last_prune = now_ms
         self._q("DELETE FROM candles WHERE open_time < %s", (now_ms - self.keep_ms,))
-        self._q("DELETE FROM hits WHERE ts < %s", (now_ms - self.hit_ms,))
+        self._q("DELETE FROM hits WHERE ts < %s",
+                (self._keep_since(now_ms, self.hit_ms / 86400_000),))
         # 权益采样保留 2 天（曲线只看最近 8 小时，多留一天便于回看）
-        self._q("DELETE FROM equity WHERE ts < %s", (now_ms - 2 * 86400_000,))
+        self._q("DELETE FROM equity WHERE ts < %s", (self._keep_since(now_ms, 2),))
         # 决策流水保留 3 天（数据更迭快，留够回看即可）
-        self._q("DELETE FROM quant_events WHERE ts < %s", (now_ms - 3 * 86400_000,))
+        self._q("DELETE FROM quant_events WHERE ts < %s", (self._keep_since(now_ms, 3),))
         # 仓位历史保留 7 天
-        self._q("DELETE FROM quant_trades WHERE ts < %s", (now_ms - 7 * 86400_000,))
+        self._q("DELETE FROM quant_trades WHERE ts < %s", (self._keep_since(now_ms, 7),))
         # 新闻存档保留 3 天
-        self._q("DELETE FROM news WHERE ts < %s", (now_ms - 3 * 86400_000,))
+        self._q("DELETE FROM news WHERE ts < %s", (self._keep_since(now_ms, 3),))

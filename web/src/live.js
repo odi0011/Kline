@@ -193,6 +193,7 @@ export class LiveClient {
       this._emitKey('quant_trade', m.trade)
     } else if (m.type === 'derivatives') {
       this.derivatives = m.rows || {}
+      this.derivativesError = m.error || ""
       this.derivativesTs = m.ts || 0
       this._emitKey('derivatives', m)
     } else if (m.type === 'news') {

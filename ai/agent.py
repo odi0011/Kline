@@ -105,6 +105,40 @@ def _text(value, name, limit, required=False):
     return value
 
 
+# 无工具模式：服务商忽略 tools 时，退回纯文本对话，并明确告知它没有能力。
+NO_TOOLS_NOTE = (
+    "【本次对话没有可用的工具】你不要尝试调用任何工具，也无法读取实时行情、"
+    "账户、持仓、新闻或系统状态。只能基于对话里已经出现的信息回答；"
+    "凡是需要实时数据的问题，必须直接说明你看不到数据，"
+    "绝不能声称已经查询、下单、平仓或修改过任何内容。"
+)
+# 这些词意味着"声称做了实际操作"——在没有工具调用记录时不能放行
+_EXECUTION_CLAIM = re.compile(
+    r"已(?:执行|下单|开仓|平仓|撤单|提交|挂单|修改|设置|调整|暂停|恢复|删除|保存|查询到)"
+    r"|(?:已经|刚刚)(?:下|开|平|撤)了?单"
+    r"|order\s*(?:placed|filled)|executed\s+the\s+trade",
+    re.I,
+)
+
+
+def _claims_execution(text: str) -> bool:
+    """模型是否在没有任何工具调用的情况下声称做过操作。"""
+    return bool(_EXECUTION_CLAIM.search(str(text or "")))
+
+
+# 模型自述"没有工具 / 不能调用工具"——说明服务商把 tools 吞了，
+# 这一轮回答不可信（它本该读数据却读不到），要走无工具降级。
+_NO_TOOL_CLAIM = re.compile(
+    r"无法(?:调用|使用|访问)(?:任何)?工具|没有(?:可用的|权限使用)?工具"
+    r"|不能(?:调用|使用|访问)(?:任何)?工具|tool[s]?\s+(?:not|unsupported|unavailable)",
+    re.I,
+)
+
+
+def _says_no_tools(text: str) -> bool:
+    return bool(_NO_TOOL_CLAIM.search(str(text or "")))
+
+
 MAX_ATTACHMENTS = 4
 MAX_IMAGE_BYTES = 2_000_000      # 单张图解码后上限；再大 base64 会把状态文件和 WS 撑爆
 MAX_TEXT_FILE_BYTES = 200_000
@@ -639,6 +673,24 @@ class AgentManager:
         finally:
             self._http_slots.release()
 
+    async def _http_notext(self, config, model, messages, proxy, deadline, note):
+        """无工具模式：请求不带 tools，并追加一段"你没有工具"的说明。"""
+        await self._http_slots.acquire()
+        try:
+            payload = copy.deepcopy(messages) + [{"role": "system", "content": note}]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("任务超过 15 分钟时间限制")
+            result = await asyncio.shield(
+                asyncio.get_running_loop().run_in_executor(
+                    _HTTP_POOL, functools.partial(
+                        chat_completion, config, model, payload, proxy=proxy,
+                        tools=None, tool_choice=None,
+                        timeout=min(STEP_TIMEOUT, remaining))))
+            return result if isinstance(result, dict) else {"ok": False, "error": "模型响应格式无效"}
+        finally:
+            self._http_slots.release()
+
     async def _agent_loop(self, target, prompt, model, history=None, attachments=None):
         config, selected = self._model(model)  # 配置、proxy、context 均不在线程中读取。
         proxy = self.proxy_fn() or None
@@ -668,12 +720,27 @@ class AgentManager:
             if not isinstance(calls, list) or len(calls) > 8:
                 raise RuntimeError("tool_calls 无效或超过每轮 8 次限制")
             if not calls:
-                if round_number == 1:
-                    raise RuntimeError("服务商不支持 tools 或忽略 required；未执行真实工具")
+                # 模型没调用工具，直接给了回答。分两种情况：
+                #   1) 只是不想用工具（简单寒暄）→ 合法，直接返回；
+                #   2) 服务商根本不支持 tools（忽略 required）→ 不能采信这一轮，
+                #      因为它可能凭空声称"已执行"。改成显式无工具模式重问一次，
+                #      并明确告知它没有任何能力，只能基于已知信息回答。
                 reply = result.get("reply")
-                if not isinstance(reply, str) or not reply.strip():
-                    raise RuntimeError("模型没有返回最终文本")
-                return {"reply": reply[:20000], "usage": usage, "model": selected["id"]}
+                usable = (isinstance(reply, str) and reply.strip()
+                          and not _claims_execution(reply) and not _says_no_tools(reply))
+                if usable:
+                    return {"reply": reply[:20000], "usage": usage, "model": selected["id"]}
+                if round_number == 1:
+                    # 模型说"我没有工具"或声称已执行 → 服务商很可能忽略了 tools。
+                    # 换成无工具模式重问一次，并明确告知它没有任何能力。
+                    result2 = await self._http_notext(config, selected["id"], messages, proxy,
+                                                      deadline, NO_TOOLS_NOTE)
+                    reply2 = result2.get("reply") if isinstance(result2, dict) else ""
+                    if (isinstance(reply2, str) and reply2.strip()
+                            and not _claims_execution(reply2)):
+                        return {"reply": reply2[:20000], "usage": usage, "model": selected["id"]}
+                    raise RuntimeError("服务商不支持工具调用，改为无工具模式后仍无法给出可信回答")
+                raise RuntimeError("模型既未调用工具，也没有给出回答")
             normalized = []
             seen = set()
             for call in calls:

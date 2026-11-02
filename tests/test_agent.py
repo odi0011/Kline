@@ -625,7 +625,9 @@ def test_eight_round_limit_is_real_tool_log(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("response,part", [
-    ({"ok": True, "reply": "已执行"}, "tools"), ({"ok": False, "error": "unsupported tools"}, "tools"),
+    # 没有工具调用却声称"已执行" → 安全底线，必须失败（不能凭空声称做过操作）
+    ({"ok": True, "reply": "已执行"}, "工具"),
+    ({"ok": False, "error": "unsupported tools"}, "tools"),
     ({"ok": True, "tool_calls": [tool_call(call_id=str(i)) for i in range(9)]}, "8"),
     ({"ok": True, "tool_calls": [tool_call(), tool_call()]}, "ID"),
     ({"ok": True, "tool_calls": [None]}, "格式"),
@@ -742,3 +744,29 @@ def test_provider_text_still_supported_for_non_agent_callers(monkeypatch):
     monkeypatch.setattr("ai.provider._request", request)
     result = chat_completion({"base": "https://example.invalid"}, "m", [])
     assert result["ok"] and result["reply"] == "hello"
+
+
+def test_provider_without_tools_falls_back_instead_of_failing(tmp_path, monkeypatch):
+    """服务商忽略 tools 时退回无工具模式，而不是每条对话都报错。"""
+    calls = []
+
+    def provider(*args, **kwargs):
+        calls.append({"tools": kwargs.get("tools"), "tool_choice": kwargs.get("tool_choice")})
+        if kwargs.get("tools") is None:
+            # 无工具模式：正常给出基于已有信息的回答
+            return {"ok": True, "reply": "我看不到实时数据，无法确认当前持仓。"}
+        # 带工具时这个服务商直接忽略 tool_choice，只回文本（模拟不支持 tools）
+        return {"ok": True, "reply": "我无法调用工具。"}
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch, provider=provider)
+        task = await create(manager)
+        await finished(manager, task)
+        assert task["status"] == "succeeded", task.get("error")
+        assert "无法确认" in task["result"]
+        # 第一次带 tools 失败，第二次以 tools=None 重问成功
+        assert calls[0]["tools"] is not None
+        assert calls[1]["tools"] is None
+        await manager.stop()
+
+    asyncio.run(scenario())

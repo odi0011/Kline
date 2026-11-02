@@ -47,7 +47,9 @@ def analyze(item: dict, cfg: dict, proxy: str | None = None) -> dict:
     )
     if not result.get("ok"):
         return {"ok": False, "error": str(result.get("error") or "分析失败")[:300]}
-    text = str(result.get("content") or "").strip()
+    # chat_completion 返回的是 reply（不是 content）；用错字段会导致
+    # 每条新闻都落成"模型没有返回内容"，但模型其实答了。
+    text = str(result.get("reply") or "").strip()
     if not text:
         return {"ok": False, "error": "模型没有返回内容"}
     return {"ok": True, "text": text[:4000], "model": selected["id"]}

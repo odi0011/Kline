@@ -71,7 +71,7 @@ function HolderCard({ symbol, row, chartColors }) {
   )
 }
 
-export default function TopHolders({ rows, symbols, chartColors }) {
+export default function TopHolders({ rows, symbols, chartColors, error = "" }) {
   const list = useMemo(() => {
     const order = Array.isArray(symbols) && symbols.length ? symbols : Object.keys(rows || {})
     return order.map((s) => [s, rows?.[s]]).filter(([, r]) => r?.topPositionLongPct != null)
@@ -79,7 +79,9 @@ export default function TopHolders({ rows, symbols, chartColors }) {
 
   if (!list.length) {
     return <section className={styles.root} aria-label="大户持仓">
-      <p className={styles.empty}>等待币安大户持仓数据…</p>
+      <p className={styles.empty} title={error || undefined}>
+        {error ? `大户持仓取数失败：${error}` : "等待币安大户持仓数据…"}
+      </p>
     </section>
   }
 

@@ -77,6 +77,7 @@ class BroadcastHub:
         self.structures: dict[tuple, dict] = {}   # (sym, iv) -> 最近一次结构分析
         self.derivatives: dict[str, dict] = {}    # symbol -> 币安衍生品指标快照
         self.derivatives_ts = 0                   # 该批快照的采集时刻
+        self.derivatives_error = ""               # 最近一次取数失败原因（前端显示，便于排查）
 
     # ---- 聚合器回调（与 PatternEngine 并联） ----
 
@@ -263,7 +264,8 @@ class BroadcastHub:
                     pass
             if self.derivatives:
                 await ws.send(json.dumps({"type": "derivatives", "rows": self.derivatives,
-                                          "ts": self.derivatives_ts},
+                                          "ts": self.derivatives_ts,
+                                          "error": self.derivatives_error},
                                          separators=(",", ":")))
             if self.news:
                 await ws.send(json.dumps({"type": "news", "items": self.news},

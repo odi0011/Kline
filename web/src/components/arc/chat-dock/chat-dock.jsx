@@ -2,7 +2,7 @@
    能力：拖动移动、折叠到左下角设置按钮上方（弹性粘性动画）、玻璃材质。
    只显示气泡对话——思考过程与工具调用不展示给用户。
    消息/发送走 App 注入的 onSend（WS agent_action），本组件不碰网络。 */
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { motion, useReducedMotion } from "motion/react"
 import { ChevronDown, Loader2 } from "lucide-react"
@@ -58,14 +58,15 @@ const MessageBubble = memo(function MessageBubble({ message }) {
   const mine = message.role === "user"
   const text = typeof message.content === "string" ? message.content : ""
   const busy = message.status === "running" || message.status === "queued"
+  // 还没出字的回复只显示三点，不写"正在处理"——那行字挤在气泡里很难看
+  const waiting = busy && !text
   return (
     <div className={styles.bubbleRow} data-role={mine ? "user" : "bot"}>
-      <div className={styles.bubble} data-role={mine ? "user" : "bot"}>
+      <div className={styles.bubble} data-role={mine ? "user" : "bot"} data-waiting={waiting || undefined}>
         {text ? <p className={styles.text}>{text}</p> : null}
-        {busy && (
-          <span className={styles.pending}>
-            <Loader2 size={11} className={styles.spin} aria-hidden />
-            {STATUS_TEXT[message.status] || "正在处理"}
+        {waiting && (
+          <span className={styles.typing} aria-label="正在生成回复">
+            <i /><i /><i />
           </span>
         )}
         {message.status === "failed" && (
@@ -79,6 +80,19 @@ const MessageBubble = memo(function MessageBubble({ message }) {
     </div>
   )
 })
+
+/** 时间分隔：两条消息相隔超过 5 分钟才插一行，和微信/Telegram 一致 */
+const TIME_GAP_MS = 5 * 60 * 1000
+const dayLabel = (ts) => {
+  const d = new Date(ts)
+  const today = new Date()
+  const sameDay = d.toDateString() === today.toDateString()
+  const y = new Date(today.getTime() - 86400000).toDateString() === d.toDateString()
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
+  if (sameDay) return hm
+  if (y) return `昨天 ${hm}`
+  return `${d.getMonth() + 1}/${d.getDate()} ${hm}`
+}
 
 export default function ChatDock({ messages = [], onSend, connected = true, onCancel, busy = false }) {
   const reduced = useReducedMotion()
@@ -238,7 +252,16 @@ export default function ChatDock({ messages = [], onSend, connected = true, onCa
 
         <div className={styles.thread} ref={scrollRef}>
           {messages.length === 0 && <p className={styles.empty}>问市场、持仓或系统。</p>}
-          {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
+          {messages.map((message, index) => {
+            const previous = messages[index - 1]
+            const gap = !previous || (Number(message.ts) || 0) - (Number(previous.ts) || 0) > TIME_GAP_MS
+            return (
+              <Fragment key={message.id}>
+                {gap && message.ts ? <p className={styles.timeDivider}>{dayLabel(Number(message.ts))}</p> : null}
+                <MessageBubble message={message} />
+              </Fragment>
+            )
+          })}
         </div>
 
         <div className={styles.composer}>

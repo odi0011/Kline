@@ -85,12 +85,24 @@ export default function ArticleModal({ item, onRead, onClose, fallbackFocus }) {
         </div>
         <button type="button" ref={closeRef} className={styles.close} aria-label="关闭新闻正文" onClick={onClose}><X size={18} /></button>
       </header>
+      {/* AI 分析紧跟标题：这是用户最先要看的东西，不该埋在正文末尾 */}
+      <section className={styles.analysisTop} aria-label="新闻 AI 分析">
+        <span className={styles.analysisTag}>AI 分析</span>
+        {analysis.text
+          ? <p className={styles.analysisText}>{analysis.text}</p>
+          : <p className={styles.analysisWait}>
+              {reading.loading ? "读取中…"
+                : reading.pending ? "正文抓取中，完成后自动分析"
+                : analysis.state === "failed" ? "分析未生成，稍后会自动重试"
+                : "分析生成中…"}
+            </p>}
+      </section>
       <ScrollArea orientation="vertical" fade={20} scrollbars="auto" label="新闻正文"
         className={styles.modalScroll} viewportClassName={styles.modalBody}>
         {reading.loading ? <p role="status">正在读取正文…</p> : <>
           {reading.pending
             ? <p className={styles.pendingBody}>正文正在后台抓取，先显示 RSS 摘要；稍后重新打开即可看到全文。</p>
-            : reading.partial && <p className={styles.partial}>仅摘要 / 部分正文，并非全文。AI 将基于有限内容分析。</p>}
+            : reading.partial && <p className={styles.partial}>仅摘要 / 部分正文，并非全文。</p>}
           {reading.error && <div className={styles.error} role="alert">{reading.error}</div>}
           {reading.content && <div className={styles.article}>{reading.content}</div>}
           {(reading.error || (reading.partial && !reading.pending)) && (
@@ -98,19 +110,6 @@ export default function ArticleModal({ item, onRead, onClose, fallbackFocus }) {
               onClick={() => setRetry((n) => n + 1)}>重新读取</Button>
           )}
         </>}
-        <section className={styles.analysis} aria-label="新闻 AI 分析">
-          <div className={styles.analysisHead}>
-            <h3>AI 分析</h3>
-          </div>
-          {analysis.text
-            ? <p className={styles.analysisText}>{analysis.text}</p>
-            : <p className={styles.analysisWait}>
-                {reading.loading ? "读取中…"
-                  : reading.pending ? "正文抓取中，完成后自动分析"
-                  : analysis.state === "failed" ? "分析未生成，稍后会自动重试"
-                  : "分析生成中…"}
-              </p>}
-        </section>
       </ScrollArea>
     </dialog>, document.body,
   )

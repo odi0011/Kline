@@ -1087,27 +1087,44 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             # 每轮重读 symbol_filter：用户新加的币要立刻有指标，
             # 否则它会在最长一个周期里显示「等待数据」。
             scope = list(quant.symbol_filter or symbols)
-            missing = [s for s in scope if s not in hub.derivatives]
-            active = missing or scope
+            # 每次都刷新全量：只补 missing 会让"这轮失败"的币被永久跳过，
+            # 前端就一直停在"等待数据"。
+            active = scope
             try:
                 rows = await asyncio.gather(*[
                     asyncio.to_thread(derivatives_snapshot, sym, "5m", proxy_cfg or None)
                     for sym in active
                 ], return_exceptions=True)
                 snap = {}
+                failures = []
                 for sym, row in zip(active, rows):
                     if isinstance(row, dict) and row.get("price") is not None:
                         snap[sym] = row
+                    else:
+                        failures.append(f"{sym}:{type(row).__name__ if isinstance(row, Exception) else '无数据'}")
                 if snap:
-                    # 合并进已有快照（补缺时不能把其它币冲掉），并扔掉不再展示的币
                     merged = {**hub.derivatives, **snap}
                     hub.derivatives = {k: v for k, v in merged.items() if k in set(scope)} or merged
                     hub.derivatives_ts = KlineAggregator.now_ms()
+                    hub.derivatives_error = ""
                     await hub.broadcast({"type": "derivatives", "rows": hub.derivatives,
-                                         "ts": hub.derivatives_ts})
+                                         "ts": hub.derivatives_ts, "error": ""})
                     print(f"[deriv] 衍生品指标已更新 {len(hub.derivatives)} 个币")
+                if failures:
+                    # 把失败原因一并下发：线上只看"等待数据"没法排查
+                    hub.derivatives_error = f"{len(failures)} 个币取数失败：{failures[0]}"
+                    await hub.broadcast({"type": "derivatives", "rows": hub.derivatives,
+                                         "ts": hub.derivatives_ts,
+                                         "error": hub.derivatives_error})
+                    print(f"[deriv] 部分失败 {len(failures)} 个: {failures[:3]}")
             except Exception as e:
+                hub.derivatives_error = f"指标刷新失败: {e}"
                 print(f"[deriv] 指标刷新失败: {e}")
+                try:
+                    await hub.broadcast({"type": "derivatives", "rows": hub.derivatives,
+                                         "ts": hub.derivatives_ts, "error": hub.derivatives_error})
+                except Exception:
+                    pass
             # 币种变化时立刻醒来补数据，否则等满 60 秒
             try:
                 await asyncio.wait_for(deriv_wake.wait(), timeout=60)

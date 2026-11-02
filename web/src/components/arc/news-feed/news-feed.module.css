@@ -108,20 +108,25 @@
 .pendingBody { border-left: 3px solid #94a3b8; background: #f6f8fb; color: #526070; padding: 10px 12px; line-height: 1.65; }
 .error { color: #b42318; margin: 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .close:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
-.analysis { margin-top: 24px; padding-top: 15px; border-top: 1px solid #e9edf3; }
-.analysisHead {
-  display: flex; align-items: baseline; justify-content: space-between;
-  gap: 12px; flex-wrap: wrap; margin-bottom: 10px;
+/* AI 分析（标题正下方，固定在滚动区之外，看正文时始终可见） */
+.analysisTop {
+  flex: none;
+  padding: 12px 24px 14px;
+  border-bottom: 1px solid #e9edf3;
+  background: #fbfcfe;
 }
-.analysisHead h3 { font-size: 14px; margin: 0; }
-.analysisHead .meta { margin: 0; }
+.analysisTag {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: #8b949e;
+}
 
 /* AI 分析：正文入库时已生成，这里只展示一段结论式文字 */
 .analysisText {
   margin: 0;
-  padding: 12px 14px;
-  border-radius: 10px;
-  background: #f6f8fc;
   color: #26303f;
   font-size: 12.5px;
   line-height: 1.85;

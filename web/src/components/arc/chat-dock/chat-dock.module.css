@@ -139,6 +139,34 @@
 }
 .muted { font-size: 10.5px; color: rgba(16, 24, 40, 0.4); }
 
+/* 时间分隔：居中细字，和微信一样只在间隔久了出现 */
+.timeDivider {
+  align-self: center;
+  margin: 4px 0 2px;
+  font-size: 9.5px;
+  color: rgba(16, 24, 40, 0.34);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+/* 等待回复：三点呼吸，替代原先"正在处理"那行字 */
+.typing { display: inline-flex; align-items: center; gap: 3px; padding: 2px 0; }
+.typing i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(16, 24, 40, 0.36);
+  animation: typingBounce 1.2s ease-in-out infinite;
+}
+.typing i:nth-child(2) { animation-delay: 0.15s; }
+.typing i:nth-child(3) { animation-delay: 0.3s; }
+.bubble[data-waiting] { padding: 9px 12px; }
+
+@keyframes typingBounce {
+  0%, 60%, 100% { opacity: 0.35; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+
 /* ---------- 输入区 ---------- */
 .composer { flex: none; padding: 8px; padding-top: 4px; }
 
@@ -206,7 +234,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .spin, .busyDot { animation: none; }
+  .spin, .busyDot, .typing i { animation: none; }
 }
 
 /* 拖动中：关掉子元素过渡，避免跟手有延迟 */
