@@ -169,23 +169,37 @@ export default function ComputeTrace({ analysis, stats }) {
   // 实测"上滑后 1.5 秒又被拽回底部"就是标志位吞掉了用户的 scroll。
   //
   // 时间戳方案：记住"上次程序滚动"的时刻，只忽略这之后 80ms 内的 scroll 事件。
-  // 用户手动的滚动几乎不可能正好落在这 80ms 里，就算落进一次，
-  // 下一次滚动也会被正确识别。
+  //
+  // 依赖必须是 shown **数组本身**，不能是 shown.length：
+  // 满 120 行之后再加一行会裁掉最旧一行，长度恒等于 120，
+  // 依赖 length 就再也不会触发——新行一直堆在下面，人却停在原处
+  // （这正是"卡在用户滚动位置"的直接原因）。
   const autoScrollAt = useRef(0)
+  const userScrollAt = useRef(0)
   useLayoutEffect(() => {
     const el = viewportRef.current
     if (!el || !followRef.current) return
+    // 用户刚动过（1 秒内）：这一轮不贴底，尊重他的位置
+    if (Date.now() - userScrollAt.current < 1000) return
     const target = el.scrollHeight
     if (Math.abs(el.scrollTop - target) < 1) return
     autoScrollAt.current = Date.now()
     el.scrollTop = target
-  }, [shown.length])
+  }, [shown])
+
+  /** 用户主动滚动：wheel / touch 是"意图"事件，比 scroll 更可靠，
+      能明确区分"程序改的 scrollTop"和"用户真的在滚"。 */
+  const markUserScroll = useCallback(() => {
+    userScrollAt.current = Date.now()
+  }, [])
 
   const onScroll = (event) => {
     // 程序滚动的回响：忽略，但**不改 followRef**
     if (Date.now() - autoScrollAt.current < 80) return
     const el = event.currentTarget
-    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+    // 容差给到 40px：行高 16px，两行半以内都算"还在底部"，
+    // 用户轻微滚轮抖动不该把跟随关掉
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 40
     followRef.current = near
     setAtLatest(near)
   }
@@ -195,6 +209,8 @@ export default function ComputeTrace({ analysis, stats }) {
     if (!el) return
     followRef.current = true
     setAtLatest(true)
+    // 清掉"用户刚滚过"的标记，否则接下来 1 秒内不会自动贴底
+    userScrollAt.current = 0
     autoScrollAt.current = Date.now()
     el.scrollTop = el.scrollHeight
   }, [])
@@ -208,6 +224,7 @@ export default function ComputeTrace({ analysis, stats }) {
         <ScrollArea orientation="vertical" fade={14} scrollbars="auto" label="计算流水"
           viewportRef={viewportRef} className={styles.scroll}
           viewportClassName={styles.viewport} onScroll={onScroll}
+          onWheel={markUserScroll} onTouchMove={markUserScroll}
           data-no-scrollbar>
           {shown.length === 0 ? (
             <p className={styles.empty}>等待运算…</p>
