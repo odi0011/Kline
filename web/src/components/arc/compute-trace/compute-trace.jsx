@@ -109,8 +109,13 @@ export default function ComputeTrace({ analysis, stats }) {
   const [shown, setShown] = useState([])
   const poolRef = useRef([])       // 待发队列（已打乱）
   const seenRef = useRef(new Set()) // 已经进过队列的 key，避免同一批重复入池
+  const primedRef = useRef(false)   // 首批是否已经一次性铺满
 
-  // 新数据进来：把没见过的行加进池子并重新打乱
+  // 新数据进来：把没见过的行加进池子并重新打乱。
+  //
+  // 首批（页面刚打开时后端给的最近 20 秒）**一次性铺满**，
+  // 不逐条慢慢吐——否则刷新后先空 10 秒才有一点内容，看起来像从 0 开始。
+  // 之后的新行才按 500ms 一条追加。
   useEffect(() => {
     const fresh = []
     for (let i = 0; i < source.length; i++) {
@@ -121,6 +126,13 @@ export default function ComputeTrace({ analysis, stats }) {
       fresh.push({ ...row, key })
     }
     if (!fresh.length) return
+    if (!primedRef.current) {
+      primedRef.current = true
+      const seeded = shuffle(fresh.slice(-KEEP_ROWS))
+      setShown(seeded)
+      poolRef.current = []
+      return
+    }
     poolRef.current = shuffle(poolRef.current.concat(fresh))
   }, [source])
 

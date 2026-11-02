@@ -71,6 +71,15 @@ class Storage:
                 cur.execute(sql, args)
                 return cur.fetchall()
 
+    def _qmany(self, sql: str, rows: list[tuple]) -> None:
+        """批量写入。计算流水一次几十行，逐条 execute 太浪费往返。"""
+        if not self.enabled or not rows:
+            return
+        with self._lock:
+            self._conn.ping(reconnect=True)
+            with self._conn.cursor() as cur:
+                cur.executemany(sql, rows)
+
     def _init(self) -> None:
         self._q("""CREATE TABLE IF NOT EXISTS candles(
             symbol VARCHAR(16), `interval` VARCHAR(8), open_time BIGINT,
@@ -116,6 +125,16 @@ class Storage:
             except Exception:
                 pass
         # 量化决策流水：引擎的每个决策/思考都落库，按账户隔离，重启不清空
+        # 计算流水：每次评估产生的算式行。**只保留最近 1 分钟**，
+        # 更早的在写入时顺手清掉。存库是为了两个目的：
+        #   1) 页面刷新时能立刻显示最近 20 秒，而不是从 0 开始跑
+        #   2) Agent 可以查"刚才系统在算什么"
+        # 这不是业务数据，丢了随时能重算，所以保留窗口很短。
+        self._q("""CREATE TABLE IF NOT EXISTS calc_trace(
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            ts BIGINT NOT NULL, symbol VARCHAR(16), kind VARCHAR(12), tag VARCHAR(16),
+            expr VARCHAR(120), val DOUBLE, tone VARCHAR(8),
+            INDEX idx_ct_ts(ts)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         # 新闻存档：入库即保存正文，前端点开只读库，不再实时爬源站（避免 429）。
         # content 是正文（RSS 全文或后台抓取的正文），summary 是 RSS 摘要。
         self._q("""CREATE TABLE IF NOT EXISTS news(
@@ -216,6 +235,62 @@ class Storage:
                 "losses": int(r[2] or 0), "pnl": round(float(r[3] or 0), 2),
                 "avgSlippageAtr": round(float(r[4] or 0), 4),
                 "avgEntrySlippageAtr": round(float(r[5] or 0), 4)}
+
+    # ---- 计算流水（只留 1 分钟） ----
+
+    def save_calc_rows(self, rows: list[dict]) -> int:
+        """批量写入计算流水，并顺手清掉 1 分钟前的。
+
+        为什么保留窗口这么短：这是运算轨迹不是业务数据，
+        重算就有；存着只是为了让页面刷新时不是一片空白、
+        以及 Agent 能查"刚才在算什么"。
+        """
+        if not self.enabled or not rows:
+            return 0
+        payload = []
+        for r in rows:
+            try:
+                ts = int(r.get("ts") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ts <= 0:
+                continue
+            val = r.get("value")
+            try:
+                val = float(val) if val is not None else None
+            except (TypeError, ValueError):
+                val = None
+            payload.append((
+                ts, str(r.get("sym") or "")[:16], str(r.get("kind") or "")[:12],
+                str(r.get("tag") or "")[:16], str(r.get("expr") or "")[:120],
+                val, str(r.get("tone") or "")[:8],
+            ))
+        if not payload:
+            return 0
+        self._qmany("INSERT INTO calc_trace(ts,symbol,kind,tag,expr,val,tone) "
+                    "VALUES(%s,%s,%s,%s,%s,%s,%s)", payload)
+        # 只留最近 1 分钟：更早的整行删掉，表不会无限增长
+        cutoff = int(time.time() * 1000) - 60_000
+        self._q("DELETE FROM calc_trace WHERE ts < %s", (cutoff,))
+        return len(payload)
+
+    def calc_recent(self, seconds: int = 20) -> list[dict]:
+        """最近 N 秒的流水，按时间升序。页面刷新时用它填充。
+
+        默认 20 秒：前端一进来就有内容，不会从 0 开始跑。
+        """
+        cutoff = int(time.time() * 1000) - max(1, int(seconds)) * 1000
+        rows = self._qall(
+            "SELECT ts,symbol,kind,tag,expr,val,tone FROM calc_trace "
+            "WHERE ts >= %s ORDER BY ts ASC, id ASC", (cutoff,))
+        out = []
+        for ts, sym, kind, tag, expr, val, tone in rows:
+            out.append({
+                "ts": int(ts or 0), "sym": sym or "", "kind": kind or "",
+                "tag": tag or "", "expr": expr or "",
+                "value": val, "tone": tone or "",
+            })
+        return out
 
     # ---- 量化决策流水 ----
 

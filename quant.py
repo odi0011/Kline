@@ -147,6 +147,8 @@ class QuantEngine:
         # 模拟仓：每个监控币跑一个 15 分钟的纸上交易，平仓即重开。
         # 纯内存，不落库（每 15 分钟一条，量很小，但没必要进 DB）。
         self.paper = PaperBook()
+        self.calc_storage_fn = None     # main 注入：rows -> None（写库，只留 1 分钟）
+        self.calc_read_fn = None        # main 注入：(seconds) -> rows（冷启动补最近数据）
         self.dd_state = {"paused_until": 0, "current": 0.0, "max": 0.0, "peak": 0.0}
         # 交易范围：只处理前端实际展示的币种（None/空 = 不限制）。
         # 否则引擎会在用户没看K线的币上开仓，持仓出现"凭空冒出来"的仓位。
@@ -820,6 +822,13 @@ class QuantEngine:
             round(float(score.score), 2), tone)
 
         self.calc_stream.extend(rows)
+        # 落库：页面刷新时用它填充最近 20 秒，不用从 0 开始；
+        # Agent 也能查到"刚才在算什么"。库里只留 1 分钟。
+        if self.calc_storage_fn:
+            try:
+                self.calc_storage_fn(rows)
+            except Exception:
+                pass        # 存不进去不能让评估中断
 
     def _refresh_drawdown(self) -> None:
         """回撤熔断状态：从权益采样算当前/最大回撤，超阈值则暂停开仓一段时间。"""
@@ -2047,6 +2056,22 @@ class QuantEngine:
                 "volState", "squeeze")
         return {k: st.get(k) for k in keys if k in st}
 
+    def _calc_stream(self) -> list[dict]:
+        """计算流水快照：内存为主，空了就从库补最近 20 秒。
+
+        冷启动时内存 deque 是空的，直接返回空数组会让前端"从 0 开始跑"，
+        看起来像刚开机。库里存了最近 1 分钟，取 20 秒足够铺满首屏。
+        """
+        mem = list(self.calc_stream)
+        if mem:
+            return mem[-600:]
+        if self.calc_read_fn:
+            try:
+                return self.calc_read_fn(20)
+            except Exception:
+                return []
+        return []
+
     def _paper_context(self, sym: str) -> dict:
         """给模拟仓一轮所需的上下文。数据不全时返回空 dict（不编）。"""
         state = self.indicators.get(sym) or {}
@@ -2137,7 +2162,9 @@ class QuantEngine:
                 "symbols": {sym: self._public_state(st) for sym, st in self.indicators.items()},
                 # 计算流水：每轮每个币的多条算式，按时间排列、不分组。
                 # 前端直接渲染成一条连续的滚动流，不要按币归类。
-                "calcStream": list(self.calc_stream)[-600:],
+                # 计算流水：内存里有就用内存的（最全）；刚启动内存是空的时候
+                # 从库里补最近 20 秒——否则页面一刷新就是从 0 开始跑。
+                "calcStream": self._calc_stream(),
                 "liveFeatures": dict(self.live_features),
                 "liveEvaluations": dict(self.live_evaluations),
                 "liveScoreHistory": {

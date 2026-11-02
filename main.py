@@ -455,6 +455,9 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     quant.feed_is_live_fn = lambda: hub.mode != "demo"
     quant.pattern_stats_fn = storage.pattern_stats
     hub.paper_refresh_fn = quant.paper_refresh
+    # 计算流水落库：库里只留 1 分钟；页面刷新时取最近 20 秒填充
+    quant.calc_storage_fn = storage.save_calc_rows
+    quant.calc_read_fn = storage.calc_recent
     # 决策流水落库：引擎线程内同步写 MySQL（连接已加锁，开销可忽略）
     quant.storage_fn = storage.save_quant_event
     quant.trade_storage_fn = storage.save_quant_trade
@@ -762,6 +765,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     agent.bars_fn = _agent_bars
     # 让 Agent 能区分"币不在监控列表"和"在列表但数据还没回来"
     agent.symbols_fn = lambda: list(symbols)
+    agent.calc_read_fn = storage.calc_recent
 
     def _agent_advice(symbol: str) -> dict:
         """胶囊同款建议：直接复用 quant 的计算，保证两边结论永远一致。

@@ -493,6 +493,7 @@ class AgentManager:
         self.bars_fn = None             # (symbol, interval) -> list[Candle]，main 注入
         self.advice_fn = None           # (symbol) -> 胶囊同款建议，main 注入
         self.symbols_fn = None          # () -> 当前监控币种列表，main 注入
+        self.calc_read_fn = None        # (seconds) -> 计算流水，main 注入
         self.state_path = state_path
         # 图片附件落盘目录：会话里只存 url，绝不把 base64 写进状态文件
         self.attachments_dir = os.path.join(os.path.dirname(state_path) or ".", "agent-attachments")
@@ -1382,6 +1383,36 @@ class AgentManager:
         finally:
             self._http_slots.release()
 
+    def _read_calc_trace(self, arguments: dict) -> dict:
+        """读系统最近的计算流水（评分算式逐条）。
+
+        这是"系统刚才在算什么"的直接答案：每个币的分项×权重、合计、
+        分离度、估算胜率、否决理由。库里只留 1 分钟。
+        """
+        if set(arguments or {}) - {"seconds"}:
+            raise ValueError("read_calc_trace 只接受 seconds")
+        seconds = arguments.get("seconds", 20)
+        if type(seconds) is not int or not 5 <= seconds <= 60:
+            raise ValueError("seconds 需为 5–60 的整数")
+        if not self.calc_read_fn:
+            return {"available": False, "reason": "计算流水存储未接入"}
+        try:
+            rows = self.calc_read_fn(seconds) or []
+        except Exception as exc:
+            return {"available": False,
+                    "reason": f"读取失败: {str(clean(str(exc)))[:120]}"}
+        # 按币归组，避免把几百行原始记录直接丢给模型
+        grouped: dict[str, list] = {}
+        for r in rows:
+            grouped.setdefault(str(r.get("sym") or ""), []).append(r)
+        return {"available": True, "seconds": seconds, "rows": len(rows),
+                "windowNote": "只保留最近 1 分钟；这是运算轨迹，不是交易记录",
+                "symbols": {sym: [
+                    {"tag": x.get("tag"), "expr": x.get("expr"),
+                     "value": x.get("value"), "ts": x.get("ts")}
+                    for x in items[-40:]
+                ] for sym, items in grouped.items()}}
+
     def _sandbox(self, fn):
         """沙盒工具的统一入口：把 root 传进去，异常转成可读错误。
 
@@ -1743,7 +1774,7 @@ class AgentManager:
             snapshot_error = ""
             if any(call["function"]["name"]
                    in TOOL_NAMES - {"read_memory", "save_preference", "read_candles", "read_advice",
-                                    "create_watch", "list_watches", "stop_watch",
+                                    "create_watch", "list_watches", "stop_watch", "read_calc_trace",
                                     "sandbox_write", "sandbox_read", "sandbox_list", "sandbox_run"}
                    for call in normalized):
                 try:
@@ -1811,6 +1842,8 @@ class AgentManager:
                         timeout = arguments.get("timeout") or sandbox.DEFAULT_TIMEOUT
                         output = self._sandbox(lambda root: sandbox.run(
                             root, arguments.get("command", ""), timeout=timeout))
+                    elif name == "read_calc_trace":
+                        output = self._read_calc_trace(arguments)
                     else:
                         if snapshot_error:
                             raise ValueError(snapshot_error)
