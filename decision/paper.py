@@ -126,6 +126,9 @@ class PaperPosition:
     reason: str
     winrate: float | None
     winrate_parts: dict = field(default_factory=dict)
+    # 开仓时的 ATR（价格口径）。移动止损必须用它做基准，不能用每轮的当前 ATR：
+    # 行情转静时 ATR 会塌下去，止损就会被拽到贴着现价，一碰就出局。
+    atr_at_entry: float = 0.0
     # 运行中更新
     mark: float = 0.0
     upnl: float = 0.0
@@ -349,6 +352,7 @@ class PaperBook:
             reason=str(ctx.get("reason") or "")[:40],
             winrate=wr["prob"],
             winrate_parts=wr["parts"],
+            atr_at_entry=round(atr, 8) if (atr and atr > 0) else 0.0,
             mark=entry,
             peak=entry,
         )
@@ -378,22 +382,37 @@ class PaperBook:
         return ""
 
     def _trail(self, pos: PaperPosition, ctx: dict) -> None:
-        """移动止损：只往盈利方向移，绝不放大风险。
+        """移动止损：先把浮盈跑出一段再抬，且只往盈利方向移。
 
-        多头：当价格走过的距离超过 1 倍 ATR 时，把止损提到
-        「最有利价 − 1.4 ATR」，但只能比原来的止损更高。
+        两个必须守住的约束，缺一个都会把 15 分钟的交易变成秒级刮头皮：
+
+        1. **基准用开仓时的 ATR，不用当前 ATR。**
+           行情转静时当前 ATR 会塌下去（BTC 5 分钟 ATR 能从 60 掉到 8），
+           用当前值算「peak − 1.4 ATR」就等于把止损贴到现价上，
+           价格回抽一点点就被打掉。线上实测止损距离被压到 0.01%–0.17%，
+           9 笔里 8 笔在 2–6 分钟内止损，全是被这一条坑的。
+        2. **先触发再移（arming）。** 价格至少朝有利方向走 1 个 ATR，
+           才允许把止损抬到成本之上；没走出这段空间就保持原止损不动，
+           否则等于开仓即被一个极窄的止损罩住。
+
+        移动后仍保证止损在现价的正确一侧（多头的止损必须低于现价）。
         """
-        atr = _num(ctx.get("atr"))
+        atr = _num(pos.atr_at_entry) or _num(ctx.get("atr"))
         if not atr or atr <= 0:
             return
         long_ = pos.direction == "long"
+        # 未武装：价格还没走出 1 个 ATR，不动止损
         if long_:
+            if pos.peak < pos.entry + atr:
+                return
             candidate = pos.peak - atr * TRAIL_ATR
             if candidate > pos.sl and candidate < pos.mark:
                 pos.sl = _round(candidate, 4)
                 pos.trailing = True
                 pos.sl_pct = round((pos.entry - pos.sl) / pos.entry * 100, 2)
         else:
+            if pos.peak > pos.entry - atr:
+                return
             candidate = pos.peak + atr * TRAIL_ATR
             if candidate < pos.sl and candidate > pos.mark:
                 pos.sl = _round(candidate, 4)

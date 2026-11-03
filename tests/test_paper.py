@@ -157,16 +157,14 @@ def test_timeout_closes():
 def test_trailing_stop_only_moves_in_favor():
     """移动止损只能往盈利方向移，绝不放大风险。
 
-    用不会触发止盈的小涨幅：涨幅太大时旧仓会先止盈平掉、重开一个
-    新仓，那就测不到"同一个仓的止损有没有上移"了。
+    先要走出 1 个 ATR 才「武装」，之后才允许上移；涨幅也不能碰到止盈，
+    否则旧仓会先止盈平掉、重开一个，那就测不到同一个仓了。
     """
     book = PaperBook()
     pos = book.tick("btcusdt", ctx(price=100.0, atr=2.0))
     sl0 = pos["sl"]
-    tp = pos["tp"]
-    # 涨到「离止盈还差一点」的位置，保证仓还在
-    mid = (100.0 + tp) / 2
-    book.tick("btcusdt", ctx(price=mid, atr=2.0))
+    armed = 102.5                      # 走出 2.5 > 1 ATR，仍低于止盈 103.2
+    book.tick("btcusdt", ctx(price=armed, atr=2.0))
     after = book.positions.get("btcusdt")
     assert after is not None, "这一涨不该触发止盈"
     assert after.entry == 100.0, "应该是同一个仓，不是重开的"
@@ -174,8 +172,38 @@ def test_trailing_stop_only_moves_in_favor():
     assert after.trailing is True
     # 价格回落，止损不能跟着下移
     sl1 = after.sl
-    book.tick("btcusdt", ctx(price=mid - 0.3, atr=2.0))
+    book.tick("btcusdt", ctx(price=armed - 0.3, atr=2.0))
     assert book.positions["btcusdt"].sl >= sl1
+
+
+def test_trailing_not_armed_before_one_atr():
+    """没走出 1 个 ATR 之前不许抬止损——否则等于一开仓就被窄止损罩住。"""
+    book = PaperBook()
+    pos = book.tick("btcusdt", ctx(price=100.0, atr=2.0))
+    sl0 = pos["sl"]
+    book.tick("btcusdt", ctx(price=101.2, atr=2.0))   # < entry + 1 ATR
+    after = book.positions["btcusdt"]
+    assert after.sl == sl0 and after.trailing is False
+
+
+def test_trailing_uses_entry_atr_not_current_atr():
+    """行情转静、当前 ATR 塌掉时，止损不能被拽到贴价。
+
+    线上实测：BTC 5 分钟 ATR 从 60 掉到 8，用当前 ATR 算
+    「peak − 1.4 ATR」会把止损压到 0.01%–0.17%，价格一抖就出局。
+    基准必须是开仓时的 ATR。
+    """
+    book = PaperBook()
+    pos = book.tick("btcusdt", ctx(price=100.0, atr=2.0))
+    sl0 = pos["sl"]
+    book.tick("btcusdt", ctx(price=102.5, atr=2.0))    # 武装，止损上移到 99.7
+    armed_sl = book.positions["btcusdt"].sl
+    assert armed_sl > sl0
+    # 下一轮 ATR 塌到 0.1：止损不该被拉到 102.5 − 0.14
+    book.tick("btcusdt", ctx(price=102.6, atr=0.1))
+    after = book.positions["btcusdt"]
+    assert after.sl >= armed_sl, "止损只能往盈利方向移"
+    assert after.sl < 102.0, f"止损不该贴到现价: {after.sl}"
 
 
 def test_upl_and_upl_pct_are_real():
