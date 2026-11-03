@@ -45,9 +45,6 @@ patterns:
 
 # 通知
 notify:
-  # Windows 桌面弹窗（信号较多，容易打扰，默认关闭；网页右下角信号面板不受影响）
-  toast: false
-  sound: false
   # Webhook 推送（钉钉/飞书群机器人），不需要则 enabled: false
   webhook:
     enabled: false

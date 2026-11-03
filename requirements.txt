@@ -2,9 +2,6 @@ websockets>=14,<17
 PyYAML>=6.0
 PyMySQL>=1.1
 cryptography>=42
-# Windows 桌面弹窗（notify.toast）专用：内部 import winreg，Linux/macOS 装上也用不了。
-# 用环境标记让 pip 按平台跳过，避免服务器上装一个永远 import 失败的包。
-winotify>=1.1; sys_platform == "win32"
 
 # 开发/测试
 pytest>=8.0

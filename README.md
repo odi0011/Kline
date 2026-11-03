@@ -66,7 +66,7 @@
   → feed/source.py      WS长连接，自动重连，记录推送延迟
   → core/aggregator.py  事件驱动聚合：每笔成交即更新K线，桶切换瞬间判定收线（不等定时器）
   → core/engine.py      形态引擎：盘中预警(live) + 收线确认(confirmed) 两种模式，同根K线只报优先级最高的一个形态（每根每种模式仅一次）
-  → server/hub.py       WS广播给浏览器 + Windows toast/钉钉/飞书(可选) + signals.csv
+  → server/hub.py       WS广播给浏览器 + 钉钉/飞书 webhook(可选) + signals.csv
 ```
 
 - 识别本身（纯 Python，60 根窗口 × 19 形态）单次 <1ms，延迟瓶颈只在网络。
@@ -94,7 +94,6 @@ python main.py            # http://127.0.0.1:8000
 | `feed.proxy` | 代理（websockets≥14 支持 socks5/http） |
 | `patterns.enabled` | `all` 或 key 列表 |
 | `patterns.live_preview` | 盘中预警开关；收线后仍满足会再发一次"收线确认" |
-| `notify.toast` | Windows 桌面弹窗（信号较频繁，默认关闭，网页信号面板不受影响） |
 | `web_port` / `ws_port` | 网页 / 行情 WS 端口 |
 
 ## 内置形态（19 种，patterns/builtin.py）

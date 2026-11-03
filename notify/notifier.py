@@ -24,9 +24,13 @@ def fmt_hit(hit: PatternHit, lag_ms: int | None = None) -> tuple[str, str]:
 
 
 class Notifier:
+    """形态命中后的通知出口：控制台、signals.csv、Webhook。
+
+    桌面弹窗（Windows toast）已移除——线上是 Linux 服务器，弹不出来；
+    本地信号量又太密，实际长期关着。形态命中在前端右下角信号面板里
+    本来就能看到，不需要再占一条系统通知通道。
+    """
     def __init__(self, cfg: dict, csv_path: str | None = None):
-        self.toast = bool(cfg.get("toast", True))
-        self.sound = bool(cfg.get("sound", True))
         wh = cfg.get("webhook") or {}
         self.webhook_enabled = bool(wh.get("enabled"))
         self.webhook_type = wh.get("type", "dingtalk")
@@ -46,8 +50,6 @@ class Notifier:
         print(f"★ {title} | {body.replace(chr(10), ' ')}", flush=True)
         if self._csv_path:
             self._append_csv(hit, lag_ms)
-        if self.toast:
-            self._pool.submit(self._toast, title, body)
         if self.webhook_enabled and self.webhook_url:
             self._pool.submit(self._webhook, title, body)
 
@@ -59,18 +61,6 @@ class Notifier:
                     hit.direction, hit.mode, hit.price, hit.bar_open_time, lag_ms or "",
                 ])
         except OSError:
-            pass
-
-    def _toast(self, title: str, body: str) -> None:
-        try:
-            from winotify import Notification, audio
-            n = Notification(app_id="K线形态识别", title=title, msg=body)
-            if self.sound:
-                n.set_audio(audio.Default, loop=False)
-            else:
-                n.set_audio(audio.Silent, loop=False)
-            n.show()
-        except Exception:
             pass
 
     def _webhook(self, title: str, body: str) -> None:
