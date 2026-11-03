@@ -130,9 +130,14 @@ def _attach_sticker(pieces, sticker, reply="") -> list[str]:
     """把 send_sticker 选中的表情包补到回复末尾（模块级，便于单测）。
 
     规则：
-      1) 回复正文/分段里已经有 [sticker: 标记 → 不再追加（一条回复最多一个）；
+      1) 分段里已经有 [sticker: 标记 → 不再追加（一条回复最多一个）；
       2) 否则在最后一条分段末尾换行追加标记；
       3) 分段全空（模型只调了工具、没给正文）→ 整条回复就是表情包。
+
+    注意只看 **pieces**，不看原始 reply：
+    模型常把标记写在第二行（"摊手。\\n[sticker:摊手]"），而 split_reply
+    按短答规则只保留第一句，标记已经被截掉了。如果这时再因为"reply 里
+    含有 [sticker:" 而跳过追加，就等于标记被删了又没补回来——图直接丢。
     """
     out = [str(piece) for piece in (pieces or []) if str(piece or "").strip()]
     if not sticker:
@@ -140,7 +145,7 @@ def _attach_sticker(pieces, sticker, reply="") -> list[str]:
     marker = _sticker_marker(sticker)
     if not marker:
         return out
-    if "[sticker:" in str(reply or "") or any("[sticker:" in piece for piece in out):
+    if any("[sticker:" in piece for piece in out):
         return out
     if not out:
         return [marker]

@@ -279,10 +279,13 @@ def test_attach_sticker_appends_to_last_piece():
 
 
 def test_attach_sticker_does_not_duplicate():
-    # 正文里已经有标记（模型自己写的）→ 不再追加
+    # 正文里已经有标记（模型自己写的，且保留在分段里）→ 不再追加
     assert _attach_sticker(["好的。[sticker:崩溃]"], "崩溃", "好的。[sticker:崩溃]") == \
         ["好的。[sticker:崩溃]"]
-    assert _attach_sticker(["好的。"], "崩溃", "好的。[sticker:崩溃]") == ["好的。"]
+    # 关键：原始 reply 里有标记、但分段里**没有**（被 split_reply 截掉了）
+    # → 必须补回来，否则图直接丢失。这正是线上"只有文字没表情"的根因。
+    assert _attach_sticker(["好的。"], "崩溃", "好的。[sticker:崩溃]") == \
+        ["好的。\n[sticker:崩溃]"]
 
 
 def test_attach_sticker_handles_empty_pieces():

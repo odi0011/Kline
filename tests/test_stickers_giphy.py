@@ -960,3 +960,30 @@ def test_auto_store_uses_query_as_name(tmp_path):
     assert rows, "应该自动存了一张"
     assert rows[0]["name"], f"名字不能为空: {rows[0]}"
     assert "shrug" in rows[0]["name"].lower()
+
+
+def test_marker_written_by_model_survives_split():
+    """模型自己把标记写在第二行时，不能被"截断 + 跳过追加"两头丢掉。
+
+    线上实测：模型返回 "摊手。\n[sticker:摊手]"，split_reply 按短答规则
+    只留第一句，标记被截掉；而 _attach_sticker 又因为原始 reply 里含
+    "[sticker:" 而跳过追加 —— 结果图没了，只剩一句"摊手。"。
+    """
+    from ai.agent import split_reply
+
+    reply = "摊手。\n[sticker:摊手]"
+    pieces = split_reply(reply, detailed=False, identity=False)
+    assert pieces == ["摊手。"], "前提：split 只留第一句"
+
+    sticker = {"url": "/agent-attachments/stickers/a.gif", "width": 480, "height": 480}
+    out = _attach_sticker(pieces, sticker, reply)
+    assert len(out) == 1
+    assert "[sticker:" in out[0], "标记被截断后必须补回来"
+    assert out[0].startswith("摊手。")
+
+
+def test_attach_does_not_duplicate_when_marker_kept():
+    """分段里已经有标记时不能重复追加。"""
+    sticker = {"url": "/agent-attachments/stickers/a.gif", "width": 10, "height": 10}
+    out = _attach_sticker(["[sticker:摊手]"], sticker, "[sticker:摊手]")
+    assert out == ["[sticker:摊手]"]
