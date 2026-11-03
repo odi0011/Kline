@@ -22,6 +22,8 @@ import styles from "./chat-dock.module.css"
 const WIDTH = 320
 const HEIGHT = 468
 const MARGIN = 14
+/** 自动跟随阈值：离底部不超过这个距离就算"正在看最新消息" */
+const FOLLOW_SLACK = 32
 /** 折叠胶囊：贴顶部居中，距顶 10px */
 const ISLAND_TOP = 10
 const ISLAND_H = 34
@@ -96,6 +98,14 @@ function FileBubble({ item, mine }) {
   )
 }
 
+/** 一组消息的渲染签名：只有 id / 状态 / 内容 / 错误 / 附件变化时才需要重渲染。
+    后端每次 agent_state 广播都会整体深拷贝 chat 数组（引用必变），没有这个
+    比较的话，窗口里几十条消息每 250ms 都要重渲染一次。 */
+const groupSignature = (items) => items.map((item) => [
+  item?.id, item?.role, item?.status, item?.content || "", item?.error || "",
+  Array.isArray(item?.attachments) ? JSON.stringify(item.attachments) : "",
+].join("\u0001")).join("\u0002")
+
 /** 一轮消息的渲染单元。
     后端会把过长的回复拆成多条（id 带 `-2`/`-3` 后缀），那是同一次回答的
     分段，视觉上必须是一枚气泡里的几段话；只有附件按类型各自独立成泡。 */
@@ -160,7 +170,7 @@ const MessageGroup = memo(function MessageGroup({ items }) {
       ))}
     </>
   )
-})
+}, (prev, next) => prev.sig === next.sig)
 
 /** 长回复被后端拆成多条 assistant 消息（id 形如 `原id-2`），
     视觉上应算同一轮的一组：同组内不重复插时间分隔。 */
@@ -257,18 +267,65 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
     return () => window.removeEventListener("resize", onResize)
   }, [commitPos, pos.x, pos.y])
 
-  // 新消息贴底：只有原本就在底部时才自动跟随，往回翻看历史时不能把用户拽下去
+  // 新消息/流式增长贴底：只有用户本来就在底部才跟随，往回翻历史时不能被拽下去。
+  // 写 scrollTop 必须合并到 requestAnimationFrame：agent_state 每 250ms 广播一次，
+  // 每次广播都直接改 scrollTop 会让流式增长的气泡一格一格地抖。
   const followRef = useRef(true)
-  useLayoutEffect(() => {
-    const node = scrollRef.current
-    if (!node || !open) return
-    if (followRef.current) node.scrollTop = node.scrollHeight
-  }, [messages, open])
+  const pinRafRef = useRef(0)
+  const pinToBottom = useCallback(() => {
+    if (pinRafRef.current) window.cancelAnimationFrame(pinRafRef.current)
+    pinRafRef.current = window.requestAnimationFrame(() => {
+      pinRafRef.current = 0
+      const node = scrollRef.current
+      if (!node || !followRef.current) return
+      node.scrollTop = node.scrollHeight
+    })
+  }, [])
 
   const onThreadScroll = (event) => {
     const el = event.currentTarget
-    followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+    // 程序化贴底也会触发 scroll，因此这里每次滚动都重新判断，阈值给足余量
+    followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_SLACK
   }
+
+  // 打开窗口时直接贴底（布局阶段执行，避免先看到顶部再跳）
+  useLayoutEffect(() => {
+    if (!open) return
+    followRef.current = true
+    pinToBottom()
+  }, [open, pinToBottom])
+
+  // 只有"新消息插入"（条数/最后一条 id 变化）才单独贴底一次；
+  // 流式改 content 不触发这条，交给下面的 ResizeObserver。
+  const lastMessageId = messages.length
+    ? String(messages[messages.length - 1]?.id || "") : ""
+  useLayoutEffect(() => {
+    if (!open) return
+    pinToBottom()
+  }, [open, messages.length, lastMessageId, pinToBottom])
+
+  // 内容区真实高度变化（流式文字、图片/表情包加载完成）时保持贴底。
+  // 只观察消息子节点；一帧最多写一次 scrollTop，且用户往上翻时自动放弃跟随。
+  useEffect(() => {
+    const node = scrollRef.current
+    if (!node || !open || typeof ResizeObserver === "undefined") return
+    const observer = new ResizeObserver(() => pinToBottom())
+    const observe = () => {
+      observer.disconnect()
+      observer.observe(node)
+      Array.from(node.children).forEach((child) => observer.observe(child))
+    }
+    observe()
+    // 新分组插入时子节点集合会变，重新观察一遍
+    const mutations = new MutationObserver(() => { observe(); pinToBottom() })
+    mutations.observe(node, { childList: true })
+    return () => {
+      observer.disconnect()
+      mutations.disconnect()
+      if (pinRafRef.current) window.cancelAnimationFrame(pinRafRef.current)
+      pinRafRef.current = 0
+    }
+  }, [open, pinToBottom])
 
   /** Composer 只上交「文字 + 附件」，请求构造在这里统一做。
       只发附件时 prompt 留空：不能塞一句"（见附件）"充数，
@@ -283,6 +340,9 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
     }
     const result = await onSend?.({ type: "agent_action", action: "chat", payload })
     if (result?.ok === false) throw new Error(textOfError(result.error))
+    // 自己发消息时无视当前滚动位置，直接回到最新（符合聊天软件习惯）
+    followRef.current = true
+    pinToBottom()
   }
 
   const textOfError = (value) => {
@@ -351,6 +411,16 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
     setOpen(false)
   }, [messages])
 
+  // 消息分组：渲染与"是否首次出现"记录共用；group key 是组内首条消息 id，
+  // 后端每次广播虽然整体替换数组，但 id 稳定，所以 key 也稳定（不会 remount）。
+  const groups = useMemo(() => groupMessages(messages), [messages])
+  const seenGroupsRef = useRef(new Set())
+  const groupKeySignature = groups.map((group) => group.key).join("|")
+  useEffect(() => {
+    // 提交后再登记：本帧新出现的分组仍算"新"，已有分组永远不会重放动画
+    for (const group of groups) seenGroupsRef.current.add(group.key)
+  }, [groupKeySignature])   // eslint-disable-line react-hooks/exhaustive-deps
+
   // ---------- 折叠态：顶部居中的玻璃圆环 ----------
   if (!open) {
     return createPortal(
@@ -409,7 +479,9 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
               <i className={styles.onlineDot} data-on={connected || undefined} />
             </span>
             <motion.b
-              key={busy ? (statusLine || "working") : "idle"}
+              // 只在忙碌/空闲切换时重挂载做一次小位移动画；状态词每 250ms 变一次
+              // 不能跟着换 key，否则胶囊文字会一直重放入场动画（标题栏抖动）。
+              key={busy ? "busy" : "idle"}
               className={styles.pillText}
               data-busy={busy || undefined}
               initial={reduced ? false : { y: 3 }}
@@ -483,18 +555,22 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
           viewportRef={scrollRef} className={styles.thread}
           viewportClassName={styles.threadViewport} onScroll={onThreadScroll}>
           {messages.length === 0 && <p className={styles.empty}>问市场、持仓或系统。</p>}
-          {groupMessages(messages).map((group) => {
+          {groups.map((group) => {
             const gap = !group.at || !group.prevTs || group.at - group.prevTs > TIME_GAP_MS
+            // 入场动画只给"本帧第一次出现"的 assistant 分组；已有分组更新
+            // （流式增长/状态变化）不重放 y/scale。用户气泡也绝不做 y 位移：
+            // 发送瞬间它和助手占位同时插入，再滑一下就是明显的整段抖动。
+            const isNew = !seenGroupsRef.current.has(group.key)
+            const animateIn = !reduced && isNew && group.role !== "user"
             return (
               <Fragment key={group.key}>
                 {gap ? <p className={styles.timeDivider}>{dayLabel(group.at)}</p> : null}
-                {/* 气泡入场：只做位移+缩放，不动 opacity */}
                 <motion.div className={styles.groupEnter}
-                  initial={reduced ? false : { y: 6, scale: 0.985 }}
+                  initial={animateIn ? { y: 6, scale: 0.985 } : false}
                   animate={{ y: 0, scale: 1 }}
                   transition={reduced ? { duration: 0 }
                     : { type: "spring", stiffness: 480, damping: 34, mass: 0.7 }}>
-                  <MessageGroup items={group.items} />
+                  <MessageGroup items={group.items} sig={groupSignature(group.items)} />
                 </motion.div>
               </Fragment>
             )

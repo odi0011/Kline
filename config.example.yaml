@@ -33,6 +33,18 @@ feed:
   # 启动时回补的历史K线根数（给形态的趋势判断提供上下文）
   backfill_bars: 300
 
+# Agent 联网搜索（web_search / read_web_page 两个工具，是否搜索由模型自己判断）
+# 默认无 key 走 DuckDuckGo HTML，失败自动回退 Bing HTML；质量要求高可去 serper.dev
+# 申请 key 并设置环境变量 KLINE_SERPER_KEY（无需改本文件）。
+search:
+  enabled: true
+  # 代理留空则沿用 feed.proxy；海外服务器一般不用
+  proxy: ""
+  # 单次搜索超时（秒）
+  timeout: 10
+  # 默认返回条数（模型也可在 1~10 内自己调）
+  count: 5
+
 # 形态识别
 patterns:
   # 启用哪些形态：all 或列 key（见 patterns/builtin.py）

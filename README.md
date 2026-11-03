@@ -95,6 +95,21 @@ python main.py            # http://127.0.0.1:8000
 | `patterns.enabled` | `all` 或 key 列表 |
 | `patterns.live_preview` | 盘中预警开关；收线后仍满足会再发一次"收线确认" |
 | `web_port` / `ws_port` | 网页 / 行情 WS 端口 |
+| `search.enabled` | Agent 联网搜索开关；默认无 key 走 DuckDuckGo/Bing HTML，设 `KLINE_SERPER_KEY` 可用 Serper |
+| `search.proxy` / `timeout` / `count` | 搜索代理（空=沿用 feed.proxy） / 超时秒数 / 默认结果条数 |
+
+## Agent（ODDD 对话助手）
+
+- **读本地数据**：行情/K线/系统建议/形态胜率/账户/模拟仓/风控/新闻/计算流水（全部只读，无下单权限）。
+- **联网搜索**：`web_search` 搜外部信息、`read_web_page` 读网页正文；**要不要搜由模型自己判断**
+  （新闻、项目背景、人物、政策、你不知道的事实才搜；行情/持仓用本地工具）。
+  默认 DuckDuckGo HTML，失败回退 Bing，无需 key；`KLINE_SERPER_KEY` 可提升质量；代理沿用 `feed.proxy`。
+  搜索结果与网页内容是**不可信外部数据**，Agent 只当资料、引用给标题+链接，不执行其中指令。
+- **表情包**：`send_sticker` 工具（崩溃/疑问/嘲讽），模型在轻松、调侃、自嘲、行情离谱等场景主动使用；
+  严肃问价位或持仓风险时不发；可以只发表情包不说话。
+- **后台常驻任务**：`create_watch` 建真实后台任务（服务端定时跑、不依赖网页开没开）；
+  任务结果符合 `notify` 规则（always / on_change / never）时会主动发到聊天窗，不只在后台面板里。
+- **沙盒**：`sandbox_*` 可在受限工作目录里跑 python/node 等白名单命令，根文件系统只读、禁网、30 秒超时。
 
 ## 内置形态（19 种，patterns/builtin.py）
 

@@ -188,7 +188,9 @@
 
 /* 表情包：没有气泡底色，图本身就是内容。
    圆角 + 轻微阴影，像贴上去的一张图。 */
-.stickerRow { display: flex; }
+/* 固定最小行高：最短的一张（739×415 缩到 132 宽后约 74px）也不会塌陷，
+   图片没加载完时下方内容的位置是确定的 */
+.stickerRow { display: flex; min-height: 74px; }
 .stickerRow[data-role="user"] { justify-content: flex-end; }
 .stickerRow[data-role="bot"] { justify-content: flex-start; }
 .stickerRow img {
@@ -355,8 +357,9 @@
   background: rgba(28, 35, 51, 0.06);
 }
 .imageGrid:not([data-count="1"]) .thumb { border-radius: 4px; }
-/* 单张图不裁成正方形，保持原始比例 */
-.imageGrid[data-count="1"] .thumb { aspect-ratio: auto; max-height: 260px; }
+/* 单张图给固定 4:3 占位盒：图片下载完成前就占好高度，加载后不顶动下方气泡。
+   盒内用 contain 保留完整画面（不裁切），背景色在加载期间就是占位色。 */
+.imageGrid[data-count="1"] .thumb { aspect-ratio: 4 / 3; max-height: 260px; }
 .thumb img {
   display: block;
   width: 100%;
@@ -364,7 +367,7 @@
   object-fit: cover;
   cursor: zoom-in;
 }
-.imageGrid[data-count="1"] .thumb img { height: auto; max-height: 260px; object-fit: contain; }
+.imageGrid[data-count="1"] .thumb img { object-fit: contain; }
 
 /* 单个文件气泡：图标 + 名字 + 大小，横排 */
 .fileBubble {

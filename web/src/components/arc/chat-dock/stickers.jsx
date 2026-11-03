@@ -15,22 +15,38 @@ export const STICKERS = {
 
 export const STICKER_NAMES = Object.keys(STICKERS)
 
-/** 单个表情包：按原始比例显示，限制最大边长 */
-export function Sticker({ name, max = 130 }) {
+/** 真实像素尺寸（本机 Pillow 读取 web/public/stickers/*.png 的宽高）。
+    渲染时按最大边长等比缩到 max 以内，并把最终宽高同时写进 img 的
+    width/height 属性——图片下载完成前浏览器就按比例占好位置，
+    加载完不会再突然撑开、顶动下方内容（CLS）。 */
+export const STICKER_SIZES = {
+  崩溃: { w: 739, h: 415 },
+  疑问: { w: 568, h: 488 },
+  嘲讽: { w: 640, h: 452 },
+}
+
+/** 单个表情包：按原始比例显示，限制最大边长；加载前就有确定占位。 */
+export function Sticker({ name, max = 132 }) {
   const src = STICKERS[name]
   if (!src) return null
+  const size = STICKER_SIZES[name]
+  const scale = size ? Math.min(1, max / size.w, max / size.h) : 1
+  const width = size ? Math.round(size.w * scale) : max
+  const height = size ? Math.round(size.h * scale) : max
   return (
     <img
       src={src}
       alt={`表情：${name}`}
-      loading="lazy"
+      width={width}
+      height={height}
+      loading="eager"
       decoding="async"
       style={{
         display: "block",
+        width,
+        height,
         maxWidth: max,
         maxHeight: max,
-        width: "auto",
-        height: "auto",
         borderRadius: 10,
       }}
     />
