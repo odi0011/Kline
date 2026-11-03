@@ -281,14 +281,20 @@ def _paper_view(snapshot, symbol: str = "") -> dict:
         top = by_estimated[0]
         best = {"basis": "estimated", "symbol": top.get("symbol"),
                 "winrate": top.get("estimatedWinrate"), "closed": 0}
+    source = str(summary.get("source") or "")
+    if source == "mysql":
+        persist = ("模拟仓的未平仓仓位与全部平仓记录都在 MySQL（paper_positions / "
+                   "paper_trades 表），服务重启不会清零；realized.sessionAllSymbols "
+                   "与 realized.bySymbol 都是数据库全量累计口径。")
+    else:
+        persist = ("当前未接数据库（纯内存降级模式），模拟仓重启会清零、"
+                   "bySymbol 最多覆盖最近 200 条；引用时要说明这个限制。")
     return {
         "kind": "paper",
         "note": "模拟仓=15 分钟纸上交易，不产生任何真实委托，与账户实盘持仓无关。"
                 "openPositions.estimatedWinrate 是按止损/止盈距离与信号分估算的概率，"
                 "不是历史胜率；realized.bySymbol.winrate 才是已平仓的实际胜率。"
-                "realized.sessionAllSymbols 是进程启动以来的累计值，"
-                "realized.bySymbol 只覆盖内存里最近 200 条平仓记录；两者样本不同，"
-                "引用时要说明是哪个口径。服务重启后全部清零。",
+                + persist + "window 只是内存缓存条数，统计口径以 session/bySymbol 为准。",
         "best": best,
         # 汇总放在明细之前：bounded() 超长会截断，聚合结论不能因为
         # 后面的未平仓明细太多而被切掉。

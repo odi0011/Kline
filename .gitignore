@@ -16,3 +16,13 @@ web/dist/
 # 聊天图片附件（运行时生成，不入库）
 agent-attachments/
 quant.log
+
+# 量化运行时状态（可由 DB/交易所重建，不入库）
+quant-positions.json
+quant-trades.json
+quant-unsupported.json
+quant-manual.json
+quant-*.json.tmp
+
+# Agent 沙盒工作目录（运行时生成）
+sandbox/

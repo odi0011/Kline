@@ -1,12 +1,17 @@
 """MySQL 存储层（服务器本机 127.0.0.1 的 kline 库，专用账号仅授权该库）：
 - candles 表：K线滚动保留（默认最近30分钟）
-- hits 表：形态命中记录（含胜负评估），保留 7 天
+- hits 表：形态命中记录（含胜负评估），默认保留 90 天（storage.hit_days）
 - 胜率：confirmed 命中后 eval_bars 根K线收盘，按方向对比价格判定 win/loss
+- paper_positions / paper_trades 表：模拟仓（纸上交易）的未平仓快照与平仓流水
+- decision_traces 表：决策 trace / gate 拦截明细（默认 30 天，重启可回看）
+- quant_state 表：风控/引擎状态快照（启动时恢复，避免重启把限额/熔断清零）
+各业务表保留期统一由 storage.*_days 配置，0 = 永久保留（prune 跳过）。
 注意：interval 是 MySQL 保留字，列名统一用反引号。
 """
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from contextlib import contextmanager
@@ -15,17 +20,50 @@ from datetime import datetime, timezone
 import pymysql
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    """把 None/空串/NaN/Inf 之类的脏值转成有限 float；坏值取默认值。"""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) else default
+
+
+def _safe_int(value, default: int = 0) -> int:
+    """同 _safe_float：NaN/Inf/非数字都回退到默认值，写入 SQL 不报错。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _keep_days(value, default: int = 0) -> int:
+    """保留期天数归一化：负数/脏值视为 0（永久保留），天数按天保存。"""
+    return max(0, _safe_int(value, default))
+
+
 class Storage:
     def __init__(self, mysql: dict, keep_minutes: int = 30,
-                 hit_days: int = 7, eval_minutes: int = 10,
+                 hit_days: int = 90, eval_minutes: int = 10,
                  eval_threshold: float = 0.0015,
-                 stats_days: int = 7, stats_alpha: float = 0.94):
+                 stats_days: int = 7, stats_alpha: float = 0.94,
+                 paper_keep_days: int = 0,
+                 quant_trade_days: int = 365, quant_event_days: int = 30,
+                 news_days: int = 7, trace_days: int = 30):
+        # 保留期统一按"天"配置：负数/脏值归一化成 0，0 = 永久保留（prune 跳过）。
+        hit_days = _keep_days(hit_days, 90)
         self.keep_ms = keep_minutes * 60 * 1000
         self.hit_ms = hit_days * 86400 * 1000
+        self.hit_days = hit_days                # 形态命中保留天数（默认 90）
         self.eval_ms = eval_minutes * 60_000    # 命中后10分钟的走势判定胜负
         self.eval_threshold = eval_threshold    # 窗口内有效波动门槛（先触及判定）
         self.stats_days = max(1, int(stats_days))
         self.stats_alpha = min(0.999, max(0.50, float(stats_alpha)))
+        self.paper_keep_days = _keep_days(paper_keep_days)          # 0 = 永久保留
+        self.trade_keep_days = _keep_days(quant_trade_days, 365)    # 实盘成交（原硬编码 7 天）
+        self.quant_event_days = _keep_days(quant_event_days, 30)    # 决策事件（原 3 天）
+        self.news_days = _keep_days(news_days, 7)                   # 新闻存档（原 3 天）
+        self.trace_days = _keep_days(trace_days, 30)                # 决策 trace/gate
         self._lock = threading.Lock()
         self._conn = None
         self.enabled = False
@@ -163,6 +201,78 @@ class Storage:
             ts BIGINT, kind VARCHAR(16), acct VARCHAR(64), symbol VARCHAR(16),
             reason VARCHAR(600), pnl DOUBLE, extra TEXT,
             INDEX idx_qe_ts(ts), INDEX idx_qe_acct(acct, ts)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # 模拟仓（纸上交易）落库：账本不能只活在内存里，重启归零等于白跑。
+        # paper_positions 每币一条未平仓快照（data=完整 PaperPosition JSON），
+        # paper_trades 把平仓记录拆成真实列，胜率/分组统计直接在库里算。
+        self._q("""CREATE TABLE IF NOT EXISTS paper_positions(
+            symbol VARCHAR(16) NOT NULL PRIMARY KEY,
+            ts BIGINT NOT NULL,
+            data MEDIUMTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        self._q("""CREATE TABLE IF NOT EXISTS paper_trades(
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            closed_ts BIGINT NOT NULL,
+            entry_ts BIGINT DEFAULT 0,
+            symbol VARCHAR(16), direction VARCHAR(8),
+            entry DOUBLE, exit_price DOUBLE, sl DOUBLE, tp DOUBLE,
+            leverage INT, margin DOUBLE, qty DOUBLE,
+            pnl DOUBLE, pnl_pct DOUBLE,
+            reason VARCHAR(200), score DOUBLE, gap DOUBLE,
+            winrate DOUBLE, winrate_parts TEXT,
+            grade VARCHAR(16), pattern VARCHAR(40), regime VARCHAR(16),
+            atr_at_entry DOUBLE, held_ms BIGINT, trailing TINYINT DEFAULT 0,
+            recovered TINYINT DEFAULT 0,
+            trade_key VARCHAR(48) DEFAULT NULL,
+            UNIQUE (trade_key),
+            INDEX idx_paper_trades_closed(closed_ts),
+            INDEX idx_paper_trades_symbol(symbol, closed_ts)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # 老库渐进迁移：补"重启补结算"标记列与幂等键列，不重建表、不丢历史。
+        # （生产首次上线时表本来就是新建的；这里兜住开发/预发已经建过表的库。）
+        for column, ddl, unique in (
+            ("recovered", "ALTER TABLE paper_trades ADD COLUMN recovered TINYINT DEFAULT 0", False),
+            ("trade_key", "ALTER TABLE paper_trades ADD COLUMN trade_key VARCHAR(48) DEFAULT NULL", True),
+        ):
+            try:
+                if not self._qall(f"SHOW COLUMNS FROM paper_trades LIKE '{column}'"):
+                    self._q(ddl)
+                    if unique:
+                        try:
+                            self._q("ALTER TABLE paper_trades ADD UNIQUE (trade_key)")
+                        except Exception:
+                            pass      # 唯一键已存在/方言不支持都不影响启动
+            except Exception:
+                pass
+        # 决策 trace / gate 拦截明细：分阶段决策记录与过滤器拦截的结构化原因。
+        # 之前只活在引擎内存 deque 里，重启即丢；落库后审计/复盘能看到
+        # "当时为什么开/没开"，前端与 Agent 也能回看完整 stages/factors/risk。
+        self._q("""CREATE TABLE IF NOT EXISTS decision_traces(
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            ts BIGINT NOT NULL,
+            kind VARCHAR(12) NOT NULL,
+            symbol VARCHAR(16),
+            status VARCHAR(24),
+            payload MEDIUMTEXT,
+            INDEX idx_dt_ts(ts),
+            INDEX idx_dt_kind(kind, ts)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # 引擎/风控状态快照（日亏限额、连亏熔断、机制漂移保护…）：重启接着上次状态跑。
+        self._q("""CREATE TABLE IF NOT EXISTS quant_state(
+            name VARCHAR(32) NOT NULL PRIMARY KEY,
+            ts BIGINT NOT NULL,
+            data MEDIUMTEXT NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # hits 保留期从 7 天拉长到 90 天后，pattern_stats 的 "WHERE ts>=..." 查询
+        # 不能再依赖全表扫：老库补一条 ts 索引。SQLite 等方言不支持 SHOW INDEX /
+        # ADD INDEX 语法，探测失败或迁移失败都静默跳过，不影响服务启动。
+        try:
+            have = self._qall("SHOW INDEX FROM hits WHERE Key_name='idx_hits_ts'")
+        except Exception:
+            have = None
+        if have is not None and not have:
+            try:
+                self._q("ALTER TABLE hits ADD INDEX idx_hits_ts(ts)")
+            except Exception:
+                pass
 
     # ---- 仓位历史（已平仓） ----
 
@@ -331,6 +441,253 @@ class Storage:
                 except Exception:
                     pass
             out.append(ev)
+        return out
+
+    # ---- 决策 trace / 引擎状态 ----
+
+    def save_decision_trace(self, trace: dict, kind: str = "trace") -> None:
+        """落一条决策 trace（kind='trace'）或 gate 拦截明细（kind='gate'）。
+
+        payload 存完整结构化 dict（阶段/因子/风控/多周期明细），便于重启后
+        页面和 Agent 回看"当时为什么开/没开"；列上的 ts/kind/symbol/status
+        冗余出来只为按时间和类型过滤，不替代 payload。
+        """
+        if not self.enabled or not isinstance(trace, dict):
+            return
+        now = int(time.time() * 1000)
+        ts = _safe_int(trace.get("ts"), now) or now
+        kind = str(kind or "trace")[:12]
+        symbol = str(trace.get("symbol") or "")[:16]
+        # 注意 or 链最后必须再 or ""：gate 记录常常没有 status/code，
+        # 否则 str(None) 会把冗余列写成字符串 "None"。
+        code = trace.get("code") if kind == "gate" else ""
+        status = str(trace.get("status") or code or "")[:24]
+        try:
+            payload = json.dumps(trace, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return
+        self._q("INSERT INTO decision_traces(ts,kind,symbol,status,payload) "
+                "VALUES(%s,%s,%s,%s,%s)", (ts, kind, symbol, status, payload))
+
+    def decision_traces(self, limit: int = 100, kind: str = "trace") -> list[dict]:
+        """最近的决策 trace / gate 拦截记录（newest-first，默认只看 trace）。
+
+        返回 payload 原 dict，再用 setdefault 补 "id"/"kind"/"savedTs" 三个元数据键；
+        payload 里已有同名键时保留 payload 的值（引擎恢复依赖原始结构）。
+        坏 JSON 只丢 payload、仍返回带元数据的条目：一条脏数据不能清空整页。
+        """
+        limit = max(1, min(1000, _safe_int(limit, 100)))
+        if not self.enabled:
+            return []
+        rows = self._qall(
+            "SELECT id,ts,kind,symbol,status,payload FROM decision_traces "
+            "WHERE kind=%s ORDER BY ts DESC, id DESC LIMIT %s",
+            (str(kind or "trace")[:12], limit))
+        out = []
+        for r in rows:
+            try:
+                item = json.loads(r[5]) if r[5] else {}
+            except (TypeError, ValueError):
+                item = {}
+            if not isinstance(item, dict):
+                item = {}
+            item.setdefault("id", int(r[0]))
+            item.setdefault("kind", r[2] or "")
+            item.setdefault("savedTs", int(r[1]))
+            out.append(item)
+        return out
+
+    def save_quant_state(self, name: str, data: dict) -> None:
+        """保存一份引擎/风控状态快照（同 name 覆盖），如 'risk' / 'drift'。"""
+        if not self.enabled:
+            return
+        name = str(name or "")[:32]
+        if not name:
+            return
+        try:
+            payload = json.dumps(data, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return
+        self._q("REPLACE INTO quant_state(name,ts,data) VALUES(%s,%s,%s)",
+                (name, int(time.time() * 1000), payload))
+
+    def quant_state(self, name: str) -> dict | None:
+        """读回同名状态快照；没有/坏 JSON/非 dict 都返回 None。"""
+        if not self.enabled:
+            return None
+        name = str(name or "")[:32]
+        if not name:
+            return None
+        rows = self._qall("SELECT data FROM quant_state WHERE name=%s LIMIT 1", (name,))
+        if not rows:
+            return None
+        try:
+            data = json.loads(rows[0][0])
+        except (TypeError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    # ---- 模拟仓（纸上交易） ----
+
+    def save_paper_position(self, pos: dict) -> None:
+        """UPSERT 未平仓仓位快照（每币一条）。重启后 PaperBook 靠它恢复仓位。"""
+        if not self.enabled or not isinstance(pos, dict):
+            return
+        symbol = str(pos.get("symbol") or "")[:16]
+        if not symbol:
+            return
+        self._q("REPLACE INTO paper_positions(symbol,ts,data) VALUES(%s,%s,%s)",
+                (symbol, int(time.time() * 1000),
+                 json.dumps(pos, ensure_ascii=False)))
+
+    def delete_paper_position(self, symbol: str) -> None:
+        """平仓或移出监控后删掉该币的未平仓快照。"""
+        if not self.enabled:
+            return
+        symbol = str(symbol or "")[:16]
+        if not symbol:
+            return
+        self._q("DELETE FROM paper_positions WHERE symbol=%s", (symbol,))
+
+    def paper_positions(self) -> list[dict]:
+        """全部未平仓仓位（按保存时间升序）。坏行跳过，一条脏数据不能拖垮恢复。"""
+        rows = self._qall("SELECT data FROM paper_positions ORDER BY ts ASC")
+        out = []
+        for (data,) in rows:
+            try:
+                item = json.loads(data)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(item, dict):
+                out.append(item)
+        return out
+
+    def save_paper_trade(self, trade: dict) -> None:
+        """记录一笔已平仓的模拟仓交易（camelCase 字典，字段与 PaperBook 平仓记录一致）。
+
+        统计要用的 count/timeout/pnl 是真实列，胜率分量这种嵌套结构才进 JSON，
+        这样 summary 不用把所有历史读进内存再算（内存窗口会漏掉更早的样本）。
+        """
+        if not self.enabled or not isinstance(trade, dict):
+            return
+        now = int(time.time() * 1000)
+        # 胜率分量只是辅助解释，序列化失败不能拖累整笔交易入库。
+        parts = trade.get("winrateParts")
+        try:
+            parts_json = json.dumps(parts, ensure_ascii=False) if parts else None
+        except (TypeError, ValueError):
+            parts_json = None
+        symbol = str(trade.get("symbol") or "")[:16]
+        entry_ts = _safe_int(trade.get("entryTs"), 0)
+        # 幂等键：同一仓位实例（symbol + 开仓毫秒）只允许一条平仓流水。
+        # 网络抖动可能"INSERT 已提交但客户端报错"，重试若再插一条就会让
+        # 胜率/盈亏统计翻倍；INSERT IGNORE + 唯一键把重试变成幂等操作。
+        trade_key = f"{symbol}:{entry_ts}" if symbol and entry_ts > 0 else None
+        self._q(
+            "INSERT IGNORE INTO paper_trades(closed_ts,entry_ts,symbol,direction,entry,"
+            "exit_price,sl,tp,leverage,margin,qty,pnl,pnl_pct,reason,score,gap,"
+            "winrate,winrate_parts,grade,pattern,regime,atr_at_entry,held_ms,trailing,"
+            "recovered,trade_key) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (_safe_int(trade.get("closedAt"), now) or now,
+             entry_ts,
+             symbol,
+             str(trade.get("direction") or "")[:8],
+             _safe_float(trade.get("entry")),
+             _safe_float(trade.get("exit")),
+             _safe_float(trade.get("sl")),
+             _safe_float(trade.get("tp")),
+             _safe_int(trade.get("leverage"), 0),
+             _safe_float(trade.get("margin")),
+             _safe_float(trade.get("qty")),
+             _safe_float(trade.get("pnl")),
+             _safe_float(trade.get("pnlPct")),
+             str(trade.get("reason") or "")[:200],
+             _safe_float(trade.get("score")),
+             _safe_float(trade.get("gap")),
+             _safe_float(trade.get("winrate")),
+             parts_json,
+             str(trade.get("grade") or "")[:16],
+             str(trade.get("pattern") or "")[:40],
+             str(trade.get("regime") or "")[:16],
+             _safe_float(trade.get("atrAtEntry")),
+             _safe_int(trade.get("heldMs"), 0),
+             1 if trade.get("trailing") else 0,
+             1 if trade.get("recovered") else 0,
+             trade_key))
+
+    def paper_trades(self, limit: int = 200) -> list[dict]:
+        """最近 limit 笔已平仓记录（时间倒序），字段与 PaperBook 平仓记录一致。"""
+        limit = max(1, min(2000, _safe_int(limit, 200)))
+        rows = self._qall(
+            "SELECT id,symbol,direction,entry,exit_price,sl,tp,leverage,margin,qty,"
+            "pnl,pnl_pct,reason,winrate,score,gap,grade,pattern,regime,atr_at_entry,"
+            "held_ms,closed_ts,entry_ts,trailing,recovered,winrate_parts "
+            "FROM paper_trades ORDER BY closed_ts DESC, id DESC LIMIT %s", (limit,))
+        out = []
+        for r in rows:
+            item = {
+                "id": int(r[0]), "symbol": r[1] or "", "direction": r[2] or "",
+                "entry": float(r[3] or 0), "exit": float(r[4] or 0),
+                "sl": float(r[5] or 0), "tp": float(r[6] or 0),
+                "leverage": int(r[7] or 0), "margin": float(r[8] or 0),
+                "qty": float(r[9] or 0), "pnl": float(r[10] or 0),
+                "pnlPct": float(r[11] or 0), "reason": r[12] or "",
+                "winrate": float(r[13] or 0), "score": float(r[14] or 0),
+                "gap": float(r[15] or 0), "grade": r[16] or "",
+                "pattern": r[17] or "", "regime": r[18] or "",
+                "atrAtEntry": float(r[19] or 0), "heldMs": int(r[20] or 0),
+                "closedAt": int(r[21] or 0), "entryTs": int(r[22] or 0),
+                "trailing": bool(r[23]), "recovered": bool(r[24]),
+            }
+            try:
+                parts = json.loads(r[25]) if r[25] else {}
+            except (TypeError, ValueError):
+                parts = {}
+            item["winrateParts"] = parts if isinstance(parts, dict) else {}
+            out.append(item)
+        return out
+
+    def paper_trade_stats(self, days: int = 0) -> dict:
+        """模拟仓平仓汇总。days=0 统计全部，否则只看最近 days 天的 closed_ts。"""
+        sql = ("SELECT COUNT(*), "
+               "SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END), "
+               "SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END), "
+               "SUM(CASE WHEN reason='timeout' THEN 1 ELSE 0 END), SUM(pnl) "
+               "FROM paper_trades")
+        days = _safe_int(days, 0)
+        if days > 0:
+            since = int(time.time() * 1000) - days * 86400_000
+            rows = self._qall(sql + " WHERE closed_ts>=%s", (since,))
+        else:
+            rows = self._qall(sql)
+        r = rows[0] if rows else (0, 0, 0, 0, 0)
+        return {"count": int(r[0] or 0), "wins": int(r[1] or 0),
+                "losses": int(r[2] or 0), "timeouts": int(r[3] or 0),
+                "pnl": round(float(r[4] or 0), 4)}
+
+    def paper_symbol_stats(self, days: int = 0) -> list[dict]:
+        """按币种汇总模拟仓战绩（含 netPnl），空 symbol 跳过。"""
+        sql = ("SELECT symbol, COUNT(*), "
+               "SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END), "
+               "SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END), "
+               "SUM(CASE WHEN reason='timeout' THEN 1 ELSE 0 END), SUM(pnl) "
+               "FROM paper_trades")
+        days = _safe_int(days, 0)
+        if days > 0:
+            since = int(time.time() * 1000) - days * 86400_000
+            rows = self._qall(
+                sql + " WHERE closed_ts>=%s GROUP BY symbol ORDER BY symbol", (since,))
+        else:
+            rows = self._qall(sql + " GROUP BY symbol ORDER BY symbol")
+        out = []
+        for r in rows:
+            if not r[0]:
+                continue
+            out.append({"symbol": r[0], "closed": int(r[1] or 0),
+                        "wins": int(r[2] or 0), "losses": int(r[3] or 0),
+                        "timeouts": int(r[4] or 0),
+                        "netPnl": round(float(r[5] or 0), 4)})
         return out
 
     # ---- 账户权益 ----
@@ -546,7 +903,7 @@ class Storage:
         """Recent pattern outcomes with exponential recency weighting.
 
         Newest evaluated hit has weight 1, the next ``alpha``, then
-        ``alpha**2``, and so on within the configured 7-day retention window.
+        ``alpha**2``, and so on within the configured hit retention window (storage.hit_days, default 90 days).
         Raw counts stay available for audit; the quality gate consumes the
         effective weighted values.
         """
@@ -735,13 +1092,24 @@ class Storage:
             return
         self._last_prune = now_ms
         self._q("DELETE FROM candles WHERE open_time < %s", (now_ms - self.keep_ms,))
-        self._q("DELETE FROM hits WHERE ts < %s",
-                (self._keep_since(now_ms, self.hit_ms / 86400_000),))
+        # 各业务表按 storage.*_days 清理，0 = 永久保留（跳过清理）。
+        # _keep_since 对齐到整天：被保留的那一天永远是完整的，不会削掉半天。
+        if self.hit_days > 0:
+            self._q("DELETE FROM hits WHERE ts < %s",
+                    (self._keep_since(now_ms, self.hit_days),))
         # 权益采样保留 2 天（曲线只看最近 8 小时，多留一天便于回看）
         self._q("DELETE FROM equity WHERE ts < %s", (self._keep_since(now_ms, 2),))
-        # 决策流水保留 3 天（数据更迭快，留够回看即可）
-        self._q("DELETE FROM quant_events WHERE ts < %s", (self._keep_since(now_ms, 3),))
-        # 仓位历史保留 7 天
-        self._q("DELETE FROM quant_trades WHERE ts < %s", (self._keep_since(now_ms, 7),))
-        # 新闻存档保留 3 天
-        self._q("DELETE FROM news WHERE ts < %s", (self._keep_since(now_ms, 3),))
+        for table, days in (
+            ("quant_events", self.quant_event_days),   # 决策流水（原硬编码 3 天）
+            ("quant_trades", self.trade_keep_days),    # 实盘成交（原硬编码 7 天）
+            ("news", self.news_days),                  # 新闻存档（原硬编码 3 天）
+            ("decision_traces", self.trace_days),      # 决策 trace / gate 拦截
+        ):
+            if days > 0:
+                self._q(f"DELETE FROM {table} WHERE ts < %s",
+                        (self._keep_since(now_ms, days),))
+        # 模拟仓平仓历史按 paper_keep_days 保留（0=永久）。未平仓仓位不能删：
+        # 重启后 PaperBook 要靠它恢复仓位，再由策略正常平掉。
+        if self.paper_keep_days > 0:
+            self._q("DELETE FROM paper_trades WHERE closed_ts < %s",
+                    (self._keep_since(now_ms, self.paper_keep_days),))

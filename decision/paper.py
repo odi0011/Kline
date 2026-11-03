@@ -30,19 +30,29 @@
    纸上交易要验证的假设是"按信号方向持有 15 分钟"，所以只由
    止盈 / 止损 / 到期离场；方向变了也等这一仓走完，下一仓再按新方向开。
    风险仍由止损兜底，不需要用"翻向就跑"来控风险。
+
+6. **账本必须进数据库，不能只在内存**
+   2026-11 之前这里是纯内存账本：仓位、平仓记录、累计统计全在
+   `self.positions / self.history / self.stats` 里，进程一重启全部清零，
+   也没法用 SQL 做长期策略分析。现在由 main 注入 MySQL 存储层：
+     · 未平仓仓位 → paper_positions 表（每次 tick 覆盖，重启原样恢复，
+       连移动止损之后的 sl、最有利价 peak 都保留）
+     · 已平仓记录 → paper_trades 表（append-only，默认永久保留）
+     · 汇总统计 → 直接按 paper_trades 全量聚合（session / bySymbol 同口径）
+   store=None 时（单元测试 / 无 MySQL 降级）仍按纯内存跑，行为与旧版一致。
 """
 from __future__ import annotations
 
 import math
 import threading
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field, fields
 
 # 一个模拟仓的生命周期
 HOLD_MS = 15 * 60 * 1000
 # 每个模拟仓的固定名义价值（USDT）。固定下来才能横向比较策略表现。
 NOTIONAL = 1000.0
-# 历史记录条数（内存环形，不落库）
+# 内存里保留的最近平仓记录条数（只是缓存；全量在 MySQL paper_trades 表）
 MAX_HISTORY = 200
 # 动态止损：ATR 的倍数
 TRAIL_ATR = 1.4
@@ -129,6 +139,9 @@ class PaperPosition:
     # 开仓时的 ATR（价格口径）。移动止损必须用它做基准，不能用每轮的当前 ATR：
     # 行情转静时 ATR 会塌下去，止损就会被拽到贴着现价，一碰就出局。
     atr_at_entry: float = 0.0
+    # 开仓时的形态与行情状态（平仓记录要带上，便于按形态/市况复盘）
+    pattern: str = ""
+    regime: str = ""
     # 运行中更新
     mark: float = 0.0
     upnl: float = 0.0
@@ -141,6 +154,56 @@ class PaperPosition:
         return asdict(self)
 
 
+# 从库里恢复仓位 JSON 时只认这些字段，多出来的（旧版本/新版本）一律忽略
+_POSITION_FIELDS = tuple(f.name for f in fields(PaperPosition))
+
+
+def _position_from_dict(data) -> "PaperPosition | None":
+    """把 paper_positions.data 里的 JSON 还原成 PaperPosition。
+
+    缺字段/类型不对的脏数据返回 None（跳过这一条），不能让一条坏记录
+    把整个进程的启动恢复带崩。
+    """
+    if not isinstance(data, dict):
+        return None
+    known = {name: data[name] for name in _POSITION_FIELDS if name in data}
+    try:
+        pos = PaperPosition(**known)
+    except (TypeError, ValueError):
+        return None
+    # 字段类型也要校验并**强转**：库里被手工改坏/旧版本残留的行如果带着
+    # entry="abc"（或 "1.5" 这种数值字符串）进来，tick 里 ""100" - 1" /
+    # price > peak 会抛 TypeError 被引擎静默吞掉，那个币的模拟仓就永久停摆。
+    # 坏行直接跳过（treated as 未恢复），能救的数值字符串转成真正的 float/int。
+    if not str(pos.symbol or "").strip():
+        return None
+    if pos.direction not in ("long", "short"):
+        return None
+    int_fields = ("entry_ts", "expires_ts", "leverage", "ticks")
+    float_fields = ("entry", "qty", "sl", "tp", "margin", "liq", "notional",
+                    "sl_pct", "tp_pct", "atr_at_entry", "mark", "upnl",
+                    "upnl_pct", "peak")
+    for name in int_fields + float_fields:
+        value = _num(getattr(pos, name, None))
+        if value is None:
+            return None
+        setattr(pos, name, int(value) if name in int_fields else float(value))
+    for name in ("entry", "entry_ts", "expires_ts", "leverage", "qty",
+                 "sl", "tp", "margin", "liq"):
+        if getattr(pos, name) <= 0:
+            return None
+    # 可选数值：None 是合法值（如没算胜率），但 "abc" 这种垃圾要跳过整行
+    for name in ("rr", "score", "gap", "winrate"):
+        raw = getattr(pos, name, None)
+        if raw is None:
+            continue
+        value = _num(raw)
+        if value is None:
+            return None
+        setattr(pos, name, float(value))
+    return pos
+
+
 def _liq_price(entry: float, leverage: int, direction: str) -> float:
     """强平价：按维持保证金余量折算，多空对称。"""
     span = 1.0 / max(1, leverage) * 0.95
@@ -148,14 +211,176 @@ def _liq_price(entry: float, leverage: int, direction: str) -> float:
 
 
 class PaperBook:
-    """所有币种的模拟仓集合。线程安全（manage 在 thread pool 里跑）。"""
+    """所有币种的模拟仓集合。线程安全（manage 在 thread pool 里跑）。
 
-    def __init__(self):
+    store 是 MySQL 持久化接口（storage.Storage 那套方法，鸭子类型；None=纯内存）：
+      · 开仓 + 每轮更新 → paper_positions（重启原样恢复，移动止损后的 sl 也保留）
+      · 平仓 → paper_trades（append-only，重启不清零，可直接 SQL 做策略分析）
+      · 汇总 → paper_trades 全量聚合（session 与 bySymbol 同一口径）
+    落库失败只打一次日志、绝不让 5 秒一轮的推演中断；内存账本照常跑。
+    """
+
+    def __init__(self, store=None):
         self._lock = threading.RLock()
         self.positions: dict[str, PaperPosition] = {}
         self.history: list[dict] = []
         self.stats = {"opened": 0, "closed": 0, "wins": 0, "losses": 0,
                       "timeouts": 0, "netPnl": 0.0}
+        # Storage 未启用（没配 MySQL / 连不上，enabled=False）时等同于没接库：
+        # 否则 summary 会读到一张空表并误报 source=mysql。
+        if store is not None and not bool(getattr(store, "enabled", True)):
+            store = None
+        self.store = store
+        # 刚从库里恢复、还没在 tick 里处理过的仓位。停机期间可能已经到期，
+        # 要用这段时间的 K 线补算真实离场价，不能拿重启后的现价硬平。
+        self._recovered: set[str] = set()
+        self._storage_error = ""
+        # 落库失败但还没写进 paper_trades 的平仓流水：先留在内存里重试，
+        # 这段时间不删/不覆盖 paper_positions 的旧行——宁可重启后按旧仓
+        # 再结算一次，也不能让一笔成交凭空消失。
+        self._pending_trades: list[dict] = []
+        self._pending_deletes: set[str] = set()
+        # 启动时读不到 paper_positions（数据库不可用）：本进程退化为纯内存账本，
+        # 不写库——否则新仓 REPLACE 会把库里没读到的那行覆盖掉。重启后再恢复。
+        self._store_suspended = False
+        # 启动恢复结果，main 用它打一行日志（恢复了几个仓、多少条历史）
+        self.restore_info = {"positions": 0, "trades": 0, "closed": 0}
+        if self.store is not None:
+            self.restore_info = self.restore()
+
+    # ---------- 持久化 ----------
+
+    def restore(self) -> dict:
+        """从数据库恢复未平仓仓位、最近平仓记录与累计统计（启动时调用）。
+
+        返回恢复了多少，供启动日志核对。store 未接入时返回全 0。
+        """
+        summary = {"positions": 0, "trades": 0, "closed": 0}
+        if self.store is None:
+            return summary
+        rows = self._read("恢复未平仓仓位", self.store.paper_positions)
+        positions_ok = rows is not None
+        loaded: dict[str, PaperPosition] = {}
+        for data in rows or []:
+            pos = _position_from_dict(data)
+            if pos is None:
+                continue
+            # _recovered 里的仓位在第一次 tick 时检查是否停机期间已到期
+            loaded[pos.symbol] = pos
+        trades = self._read("恢复最近平仓记录", self.store.paper_trades, MAX_HISTORY) or []
+        agg = self._read("恢复累计统计", self.store.paper_trade_stats, 0)
+        with self._lock:
+            self.positions.update(loaded)
+            self._recovered.update(loaded)
+            if trades:
+                # 存储层按 closed_ts 倒序返回，内存里保持时间升序
+                self.history = list(reversed(trades))[-MAX_HISTORY:]
+            if isinstance(agg, dict):
+                closed = int(agg.get("count") or 0)
+                self.stats = {
+                    # opened 无法从"已平仓"精确反推：用累计平仓数 + 当前未平仓数近似；
+                    # 引擎每开一仓都会写 paper_positions，这个口径够看趋势。
+                    "opened": closed + len(self.positions),
+                    "closed": closed,
+                    "wins": int(agg.get("wins") or 0),
+                    "losses": int(agg.get("losses") or 0),
+                    "timeouts": int(agg.get("timeouts") or 0),
+                    "netPnl": round(float(agg.get("pnl") or 0), 4),
+                }
+            summary = {"positions": len(loaded), "trades": len(self.history),
+                       "closed": self.stats["closed"]}
+        # 读不到未平仓行时不要当成"空账本"继续写库，否则会把旧行覆盖掉；
+        # 本进程按纯内存模式跑（summary 也会标 source=memory），重启后再恢复。
+        self._store_suspended = not positions_ok
+        return summary
+
+    def _read(self, action: str, fn, *args):
+        """读库容错：读失败按"空"处理，但要留下可见日志。"""
+        try:
+            return fn(*args)
+        except Exception as exc:       # 数据库/网络异常都不该打断推演
+            self._warn(action, exc)
+            return None
+
+    def _warn(self, action: str, exc: Exception) -> None:
+        """落库失败只报一次同样的错，避免每 5 秒刷满日志。"""
+        message = f"[paper] {action}失败: {type(exc).__name__}: {exc}"
+        if message != self._storage_error:
+            self._storage_error = message
+            print(message)
+
+    def _saved(self) -> None:
+        self._storage_error = ""
+
+    def _store_usable(self) -> bool:
+        return self.store is not None and not self._store_suspended
+
+    def _flush_pending(self) -> None:
+        """重试上次写失败的平仓流水/删除动作（每轮 tick 都会调，通常为空）。"""
+        if not self._store_usable():
+            return
+        for record in list(self._pending_trades):
+            if not self._save_trade(record):
+                continue
+            self._pending_trades.remove(record)
+            symbol = str(record.get("symbol") or "")
+            if not self._forget(symbol):
+                self._pending_deletes.add(symbol)
+        for symbol in list(self._pending_deletes):
+            if symbol in self.positions:
+                # 新仓的 REPLACE 已经把旧行覆盖掉了，不需要再删
+                self._pending_deletes.discard(symbol)
+                continue
+            if self._forget(symbol):
+                self._pending_deletes.discard(symbol)
+
+    def _pending_for(self, symbol: str) -> bool:
+        return any(str(r.get("symbol") or "") == symbol
+                   for r in self._pending_trades)
+
+    def _persist(self, pos: PaperPosition) -> bool:
+        """未平仓仓位 UPSERT 到 paper_positions（开仓/每轮更新都调）。
+
+        有同币的平仓流水还没写进库时先不写仓位：此时 REPLACE 会把那笔
+        平仓对应的旧行覆盖掉，一旦进程随后崩溃，成交和水位就没了。
+        """
+        if not self._store_usable():
+            return False
+        self._flush_pending()
+        if self._pending_for(pos.symbol):
+            return False
+        try:
+            self.store.save_paper_position(pos.to_dict())
+            self._pending_deletes.discard(pos.symbol)
+            self._saved()
+            return True
+        except Exception as exc:
+            self._warn("模拟仓仓位落库", exc)
+            return False
+
+    def _forget(self, symbol: str) -> bool:
+        """平仓后删掉 paper_positions 里那一行。"""
+        if not self._store_usable():
+            return False
+        try:
+            self.store.delete_paper_position(symbol)
+            self._saved()
+            return True
+        except Exception as exc:
+            self._warn("模拟仓仓位删除", exc)
+            return False
+
+    def _save_trade(self, record: dict) -> bool:
+        """平仓记录 INSERT 到 paper_trades（只追加，不依赖内存窗口）。"""
+        if not self._store_usable():
+            return False
+        try:
+            self.store.save_paper_trade(record)
+            self._saved()
+            return True
+        except Exception as exc:
+            self._warn("模拟仓平仓记录落库", exc)
+            return False
 
     # ---------- 对外 ----------
 
@@ -179,15 +404,29 @@ class PaperBook:
     def summary(self) -> dict:
         """按币种汇总模拟仓战绩（只统计已平仓）。
 
-        两个口径必须分开报，否则会把"最近 200 条"当成"全部"：
-          · session：进程启动以来的累计计数（stats，可能远多于窗口）
-          · bySymbol：只覆盖内存里最近 MAX_HISTORY 条平仓记录
-        Agent 回答"哪个模拟仓胜率最高"用的就是 bySymbol；不能拿实盘账户去推。
+        接了数据库（store 非空）时：session 与 bySymbol 都来自 paper_trades
+        全量聚合，服务重启不清零、也不受内存 200 条缓存限制——这是做策略
+        分析唯一可信的口径。没接数据库的降级模式才退回内存口径，并明确标注。
+
+        两个口径都保留同样的键名（closed/wins/losses/timeouts/winrate/netPnl），
+        Agent 的 read_paper 不管底层是哪种都不会读崩。
         """
         with self._lock:
             rows = list(self.history)
             open_count = len(self.positions)
             stats = dict(self.stats)
+        db_stats = db_symbols = None
+        if self.store is not None and not self._store_suspended:
+            # 先把挂起的流水补写掉，避免"内存已平仓、DB 统计还是旧值"的短暂不一致。
+            # 必须和 tick 共用同一把锁：summary 在事件循环线程、tick 在线程池，
+            # 两个线程同时 _flush_pending 会对同一个 _pending_trades 做 remove。
+            with self._lock:
+                self._flush_pending()
+            db_stats = self._read("读取模拟仓统计", self.store.paper_trade_stats, 0)
+            db_symbols = self._read("读取模拟仓分币统计",
+                                    self.store.paper_symbol_stats, 0)
+        if isinstance(db_stats, dict):
+            return self._db_summary(db_stats, db_symbols or [], open_count, len(rows))
         by: dict[str, dict] = {}
         for r in rows:
             sym = str(r.get("symbol") or "")
@@ -215,8 +454,10 @@ class PaperBook:
         ranked.sort(key=lambda x: (-(x["winrate"] or 0.0), -x["closed"]))
         return {
             "note": "模拟仓=15 分钟纸上交易，不产生真实委托，与账户实盘持仓无关。"
-                    "session 是进程启动以来的累计值；bySymbol 只覆盖内存里最近 "
-                    f"{MAX_HISTORY} 条平仓记录，样本少时不要当稳定胜率。",
+                    "当前数据库不可用（纯内存降级模式）：session 是进程启动以来的"
+                    f"累计值，bySymbol 只覆盖内存里最近 {MAX_HISTORY} 条平仓记录，"
+                    "重启会清零——数据库恢复后这些数据会自动重新进库。",
+            "source": "memory",
             "openCount": open_count,
             "session": {
                 "closed": stats["closed"], "wins": stats["wins"],
@@ -225,7 +466,54 @@ class PaperBook:
                             if stats["closed"] else None),
                 "netPnl": round(stats["netPnl"], 4),
             },
+            # 内存降级模式保持旧契约（Agent/测试都按这两个键读）
             "window": {"records": len(rows), "limit": MAX_HISTORY},
+            "bySymbol": ranked,
+        }
+
+    def _db_summary(self, agg: dict, symbols: list, open_count: int,
+                    cached: int) -> dict:
+        """数据库口径的汇总：全量聚合，按胜率排序。"""
+        closed = int(agg.get("count") or 0)
+        wins = int(agg.get("wins") or 0)
+        ranked = []
+        for item in symbols:
+            if not isinstance(item, dict):
+                continue
+            sym = str(item.get("symbol") or "")
+            if not sym:
+                continue
+            n = int(item.get("closed") or 0)
+            w = int(item.get("wins") or 0)
+            pnl = round(float(item.get("netPnl") or 0), 4)
+            ranked.append({
+                "symbol": sym,
+                "closed": n,
+                "wins": w,
+                "losses": int(item.get("losses") or 0),
+                "timeouts": int(item.get("timeouts") or 0),
+                "netPnl": pnl,
+                "winrate": round(w / n * 100, 1) if n else None,
+                "avgPnl": round(pnl / n, 4) if n else None,
+            })
+        # 胜率高的在前；胜率相同比样本量。没有平仓记录的币不上榜。
+        ranked.sort(key=lambda x: (-(x["winrate"] or 0.0), -x["closed"]))
+        return {
+            "note": "模拟仓=15 分钟纸上交易，不产生真实委托，与账户实盘持仓无关。"
+                    "全部已平仓记录在 MySQL paper_trades 表：session 与 bySymbol "
+                    "都是数据库全量累计口径，服务重启不会清零，可直接用 SQL 复盘。",
+            "source": "mysql",
+            "openCount": open_count,
+            "session": {
+                "closed": closed, "wins": wins,
+                "losses": int(agg.get("losses") or 0),
+                "timeouts": int(agg.get("timeouts") or 0),
+                "winrate": (round(wins / closed * 100, 1) if closed else None),
+                "netPnl": round(float(agg.get("pnl") or 0), 4),
+            },
+            # window 现在只是"内存里缓存了多少条最近记录"，统计口径看 session/bySymbol
+            "window": {"records": cached, "limit": MAX_HISTORY,
+                       "source": "memory-cache"},
             "bySymbol": ranked,
         }
 
@@ -244,18 +532,35 @@ class PaperBook:
         ctx 需要的字段：
           price, atr, score, gap, grade, direction, reason, regime,
           pattern, patternStats, maxLeverage
+        可选字段 bars：该币最近 K 线（list[Candle]），只在"从库恢复的仓位
+        在停机期间已到期"时用来补算真实离场价；没有就退回现价。
         返回当前持仓的 dict（或 None）。
         """
         price = _num(ctx.get("price"))
         if not price or price <= 0:
-            return self.positions.get(symbol).to_dict() if symbol in self.positions else None
+            pos = self.positions.get(symbol)
+            return pos.to_dict() if pos else None
 
         with self._lock:
+            self._flush_pending()
+
             pos = self.positions.get(symbol)
             if pos is None:
                 self._open(symbol, ctx, price)
                 pos = self.positions.get(symbol)
                 return pos.to_dict() if pos else None
+
+            # 从数据库恢复的仓位：先看停机期间是否已到期。到期就用那段时间的
+            # K 线判断先碰止盈还是止损，按真实离场价记账；还没到期就正常推进。
+            if symbol in self._recovered:
+                self._recovered.discard(symbol)
+                settled = self._settle_recovered(pos, price, ctx.get("bars") or [])
+                if settled is not None:
+                    self._close(pos, settled[0], settled[1], ctx, recovered=True)
+                    # 补结算后立刻按当前数据重开，仓位永不停
+                    self._open(symbol, ctx, price)
+                    pos = self.positions.get(symbol)
+                    return pos.to_dict() if pos else None
 
             pos.ticks += 1
             pos.mark = price
@@ -276,15 +581,22 @@ class PaperBook:
                 self._open(symbol, ctx, price)
             else:
                 self._trail(pos, ctx)
+                # 浮盈/peak/移动止损都可能变了；每轮覆盖进库，重启后接着走
+                self._persist(pos)
             pos = self.positions.get(symbol)
             return pos.to_dict() if pos else None
 
     def drop_missing(self, keep: set[str]) -> None:
         """币种被移出监控时清掉它的模拟仓（不记录，因为不是正常平仓）。"""
+        removed = []
         with self._lock:
             for sym in list(self.positions):
                 if sym not in keep:
                     self.positions.pop(sym, None)
+                    self._recovered.discard(sym)
+                    removed.append(sym)
+        for sym in removed:
+            self._forget(sym)
 
     # ---------- 内部 ----------
 
@@ -353,11 +665,56 @@ class PaperBook:
             winrate=wr["prob"],
             winrate_parts=wr["parts"],
             atr_at_entry=round(atr, 8) if (atr and atr > 0) else 0.0,
+            pattern=str(ctx.get("pattern") or "")[:40],
+            regime=str(ctx.get("regime") or "")[:16],
             mark=entry,
             peak=entry,
         )
         self.positions[symbol] = pos
         self.stats["opened"] += 1
+        # 开仓即落库：进程重启后这一仓还在，不会"凭空消失"
+        self._persist(pos)
+
+    def _settle_recovered(self, pos: PaperPosition, price: float,
+                          bars: list) -> tuple[float, str] | None:
+        """补结算"停机期间已经到期"的恢复仓位。
+
+        重启后不能拿现价当 15 分钟窗口到期价——停机期间价格可能已经先碰过
+        止盈/止损。这里按 entry_ts ~ expires_ts 之间的 K 线逐根判断：
+        先碰止损记 sl、先碰止盈记 tp，都没碰则用到期前最后一根收盘价记 timeout。
+        一根K线内高低都碰到时保守判止损（与胜率评估口径一致）。
+        返回 (离场价, 原因)；仓位还没到期返回 None。
+
+        近似说明：移动止损在停机期间的历史位置没有逐笔记录，这里用恢复出来的
+        最终 sl 判断，属于偏保守的近似（不会高估盈利）。
+        """
+        now = int(time.time() * 1000)
+        if now < pos.expires_ts:
+            return None
+        long_ = pos.direction == "long"
+        last_close = None
+        for bar in bars or []:
+            try:
+                bar_ts = int(getattr(bar, "open_time", 0) or 0)
+                high = float(getattr(bar, "high"))
+                low = float(getattr(bar, "low"))
+            except (TypeError, ValueError):
+                continue
+            if bar_ts <= pos.entry_ts or bar_ts > pos.expires_ts:
+                continue
+            if long_:
+                if low <= pos.sl:
+                    return (pos.sl, "sl")
+                if high >= pos.tp:
+                    return (pos.tp, "tp")
+            else:
+                if high >= pos.sl:
+                    return (pos.sl, "sl")
+                if low <= pos.tp:
+                    return (pos.tp, "tp")
+            last_close = _num(getattr(bar, "close", None))
+        # 没有可用K线：只能按现价平，原因仍记 timeout，但 record.recovered=True
+        return (last_close or price, "timeout")
 
     def _check_exit(self, pos: PaperPosition, price: float) -> str:
         """判断是否该离场：止盈 / 止损 / 到期。
@@ -423,7 +780,8 @@ class PaperBook:
                 pos.trailing = True
                 pos.sl_pct = round((pos.sl - pos.entry) / pos.entry * 100, 2)
 
-    def _close(self, pos: PaperPosition, price: float, reason: str, ctx: dict) -> None:
+    def _close(self, pos: PaperPosition, price: float, reason: str, ctx: dict,
+               recovered: bool = False) -> None:
         qty_actual = (price - pos.entry) * pos.qty * (1 if pos.direction == "long" else -1)
         pnl = round(qty_actual, 4)
         self.positions.pop(pos.symbol, None)
@@ -443,9 +801,17 @@ class PaperBook:
             "winrate": pos.winrate,
             "score": pos.score,
             "grade": pos.grade,
+            "entryTs": pos.entry_ts,
+            "gap": pos.gap,
+            "pattern": pos.pattern,
+            "regime": pos.regime,
+            "atrAtEntry": pos.atr_at_entry,
+            "winrateParts": pos.winrate_parts or {},
             "heldMs": max(0, int(time.time() * 1000) - pos.entry_ts),
             "closedAt": int(time.time() * 1000),
             "trailing": pos.trailing,
+            # 重启补结算的仓位要标出来：它不是实时盯盘盯出来的离场价
+            "recovered": bool(recovered),
         }
         self.history.append(record)
         if len(self.history) > MAX_HISTORY:
@@ -458,3 +824,12 @@ class PaperBook:
         if reason == "timeout":
             self.stats["timeouts"] += 1
         self.stats["netPnl"] = round(self.stats["netPnl"] + pnl, 4)
+        # 先记平仓流水、再删未平仓行：中途崩了最多多一条仓，不会丢一笔成交。
+        # 流水写失败时**保留未平仓行并挂起重试**：宁可重启后按旧仓再结算一次，
+        # 也不能让这笔成交凭空消失（旧实现吞异常后照删，等于永久丢单）。
+        if self._save_trade(record):
+            if not self._forget(pos.symbol):
+                self._pending_deletes.add(pos.symbol)
+        elif self._store_usable():
+            # 库可用但这次写失败：挂起重试（内存账本继续跑）
+            self._pending_trades.append(record)

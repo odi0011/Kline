@@ -113,6 +113,41 @@ def _floor_step(value: float, step: float) -> float:
     return math.floor(value / step + 1e-9) * step
 
 
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
+def _as_str(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    return default
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes")
+    return default
+
+
 class RiskEngine:
     def __init__(self, config: DecisionConfig | None = None):
         self.config = config or DecisionConfig()
@@ -178,6 +213,128 @@ class RiskEngine:
         cutoff = now_ms - 60_000
         while state.order_times and state.order_times[0] < cutoff:
             state.order_times.popleft()
+
+    def snapshot(self) -> dict:
+        """导出全部账户的风控状态（纯原生类型，json.dumps 可直接序列化）。
+
+        只导出保护/统计状态，不含配置；deque 一律转 list，时间戳统一 int。
+        """
+        accounts: dict[str, dict] = {}
+        for account, state in self._state.items():
+            accounts[str(account)] = {
+                "day": _as_str(state.day, ""),
+                "dayStartEquity": _as_float(state.day_start_equity, 0.0),
+                "realizedDailyPnl": _as_float(state.realized_daily_pnl, 0.0),
+                "consecutiveLosses": max(0, _as_int(state.consecutive_losses, 0)),
+                "pauseUntilMs": max(0, _as_int(state.pause_until_ms, 0)),
+                "symbolLossStreak": {
+                    str(symbol): max(0, _as_int(streak, 0))
+                    for symbol, streak in (state.symbol_loss_streak or {}).items()
+                },
+                "lastExitMs": {
+                    str(symbol): max(0, _as_int(ts, 0))
+                    for symbol, ts in (state.last_exit_ms or {}).items()
+                },
+                "recentTrades": [
+                    {
+                        "ts": max(0, _as_int(trade.ts, 0)),
+                        "pnl": _as_float(trade.pnl, 0.0),
+                        "symbol": _as_str(trade.symbol, ""),
+                        "side": _as_str(trade.side, ""),
+                        "reason": _as_str(trade.reason, ""),
+                        "pattern": _as_str(trade.pattern, ""),
+                        "isControl": bool(trade.is_control),
+                    }
+                    for trade in list(state.recent_trades)
+                ],
+                "orderTimes": [
+                    max(0, _as_int(ts, 0)) for ts in list(state.order_times)
+                ],
+            }
+        return {"accounts": accounts}
+
+    def restore(self, data: dict) -> int:
+        """从 snapshot() 的结果恢复账户状态，返回成功恢复的账户数。
+
+        容错约定：
+          · data 非 dict 或 accounts 非 dict → 返回 0；
+          · 坏账户（key 非字符串 / payload 非 dict）跳过；
+          · 坏字段用类型安全转换（失败保留原值），missing 字段保持现状；
+          · deque 按 maxlen 截断（recent_trades 100、order_times 200）；
+          · 任何异常都不向外抛；不清空引擎里已有的其他账户状态。
+        """
+        if not isinstance(data, dict):
+            return 0
+        accounts = data.get("accounts")
+        if not isinstance(accounts, dict):
+            return 0
+        restored = 0
+        for account, payload in accounts.items():
+            if not isinstance(account, str) or not account or not isinstance(payload, dict):
+                continue
+            try:
+                state = self._state.get(account)
+                if state is None:
+                    state = _AccountState()
+                    self._state[account] = state
+                if "day" in payload:
+                    state.day = _as_str(payload.get("day"), state.day)
+                if "dayStartEquity" in payload:
+                    state.day_start_equity = _as_float(
+                        payload.get("dayStartEquity"), state.day_start_equity)
+                if "realizedDailyPnl" in payload:
+                    state.realized_daily_pnl = _as_float(
+                        payload.get("realizedDailyPnl"), state.realized_daily_pnl)
+                if "consecutiveLosses" in payload:
+                    state.consecutive_losses = max(
+                        0, _as_int(payload.get("consecutiveLosses"),
+                                   state.consecutive_losses))
+                if "pauseUntilMs" in payload:
+                    state.pause_until_ms = max(
+                        0, _as_int(payload.get("pauseUntilMs"), state.pause_until_ms))
+                streaks = payload.get("symbolLossStreak")
+                if isinstance(streaks, dict):
+                    state.symbol_loss_streak = {
+                        str(symbol): max(0, _as_int(streak, 0))
+                        for symbol, streak in streaks.items() if str(symbol)
+                    }
+                exits = payload.get("lastExitMs")
+                if isinstance(exits, dict):
+                    state.last_exit_ms = {
+                        str(symbol): max(0, _as_int(ts, 0))
+                        for symbol, ts in exits.items() if str(symbol)
+                    }
+                trades = payload.get("recentTrades")
+                if isinstance(trades, list):
+                    capacity = _AccountState().recent_trades.maxlen or 100
+                    records = []
+                    for item in trades:
+                        if not isinstance(item, dict):
+                            continue
+                        records.append(TradeRecord(
+                            ts=max(0, _as_int(item.get("ts"), 0)),
+                            pnl=_as_float(item.get("pnl"), 0.0),
+                            symbol=_as_str(item.get("symbol"), ""),
+                            side=_as_str(item.get("side"), ""),
+                            reason=_as_str(item.get("reason"), ""),
+                            pattern=_as_str(item.get("pattern"), ""),
+                            is_control=_as_bool(item.get("isControl")),
+                        ))
+                    state.recent_trades = deque(records[-capacity:], maxlen=capacity)
+                times = payload.get("orderTimes")
+                if isinstance(times, list):
+                    capacity = _AccountState().order_times.maxlen or 200
+                    converted = []
+                    for item in times:
+                        try:
+                            converted.append(int(item))
+                        except (TypeError, ValueError):
+                            continue
+                    state.order_times = deque(converted[-capacity:], maxlen=capacity)
+                restored += 1
+            except Exception:
+                continue
+        return restored
 
     def cooldown_seconds(self, account: str, symbol: str) -> int:
         state = self._acc(account)

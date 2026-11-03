@@ -197,7 +197,15 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                       eval_minutes=int(scfg.get("eval_minutes", 10)),
                       eval_threshold=float(scfg.get("eval_threshold", 0.0015)),
                       stats_days=decision_cfg.pattern_window_days,
-                      stats_alpha=decision_cfg.pattern_winrate_alpha)
+                      stats_alpha=decision_cfg.pattern_winrate_alpha,
+                      # 保留期（天；0 = 永久保留）。长期策略分析不能再 7 天就删光。
+                      hit_days=int(scfg.get("hit_days", 90) or 0),
+                      # 模拟仓平仓记录保留天数：0 = 永久保留（策略复盘要长期样本）
+                      paper_keep_days=int(scfg.get("paper_keep_days", 0) or 0),
+                      quant_trade_days=int(scfg.get("quant_trade_days", 365) or 0),
+                      quant_event_days=int(scfg.get("quant_event_days", 30) or 0),
+                      news_days=int(scfg.get("news_days", 7) or 0),
+                      trace_days=int(scfg.get("trace_days", 30) or 0))
     hub.stats_fn = storage.pattern_stats
     hub.symbol_stats_fn = storage.symbol_stats
     hub.query_fn = storage
@@ -450,7 +458,14 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     quant = QuantEngine(accts_box, config_path, price_fn=_price_fn,
                         min_pattern_winrate=float(qcfg.get("min_pattern_winrate", 0.35)),
                         min_pattern_samples=int(qcfg.get("min_pattern_samples", 5)),
-                        decision_config=decision_cfg)
+                        decision_config=decision_cfg,
+                        # 没连上 MySQL 时传 None：模拟仓退回纯内存，
+                        # 汇总口径才不会变成一张空表（降级要显式、可解释）
+                        paper_store=storage if storage.enabled else None)
+    _paper_info = dict(getattr(quant.paper, "restore_info", {}) or {})
+    if _paper_info.get("positions") or _paper_info.get("closed"):
+        print(f"[paper] 模拟仓已从 MySQL 恢复：未平仓 {_paper_info.get('positions', 0)} 个，"
+              f"累计平仓 {_paper_info.get('closed', 0)} 条")
     quant.enabled = bool(qcfg.get("enabled", True))
     # 假数据防护：demo 模式下引擎拒绝一切新开仓（形态来自随机游走，没有交易意义）
     quant.feed_is_live_fn = lambda: hub.mode != "demo"
@@ -462,6 +477,25 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     # 决策流水落库：引擎线程内同步写 MySQL（连接已加锁，开销可忽略）
     quant.storage_fn = storage.save_quant_event
     quant.trade_storage_fn = storage.save_quant_trade
+    # 决策 trace / gate 拦截明细、风控与漂移保护状态：同样落库，重启不清零
+    quant.trace_storage_fn = storage.save_decision_trace
+    quant.trace_read_fn = storage.decision_traces
+    quant.state_storage_fn = storage.save_quant_state
+    quant.state_read_fn = storage.quant_state
+    try:
+        _restored = quant.restore_persistent_state() or {}
+    except Exception as e:       # 恢复失败不能影响服务启动，按空状态继续
+        _restored = {}
+        print(f"[quant] 持久化状态恢复失败: {e}")
+    if _restored.get("traces") or _restored.get("gates") or _restored.get("risk") or _restored.get("drift"):
+        extra = []
+        if _restored.get("risk"):
+            extra.append("风控状态")
+        if _restored.get("drift"):
+            extra.append("漂移保护状态")
+        print(f"[quant] 已从 MySQL 恢复：决策 trace {_restored.get('traces', 0)} 条、"
+              f"gate 拦截 {_restored.get('gates', 0)} 条"
+              + ("、" + "、".join(extra) if extra else ""))
 
     # 指标计算用的K线源：优先检测周期，回落到第一个周期
     def _bars_for(symbol: str):
@@ -940,6 +974,15 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             for agg in [*aggs.values(), *watch_aggs.values()]:
                 agg.sweep(now)
             try:
+                # 行情延迟 p50：前端状态条与 /stats 广播都读 hub.lag_p50，
+                # 之前只初始化成 None、从未赋值（审计发现的死字段）。
+                feed_obj = feed_box.get("feed")
+                if feed_obj is not None:
+                    try:
+                        lag_stats = feed_obj.lag_stats() or {}
+                        hub.lag_p50 = int(lag_stats["p50"]) if lag_stats.get("p50") is not None else None
+                    except Exception:
+                        pass
                 await asyncio.to_thread(quant.manage)    # 止损/止盈监控（每 5 秒，线程池内不卡主循环）
                 qtick += 1
                 if qtick % 10 == 0:                  # 约 5 秒广播一次量化快照

@@ -91,7 +91,14 @@ if os.path.exists(mp):
 entry_key = f"{ACCT_NAME}|{SYMBOL.lower()}"
 if entry_key not in cur:
     cur.append(entry_key)
-json.dump(cur, open(mp, "w"))
+# 原子写：引擎也会改这个文件，直接 open("w") 覆盖可能被读到半截 JSON，
+# 导致手动仓豁免丢失、引擎按自身策略误平手动仓（历史上出过事故）。
+_tmp = mp + ".tmp"
+with open(_tmp, "w", encoding="utf-8") as _f:
+    json.dump(cur, _f, ensure_ascii=False)
+    _f.flush()
+    os.fsync(_f.fileno())
+os.replace(_tmp, mp)
 
 # 7. 强平价 + 止损（algo 条件单：quantity + reduceOnly，closePosition 测试盘不可用）
 pr = signed_request(KEY, SECRET, "/fapi/v2/positionRisk", {"symbol": SYMBOL})

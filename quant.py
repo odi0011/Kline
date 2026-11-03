@@ -111,10 +111,42 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _as_int(value, default: int = 0) -> int:
+    """尽力转 int（落库/恢复的容错转换，坏值回退默认值，不抛异常）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _atomic_write_json(path: str, data) -> bool:
+    """原子写本地 JSON（审计 P1：直接 open("w") 在崩溃时会留下半截文件）。
+
+    同目录 `.tmp` → json.dump → flush + fsync → os.replace 覆盖正式文件。
+    任何异常都吞掉并返回 False，绝不抛给调用方（与原来的 try/except pass 语义一致）。
+    """
+    tmp_path = f"{path}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+        return True
+    except Exception:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        return False
+
+
 class QuantEngine:
     def __init__(self, accts_box: dict, config_path: str, price_fn=None,
                  min_pattern_winrate: float = 0.35, min_pattern_samples: int = 5,
-                 decision_config: DecisionConfig | None = None):
+                 decision_config: DecisionConfig | None = None,
+                 paper_store=None):
         self.accts_box = accts_box          # main 的账户盒子（list/refresh）
         self.config_path = config_path
         self.price_fn = price_fn            # symbol -> 最新价（来自聚合器）
@@ -135,6 +167,12 @@ class QuantEngine:
         self.trade_storage_fn = None       # main 注入：storage.save_quant_trade（仓位历史落库）
         self.bars_fn = None                # main 注入：symbol -> list[Candle]（指标计算用）
         self.equity_fn = None              # main 注入：() -> list[float]（回撤熔断用）
+        # 决策 trace/gate 与风控/漂移状态持久化（main 注入 storage；None = 纯内存）
+        self.trace_storage_fn = None       # main 注入：storage.save_decision_trace(trace, kind)
+        self.trace_read_fn = None          # main 注入：storage.decision_traces(limit, kind)，newest-first
+        self.state_storage_fn = None       # main 注入：storage.save_quant_state(name, data)
+        self.state_read_fn = None          # main 注入：storage.quant_state(name)
+        self._last_state_save = 0          # 上次风控/漂移状态落库时刻（节流用）
         self.indicators: dict[str, dict] = {}   # symbol -> 市场状态（每轮刷新）
         self.live_features: dict[str, dict] = {}   # symbol -> 实时因子快照
         self.live_evaluations: dict[str, dict] = {}
@@ -145,8 +183,10 @@ class QuantEngine:
         # 不是业务数据，重算就能得到。
         self.calc_stream: deque = deque(maxlen=CALC_MAX_ROWS)
         # 模拟仓：每个监控币跑一个 15 分钟的纸上交易，平仓即重开。
-        # 纯内存，不落库（每 15 分钟一条，量很小，但没必要进 DB）。
-        self.paper = PaperBook()
+        # 仓位与平仓记录都落 MySQL（paper_positions / paper_trades）：
+        # 重启后从库里恢复，统计口径也不再是"进程启动以来"。
+        # main 注入 storage；单元测试传 None 时退回纯内存。
+        self.paper = PaperBook(store=paper_store)
         self.calc_storage_fn = None     # main 注入：rows -> None（写库，只留 1 分钟）
         self.calc_read_fn = None        # main 注入：(seconds) -> rows（冷启动补最近数据）
         self.dd_state = {"paused_until": 0, "current": 0.0, "max": 0.0, "peak": 0.0}
@@ -282,6 +322,94 @@ class QuantEngine:
         })
         self.decision_traces.append(trace)
         self.latest_traces[trace["symbol"]] = trace
+        # 决策流水落库（审计 P0：重启后 trace 不能只剩内存）。storage 负责 json 序列化。
+        if self.trace_storage_fn:
+            try:
+                self.trace_storage_fn(trace, "trace")
+            except Exception:
+                pass
+
+    def _append_gate(self, entry: dict) -> None:
+        """记录一条过滤器拦截：内存环形缓冲 + 可选落库（重启后仍能回看拦截原因）。"""
+        self.gate_log.append(entry)
+        if self.trace_storage_fn:
+            try:
+                self.trace_storage_fn(entry, "gate")
+            except Exception:
+                pass
+
+    # ---------- 跨重启状态：trace / gate / 风控 / 漂移 ----------
+
+    def restore_persistent_state(self) -> dict:
+        """启动时从 storage 恢复决策流水与风控/漂移状态（每段独立容错，绝不抛）。"""
+        restored = {"traces": 0, "gates": 0, "risk": False, "drift": False}
+        if self.trace_read_fn:
+            # 决策 trace：storage 返回 newest-first，reversed 后按时间顺序回填
+            try:
+                rows = self.trace_read_fn(24, "trace")
+                if isinstance(rows, (list, tuple)):
+                    for trace in reversed(list(rows)):
+                        if not isinstance(trace, dict):
+                            continue
+                        self.decision_traces.append(trace)
+                        restored["traces"] += 1
+                        symbol = trace.get("symbol")
+                        if isinstance(symbol, str) and symbol:
+                            # 按时间顺序覆盖，最终保留最新一条
+                            self.latest_traces[symbol] = trace
+            except Exception:
+                pass
+            # gate 拦截记录：同样 newest-first → reversed 后回填
+            try:
+                rows = self.trace_read_fn(GATE_MAX_LOG, "gate")
+                if isinstance(rows, (list, tuple)):
+                    for entry in reversed(list(rows)):
+                        if isinstance(entry, dict):
+                            self.gate_log.append(entry)
+                            restored["gates"] += 1
+            except Exception:
+                pass
+        if self.state_read_fn:
+            try:
+                data = self.state_read_fn("risk")
+                if isinstance(data, dict):
+                    restored["risk"] = self.risk.restore(data) > 0
+            except Exception:
+                pass
+            try:
+                data = self.state_read_fn("drift")
+                if isinstance(data, dict):
+                    self._drift_caution_until = max(
+                        0, _as_int(data.get("cautionUntil"), 0))
+                    self._drift_shadow_until = max(
+                        0, _as_int(data.get("shadowUntil"), 0))
+                    restored["drift"] = True
+            except Exception:
+                pass
+        return restored
+
+    def save_persistent_state(self, force: bool = False) -> None:
+        """把风控/漂移状态落库；非 force 时 60 秒节流（manage 每 5 秒一轮）。
+
+        成交（_record_trade）和漂移事件（_handle_drift）用 force 立即落库，量很小。
+        """
+        if not self.state_storage_fn:
+            return
+        now = _now_ms()
+        if not force and now - self._last_state_save < 60_000:
+            return
+        try:
+            self.state_storage_fn("risk", self.risk.snapshot())
+        except Exception:
+            pass
+        try:
+            self.state_storage_fn("drift", {
+                "cautionUntil": max(0, _as_int(self._drift_caution_until, 0)),
+                "shadowUntil": max(0, _as_int(self._drift_shadow_until, 0)),
+            })
+        except Exception:
+            pass
+        self._last_state_save = now
 
     def _load_trades(self):
         self.trades: list[dict] = []
@@ -342,6 +470,8 @@ class QuantEngine:
             f"{detail.get('mean0')} → {detail.get('mean1')}",
             account=account, metric=metric, driftLevel=level, **detail,
         )
+        # 降险窗口变更立即落库（caution/shadow 跨重启必须保留）
+        self.save_persistent_state(force=True)
 
     def _observe_trade_drift(self, account: str, trade: TradeRecord,
                              risk_multiple: float) -> None:
@@ -354,11 +484,8 @@ class QuantEngine:
 
     def _record_trade(self, trade: dict):
         self.trades.append(trade)
-        try:
-            with open(self._trades_path, "w", encoding="utf-8") as f:
-                json.dump(self.trades[-500:], f, ensure_ascii=False, indent=1)
-        except Exception:
-            pass
+        # 原子写：崩溃/断电不会把 quant-trades.json 写成半截（异常在函数内吞掉）
+        _atomic_write_json(self._trades_path, self.trades[-500:])
         # 落库（仓位历史，按账户保留 7 天）；返回 id 后单条广播给前端
         if self.trade_storage_fn:
             try:
@@ -377,6 +504,8 @@ class QuantEngine:
             reason=str(trade.get("reason") or ""),
             pattern=str(trade.get("pattern") or ""),
         ))
+        # 成交改变风控状态（连亏/日盈亏/冷却），立即落库不等 manage 节流
+        self.save_persistent_state(force=True)
         atr_at_entry = float(trade.get("atrAtEntry") or 0)
         risk_multiple = (
             float(trade.get("pnl") or 0) /
@@ -393,12 +522,8 @@ class QuantEngine:
 
     def _save_positions(self):
         """未平仓持仓落盘：重启/部署后恢复 entry 价与开仓时间，避免依赖审计补记。"""
-        try:
-            data = {name: st["positions"] for name, st in self.state.items() if st.get("positions")}
-            with open(self._pos_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=1)
-        except Exception:
-            pass
+        data = {name: st["positions"] for name, st in self.state.items() if st.get("positions")}
+        _atomic_write_json(self._pos_path, data)
 
     def _load_positions(self):
         try:
@@ -611,18 +736,10 @@ class QuantEngine:
         return False
 
     def _save_manual(self):
-        try:
-            with open(self._manual_path, "w", encoding="utf-8") as f:
-                json.dump(sorted(f"{a}|{s}" for a, s in self._manual), f, ensure_ascii=False)
-        except Exception:
-            pass
+        _atomic_write_json(self._manual_path, sorted(f"{a}|{s}" for a, s in self._manual))
 
     def _save_unsupported(self):
-        try:
-            with open(self._unsupported_path, "w", encoding="utf-8") as f:
-                json.dump(sorted(self._unsupported), f, ensure_ascii=False)
-        except Exception:
-            pass
+        _atomic_write_json(self._unsupported_path, sorted(self._unsupported))
 
     def _load_unsupported(self):
         try:
@@ -1242,7 +1359,7 @@ class QuantEngine:
                     self._trace_stage(
                         trace, "score", "共鸣评分", "blocked", why,
                         score=trace["score"])
-                    self.gate_log.append({
+                    self._append_gate({
                         "ts": _now_ms(), "symbol": symbol, "direction": direction,
                         "reason": why, "score": signal_score.score,
                         "gap": signal_score.gap, "grade": signal_score.grade,
@@ -1275,7 +1392,7 @@ class QuantEngine:
                 ok, why = IND.signal_gate(st, direction)
                 if not ok:
                     self._trace_stage(trace, "score", "环境过滤", "blocked", why)
-                    self.gate_log.append({
+                    self._append_gate({
                         "ts": _now_ms(), "symbol": symbol, "direction": direction,
                         "reason": why,
                     })
@@ -1365,7 +1482,7 @@ class QuantEngine:
                 self._trace_stage(
                     trace, "watch", "多周期确认", "blocked", watch_plan.reason,
                     watch=trace["watch"])
-                self.gate_log.append({
+                self._append_gate({
                     "ts": now, "symbol": symbol, "direction": direction,
                     "reason": f"多周期盯盘：{watch_plan.reason}",
                     "watch": watch_plan.metrics,
@@ -1472,7 +1589,7 @@ class QuantEngine:
         if not decision.allowed:
             self._trace_stage(trace, "risk", "统一风控", "blocked",
                               decision.reason, risk=trace["risk"])
-            self.gate_log.append({
+            self._append_gate({
                 "ts": now, "symbol": symbol, "direction": direction,
                 "reason": decision.reason, "code": decision.code,
                 "metrics": decision.metrics,
@@ -1788,6 +1905,10 @@ class QuantEngine:
                     self._close(name, a, symbol, price, f"超时({hold_min:.0f}min,{move * 100:.2f}%)")
             if peak_dirty:
                 self._save_positions()      # 峰值更新落盘，重启后移动止盈仍可用
+        # manage 末尾：风控/漂移状态节流落库（成交、漂移事件另有 force 落库）。
+        # _refresh_drawdown() 由本轮开头的 refresh_indicators() 调用（无 bars_fn 时会提前返回），
+        # 所以放在整个 manage 的真正末尾，保证本轮风控状态一定被尝试保存。
+        self.save_persistent_state()
 
     def _live_amt(self, api_key: str, api_secret: str, symbol: str) -> float | None:
         """查交易所该币种真实持仓量（平仓必须用它，本地记录可能因部分成交而不准）。"""
@@ -2091,6 +2212,13 @@ class QuantEngine:
             reason = f"{evaluation.get('grade')} 信号"
         else:
             reason = str(advice.get("reason") or "")[:40]
+        # 最近K线：只给"从库恢复的仓位在停机期间到期"时补算离场价用，
+        # 普通 tick 不读它，成本可忽略。
+        bars = []
+        try:
+            bars = self.bars_fn(sym) if self.bars_fn else []
+        except Exception:
+            bars = []
         return {
             "price": state.get("price"),
             "atr": state.get("atr"),
@@ -2103,6 +2231,7 @@ class QuantEngine:
             "pattern": advice.get("pattern") or "",
             "patternStats": self.pattern_stats_fn() if self.pattern_stats_fn else {},
             "maxLeverage": advice.get("maxLeverage"),
+            "bars": bars,
         }
 
     def paper_refresh(self, symbol: str) -> dict | None:

@@ -66,6 +66,15 @@ mysql:
 storage:
   # K线滚动保留时长（分钟）
   minutes: 30
+  # 各业务数据的保留期（天；0 = 永久保留）。做长期策略分析不要再按周删库。
+  hit_days: 90             # 形态命中与胜负记录
+  quant_trade_days: 365    # 实盘已平仓成交
+  quant_event_days: 30     # 量化决策事件流水
+  news_days: 7             # 新闻存档
+  trace_days: 30           # 决策 trace / gate 拦截明细
+  # 模拟仓（15 分钟纸上交易）平仓记录保留天数：0 = 永久保留。
+  # 模拟仓数据用于长期策略复盘，建议保持 0；需要控制数据库体积再调小。
+  paper_keep_days: 0
   # 胜率判定：出现形态后10分钟内，价格先向形态方向走满 0.15% → 胜；先反向走满 → 负；都没走到 → 不计
   eval_minutes: 10
   eval_threshold: 0.0015
@@ -168,6 +177,3 @@ quant:
     # 静态宏观事件黑窗；ISO 时间示例：
     # - {start: "2026-11-05T21:15:00Z", end: "2026-11-05T22:00:00Z", label: "FOMC"}
     macro_events: []
-
-# 每隔多少秒打印一次延迟统计
-latency_report_sec: 60

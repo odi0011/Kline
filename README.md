@@ -13,8 +13,12 @@
 ## 存储（MySQL kline 库）
 
 - `candles` 表：K线滚动保留最近 30 分钟（`storage.minutes` 可调），供悬停查询
-- `hits` 表：形态命中完整记录，保留 7 天；悬停某根K线可查当时记录（含胜负）
+- `hits` 表：形态命中完整记录，默认保留 90 天（`storage.hit_days`）；悬停某根K线可查当时记录（含胜负）
+- `quant_trades` / `quant_events` 表：实盘成交（默认 365 天）与决策事件流水（默认 30 天）
+- `decision_traces` 表：决策 trace 与 gate 拦截明细（默认 30 天），重启后页面/Agent 仍能看到之前的"为什么开/没开"
+- `quant_state` 表：风控引擎与机制漂移保护状态快照，重启后按上次状态继续（不会因重启把日亏限额/连亏熔断清零）
 - **胜率判定**：确认信号出现后 `storage.eval_minutes`（默认 10 分钟）的收盘价，如形态方向所预测即为 win；前端卡片上的"胜xx%"徽标由此统计
+- `paper_positions` / `paper_trades` 表：模拟仓（15 分钟纸上交易）的未平仓快照与平仓流水。仓位每轮 tick 覆盖；平仓记录 append-only、默认永久保留（`storage.paper_keep_days`，0=永久），服务重启后自动恢复仓位并接着跑，胜率/盈亏可直接用 SQL 复盘
 
 ## 自动部署（已配置）
 
