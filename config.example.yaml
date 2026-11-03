@@ -55,6 +55,15 @@ notify:
     type: dingtalk
     url: ""
 
+# 安全（重要）：
+#  1) 本文件里的密钥（MySQL 密码 / 交易所 API Key / AI key / Telegram token / Webhook URL）
+#     支持加密保存：在服务器执行 python tools/encrypt_config.py，会备份后写成 enc:v1:...
+#     并把密钥放在同目录 secrets.key（0600）。secrets.key 丢了就解不开，务必单独备份。
+#  2) 也可以用环境变量覆盖（优先级最高）：
+#     KLINE_MYSQL_PASSWORD / KLINE_AI_KEY / KLINE_TELEGRAM_TOKEN / KLINE_WEBHOOK_URL /
+#     KLINE_ACCOUNT_API_KEY / KLINE_ACCOUNT_API_SECRET / KLINE_SECRET_KEY（加密主密钥）
+#  3) 启动日志会提示哪些密钥仍是明文；本文件与 secrets.key 权限会被收紧到 0600。
+
 # 存储层（MySQL，库/账号已在服务器创建，仅授权 kline 库）
 mysql:
   host: 127.0.0.1
@@ -62,6 +71,9 @@ mysql:
   user: kline
   password: "你的MySQL密码"
   database: kline
+  # 数据库 I/O 超时（秒；0 = 不设）。防止网络抖动时 5 秒交易循环被一个查询卡死。
+  read_timeout: 30
+  write_timeout: 30
 
 storage:
   # K线滚动保留时长（分钟）
@@ -75,6 +87,12 @@ storage:
   # 模拟仓（15 分钟纸上交易）平仓记录保留天数：0 = 永久保留。
   # 模拟仓数据用于长期策略复盘，建议保持 0；需要控制数据库体积再调小。
   paper_keep_days: 0
+  # K线长期归档（回测用）：完整保存每根收线K线，0 = 永久保留。
+  # 注意：归档量随时间增长（4币×2周期 1m 约 1 万行/天），磁盘紧张再设保留天数。
+  candle_archive_days: 0
+  # Agent 任务/对话/摘要进 MySQL；聊天记录保留天数，0 = 永久。
+  # 内存里始终只保留最近 40 条对话，更早的只在库里可查。
+  agent_chat_days: 0
   # 胜率判定：出现形态后10分钟内，价格先向形态方向走满 0.15% → 胜；先反向走满 → 负；都没走到 → 不计
   eval_minutes: 10
   eval_threshold: 0.0015

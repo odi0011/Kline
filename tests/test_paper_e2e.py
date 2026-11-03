@@ -509,6 +509,7 @@ def test_restart_settlement_does_not_duplicate_committed_trade(make_store, clock
     # 模拟"流水已进库、进程在删未平仓行之前崩溃"：手工写入同一仓位的流水
     store.save_paper_trade({
         "symbol": "btcusdt", "entryTs": opened["entry_ts"],
+        "openSeq": opened["open_seq"],          # trade_key 含开仓序号，崩溃前那条必须一致
         "closedAt": opened["entry_ts"], "reason": "tp",
         "entry": opened["entry"], "exit": opened["tp"],
         "pnl": 25.0, "pnlPct": 50.0, "recovered": False,

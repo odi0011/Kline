@@ -149,6 +149,9 @@ class PaperPosition:
     peak: float = 0.0            # 最有利价格（移动止损用）
     trailing: bool = False       # 止损是否已被移动过
     ticks: int = 0
+    # 开仓单调序号：同一毫秒内平仓并重开也不会让 trade_key 碰撞。
+    # 进程内从 1 递增，重启时从恢复出来的最大值继续，不能跨重启归零。
+    open_seq: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -179,7 +182,7 @@ def _position_from_dict(data) -> "PaperPosition | None":
         return None
     if pos.direction not in ("long", "short"):
         return None
-    int_fields = ("entry_ts", "expires_ts", "leverage", "ticks")
+    int_fields = ("entry_ts", "expires_ts", "leverage", "ticks", "open_seq")
     float_fields = ("entry", "qty", "sl", "tp", "margin", "liq", "notional",
                     "sl_pct", "tp_pct", "atr_at_entry", "mark", "upnl",
                     "upnl_pct", "peak")
@@ -240,6 +243,9 @@ class PaperBook:
         # 再结算一次，也不能让一笔成交凭空消失。
         self._pending_trades: list[dict] = []
         self._pending_deletes: set[str] = set()
+        # 开仓单调序号（进程内递增，restore 后从最大值续号）：
+        # trade_key = symbol:entryTs:openSeq 用它消除"同毫秒平仓重开"的碰撞。
+        self._open_seq = 0
         # 启动时读不到 paper_positions（数据库不可用）：本进程退化为纯内存账本，
         # 不写库——否则新仓 REPLACE 会把库里没读到的那行覆盖掉。重启后再恢复。
         self._store_suspended = False
@@ -275,6 +281,16 @@ class PaperBook:
             if trades:
                 # 存储层按 closed_ts 倒序返回，内存里保持时间升序
                 self.history = list(reversed(trades))[-MAX_HISTORY:]
+            # 开仓序号续号：不能从 0 重来，否则重启后同毫秒重开又会撞 trade_key。
+            # 未平仓仓位的 open_seq 是主口径；历史流水里的 openSeq 作为补充
+            # （全部仓位都已平掉时也能续号；老数据没有该键则按 0 跳过）。
+            restored_seq = 0
+            for pos in loaded.values():
+                restored_seq = max(restored_seq, int(_num(pos.open_seq) or 0))
+            for record in self.history:
+                if isinstance(record, dict):
+                    restored_seq = max(restored_seq, int(_num(record.get("openSeq")) or 0))
+            self._open_seq = max(self._open_seq, restored_seq)
             if isinstance(agg, dict):
                 closed = int(agg.get("count") or 0)
                 self.stats = {
@@ -556,7 +572,8 @@ class PaperBook:
                 self._recovered.discard(symbol)
                 settled = self._settle_recovered(pos, price, ctx.get("bars") or [])
                 if settled is not None:
-                    self._close(pos, settled[0], settled[1], ctx, recovered=True)
+                    self._close(pos, settled[0], settled[1], ctx, recovered=True,
+                                settle_bars=settled[2], settle_approx=settled[3])
                     # 补结算后立刻按当前数据重开，仓位永不停
                     self._open(symbol, ctx, price)
                     pos = self.positions.get(symbol)
@@ -597,6 +614,38 @@ class PaperBook:
                     removed.append(sym)
         for sym in removed:
             self._forget(sym)
+
+    def close_missing(self, keep: set[str], ctx: dict | None = None) -> list[str]:
+        """取消监控收尾（P2-5）：处理所有不在 keep 里的模拟仓，返回处理的币种。
+
+        与 drop_missing 的区别：这里**要留下可复盘的数据**——
+          · mark>0：按最后一个已知 mark 平仓，记一条 reason="removed" 的正常
+            流水（统计口径与其他平仓一致），并删掉未平仓行；
+          · mark<=0（还没有任何可用价格）：只删 paper_positions 行、不记流水，
+            绝不能为"连价格都没有的仓位"编一个成交价；
+          · keep 全包含时返回 []。
+        ctx 参数留给平仓流水补充上下文字段（_close 目前不读）。
+        """
+        done: list[str] = []
+        with self._lock:
+            self._flush_pending()
+            for symbol in list(self.positions):
+                if symbol in keep:
+                    continue
+                pos = self.positions.get(symbol)
+                if pos is None:
+                    continue
+                mark = _num(pos.mark)
+                self._recovered.discard(symbol)
+                if mark is not None and mark > 0:
+                    self._close(pos, mark, "removed", ctx or {})
+                else:
+                    self.positions.pop(symbol, None)
+                    # 只删行不记流水；删除失败挂起重试，不能留下永远清不掉的残行
+                    if self._store_usable() and not self._forget(symbol):
+                        self._pending_deletes.add(symbol)
+                done.append(symbol)
+        return done
 
     # ---------- 内部 ----------
 
@@ -642,6 +691,8 @@ class PaperBook:
                               ctx.get("patternStats"), str(ctx.get("pattern") or ""))
 
         now = int(time.time() * 1000)
+        # 先自增再写入：同一毫秒内的每一仓都有唯一 open_seq
+        self._open_seq += 1
         pos = PaperPosition(
             symbol=symbol,
             direction="long" if bullish else "short",
@@ -669,6 +720,7 @@ class PaperBook:
             regime=str(ctx.get("regime") or "")[:16],
             mark=entry,
             peak=entry,
+            open_seq=self._open_seq,
         )
         self.positions[symbol] = pos
         self.stats["opened"] += 1
@@ -676,14 +728,20 @@ class PaperBook:
         self._persist(pos)
 
     def _settle_recovered(self, pos: PaperPosition, price: float,
-                          bars: list) -> tuple[float, str] | None:
+                          bars: list) -> tuple[float, str, int, bool] | None:
         """补结算"停机期间已经到期"的恢复仓位。
 
         重启后不能拿现价当 15 分钟窗口到期价——停机期间价格可能已经先碰过
         止盈/止损。这里按 entry_ts ~ expires_ts 之间的 K 线逐根判断：
         先碰止损记 sl、先碰止盈记 tp，都没碰则用到期前最后一根收盘价记 timeout。
         一根K线内高低都碰到时保守判止损（与胜率评估口径一致）。
-        返回 (离场价, 原因)；仓位还没到期返回 None。
+
+        返回 (离场价, 原因, bars_used, approx)：
+          · bars_used：实际参与判断的窗口内K线根数（没有可用 bars 为 0）；
+          · approx：离场价是否为近似值——无可用 bars / 用现价回落 → True；
+            bars 没有覆盖到 expires_ts（窗口尾部缺失）→ True；
+            命中 tp/sl → False（有明确触发价）。
+        仓位还没到期返回 None。
 
         近似说明：移动止损在停机期间的历史位置没有逐笔记录，这里用恢复出来的
         最终 sl 判断，属于偏保守的近似（不会高估盈利）。
@@ -693,28 +751,36 @@ class PaperBook:
             return None
         long_ = pos.direction == "long"
         last_close = None
+        bars_used = 0
+        latest_ts = 0
         for bar in bars or []:
             try:
                 bar_ts = int(getattr(bar, "open_time", 0) or 0)
-                high = float(getattr(bar, "high"))
-                low = float(getattr(bar, "low"))
-            except (TypeError, ValueError):
+                high = float(getattr(bar, "high", None))
+                low = float(getattr(bar, "low", None))
+            except (AttributeError, TypeError, ValueError):
                 continue
+            latest_ts = max(latest_ts, bar_ts)
             if bar_ts <= pos.entry_ts or bar_ts > pos.expires_ts:
                 continue
+            bars_used += 1
             if long_:
                 if low <= pos.sl:
-                    return (pos.sl, "sl")
+                    return (pos.sl, "sl", bars_used, False)
                 if high >= pos.tp:
-                    return (pos.tp, "tp")
+                    return (pos.tp, "tp", bars_used, False)
             else:
                 if high >= pos.sl:
-                    return (pos.sl, "sl")
+                    return (pos.sl, "sl", bars_used, False)
                 if low <= pos.tp:
-                    return (pos.tp, "tp")
+                    return (pos.tp, "tp", bars_used, False)
             last_close = _num(getattr(bar, "close", None))
-        # 没有可用K线：只能按现价平，原因仍记 timeout，但 record.recovered=True
-        return (last_close or price, "timeout")
+        # 覆盖到 expires_ts：窗口尾部有K线可看，timeout 价不算近似
+        covered = bool(bars_used) and latest_ts >= pos.expires_ts
+        if last_close is None:
+            # 没有可用K线：只能按现价平，原因仍记 timeout，但 record.recovered=True
+            return (price, "timeout", bars_used, True)
+        return (last_close, "timeout", bars_used, not covered)
 
     def _check_exit(self, pos: PaperPosition, price: float) -> str:
         """判断是否该离场：止盈 / 止损 / 到期。
@@ -781,7 +847,8 @@ class PaperBook:
                 pos.sl_pct = round((pos.sl - pos.entry) / pos.entry * 100, 2)
 
     def _close(self, pos: PaperPosition, price: float, reason: str, ctx: dict,
-               recovered: bool = False) -> None:
+               recovered: bool = False, settle_bars: int = 0,
+               settle_approx: bool = False) -> None:
         qty_actual = (price - pos.entry) * pos.qty * (1 if pos.direction == "long" else -1)
         pnl = round(qty_actual, 4)
         self.positions.pop(pos.symbol, None)
@@ -812,6 +879,11 @@ class PaperBook:
             "trailing": pos.trailing,
             # 重启补结算的仓位要标出来：它不是实时盯盘盯出来的离场价
             "recovered": bool(recovered),
+            # 开仓单调序号：与 entryTs 一起构成 trade_key 的稳定去重键
+            "openSeq": int(_num(pos.open_seq) or 0),
+            # 补结算质量：参与判断的K线根数 / 离场价是否近似（实时平仓为 0/False）
+            "settleBars": max(0, int(_num(settle_bars) or 0)),
+            "settleApprox": bool(settle_approx),
         }
         self.history.append(record)
         if len(self.history) > MAX_HISTORY:

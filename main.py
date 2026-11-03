@@ -13,6 +13,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 import yaml
 
+import secrets_store
 import patterns.builtin    # noqa: F401  导入即注册内置形态（单根/双根/三根）
 import patterns.structure  # noqa: F401  导入即注册结构形态（头肩/三重/双顶底/三角/楔形）
 import patterns.base as pbase
@@ -92,6 +93,39 @@ def load_config(path: str) -> dict:
             cfg[k] = v.copy() if isinstance(v, (dict, list)) else v
             print(f"[config] 缺失项 {k} 已用默认值补齐")
     return cfg
+
+
+def write_config_file(cfg: dict, path: str) -> dict:
+    """把配置写回磁盘：有加密密钥时密钥字段加密；写完收紧文件权限。
+
+    返回实际落盘的内容（加密后的副本），便于调用方提示"仍有明文密钥"。
+    加密失败（缺 cryptography/密钥）不阻断写配置：降级明文 + 明确告警。
+    """
+    payload = cfg
+    try:
+        payload = secrets_store.encrypt_config(cfg, path, create_key=False)
+    except secrets_store.SecretsError as e:
+        print(f"[config] 密钥加密失败，本次以明文写入（检查 KLINE_SECRET_KEY/secrets.key）: {e}")
+    # 原子写：tmp -> fsync -> replace。配置里有密钥，半截文件会让下次启动
+    # 直接解析失败（空配置文件比旧配置更糟）。
+    tmp_path = f"{path}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+    try:
+        secrets_store.harden_permissions(path)
+    except Exception:
+        pass
+    return payload
 
 
 def start_static(dist_dir: str, port: int) -> None:
@@ -205,7 +239,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                       quant_trade_days=int(scfg.get("quant_trade_days", 365) or 0),
                       quant_event_days=int(scfg.get("quant_event_days", 30) or 0),
                       news_days=int(scfg.get("news_days", 7) or 0),
-                      trace_days=int(scfg.get("trace_days", 30) or 0))
+                      trace_days=int(scfg.get("trace_days", 30) or 0),
+                      # K线长期归档（回测用）与 Agent 聊天长期归档：0 = 永久保留
+                      candle_archive_days=int(scfg.get("candle_archive_days", 0) or 0),
+                      agent_chat_days=int(scfg.get("agent_chat_days", 0) or 0))
     hub.stats_fn = storage.pattern_stats
     hub.symbol_stats_fn = storage.symbol_stats
     hub.query_fn = storage
@@ -235,8 +272,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     if accts_box["list"] and not accts_box["list"][0].get("id"):
         accts_box["list"][0]["id"] = uuid.uuid4().hex[:12]
         cfg["accounts"] = accts_box["list"]
-        with open(config_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+        write_config_file(cfg, config_path)
     # 认领历史采样：把按账户名（旧版）或旧 ID 存下的数据搬到当前 ID 上。
     # 每次都跑（一次 GROUP BY + 少量迁移），这样改名发生在旧版本、当时没留下
     # id 关联的情况也能自动修好，曲线不会因为改名"重置"。
@@ -253,15 +289,17 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             print(f"[equity] 历史迁移失败: {e}")
     if len(cfg.get("accounts", [])) > 1:
         cfg["accounts"] = accts_box["list"]
-        with open(config_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+        write_config_file(cfg, config_path)
         print(f"[settings] 单账户模式：已裁剪为 1 个账户并写回配置")
 
     def save_config() -> None:
         try:
-            with open(config_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+            payload = write_config_file(cfg, config_path)
             print(f"[settings] 配置已写入 {config_path}")
+            plain = secrets_store.audit_plaintext(payload) if isinstance(payload, dict) else []
+            if plain:
+                print(f"[settings] 安全提示：{', '.join(plain[:8])} 仍以明文保存；"
+                      f"可运行 python tools/encrypt_config.py 加密，或改用环境变量覆盖")
         except Exception as e:
             print(f"[settings] 配置写入失败: {e}")
 
@@ -652,6 +690,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 candles = await asyncio.to_thread(fetch_klines, sym, iv, limit, proxy_cfg or None)
                 if candles:
                     agg.seed(candles)
+                    try:
+                        storage.archive_candles(sym, iv, candles)
+                    except Exception as e:
+                        print(f"[archive] 按需 {sym} {iv} 归档失败: {e}")
                     if (sym, iv) in aggs:
                         try:
                             hub.structures[(sym, iv)] = analyze_structure(list(agg.history)[-160:])
@@ -701,6 +743,12 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         if closed:
             engine.on_candle(sym, iv, candle, True, history)
             storage.save_candle(sym, iv, candle)
+            # 长期归档：滚动表只留 30 分钟，回测/复盘要完整历史。
+            # 归档失败不能打断实时行情回调。
+            try:
+                storage.archive_candle(sym, iv, candle)
+            except Exception as e:
+                print(f"[archive] {sym} {iv} 归档失败: {e}")
             storage.eval_outcomes(sym, iv, INTERVAL_MS[iv], candle)
             storage.prune(KlineAggregator.now_ms())
         else:
@@ -787,6 +835,9 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         _agent_context,
         hub.broadcast,
         os.path.join(os.path.dirname(os.path.abspath(config_path)), "agent-state.json"),
+        # Agent 任务/对话进 MySQL（JSON 文件保留为兜底/首次迁移来源）；
+        # 没连上 MySQL 时退回纯文件，行为与旧版一致。
+        state_store=storage if storage.enabled else None,
     )
     hub.agent_state_fn = agent.state
     hub.agent_fn = agent.handle
@@ -879,6 +930,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         try:
             candles = await asyncio.to_thread(fetch_klines, sym, iv, limit, proxy_cfg or None)
             agg.seed(candles)
+            try:
+                storage.archive_candles(sym, iv, candles)
+            except Exception as e:
+                print(f"[archive] {sym} {iv} 归档失败: {e}")
             keep_from = KlineAggregator.now_ms() - int(scfg.get("minutes", 30)) * 60_000
             for c in candles:
                 if c.open_time >= keep_from:
@@ -1075,6 +1130,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                     agg.history.clear()
                     agg.current = None
                     agg.seed(candles)
+                    try:
+                        storage.archive_candles(sym, iv, candles)
+                    except Exception as e:
+                        print(f"[archive] 重试 {sym} {iv} 归档失败: {e}")
                     keep_from = KlineAggregator.now_ms() - int(scfg.get("minutes", 30)) * 60_000
                     for c in candles:
                         if c.open_time >= keep_from:
@@ -1356,6 +1415,21 @@ def main() -> None:
     ap.add_argument("-c", "--config", default="config.yaml")
     args = ap.parse_args()
     cfg = load_config(args.config)
+    # 密钥：配置文件里的 enc:v1:... 解密；环境变量优先覆盖（KLINE_* 系列）。
+    # 解不开就拒绝启动——带着错误密钥去连交易所/数据库比停服务更危险。
+    try:
+        cfg = secrets_store.decrypt_config(cfg, args.config)
+    except secrets_store.SecretsError as e:
+        print(f"[config] 密钥解密失败，拒绝启动：{e}")
+        raise SystemExit(2) from None
+    _plain = secrets_store.audit_plaintext(cfg)
+    if _plain:
+        print(f"[config] 安全提示：{', '.join(_plain[:8])} 仍是明文；"
+              f"运行 python tools/encrypt_config.py 可加密（或设置对应环境变量覆盖）")
+    try:
+        secrets_store.harden_permissions(args.config)
+    except Exception:
+        pass
     try:
         asyncio.run(run(cfg, args.config))
     except KeyboardInterrupt:

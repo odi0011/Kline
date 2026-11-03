@@ -1793,6 +1793,13 @@ class QuantEngine:
         if not self.enabled:
             return
         self.refresh_indicators()
+        # 监控范围收窄（用户把币删出展示列表）→ 清掉范围外的模拟仓，
+        # 否则 paper_positions 会留下永不 tick 的残行（P2-5）。
+        # 启动初期 symbol_filter=None 不动账本（范围还没确定）；异常不能打断 manage。
+        try:
+            self._settle_paper_out_of_scope()
+        except Exception:
+            pass
         now = _now_ms()
         # 对账：本地记录与交易所有出入时以交易所为准（每小时一次即可）
         if now - getattr(self, "_last_reconcile", 0) > 3600_000:
@@ -2233,6 +2240,22 @@ class QuantEngine:
             "maxLeverage": advice.get("maxLeverage"),
             "bars": bars,
         }
+
+    def _settle_paper_out_of_scope(self) -> list[str]:
+        """清理已不在监控范围（symbol_filter）内的模拟仓，返回处理的币种。
+
+        交给 PaperBook.close_missing：有 mark 的按 mark 平仓并记
+        reason="removed" 的正常流水，没有可用价格的只删未平仓行。
+        symbol_filter 为空时不动账本；异常只记事件，不能打断 5 秒一轮的 manage。
+        """
+        keep = self.symbol_filter
+        if not keep:
+            return []
+        try:
+            return self.paper.close_missing(set(keep))
+        except Exception as e:
+            self._event("error", f"模拟仓监控范围清理失败: {e}")
+            return []
 
     def paper_refresh(self, symbol: str) -> dict | None:
         """手动刷新某个币的模拟仓：平掉当前、立刻按现状重开。

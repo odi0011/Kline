@@ -5,6 +5,8 @@
 - paper_positions / paper_trades 表：模拟仓（纸上交易）的未平仓快照与平仓流水
 - decision_traces 表：决策 trace / gate 拦截明细（默认 30 天，重启可回看）
 - quant_state 表：风控/引擎状态快照（启动时恢复，避免重启把限额/熔断清零）
+- candle_archive 表：K线长期归档（candles 只滚动保留最近 N 分钟，归档长期可查）
+- agent_state / agent_chat 表：Agent 任务/记忆/聊天摘要与聊天记录（重启恢复）
 各业务表保留期统一由 storage.*_days 配置，0 = 永久保留（prune 跳过）。
 注意：interval 是 MySQL 保留字，列名统一用反引号。
 """
@@ -42,6 +44,35 @@ def _keep_days(value, default: int = 0) -> int:
     return max(0, _safe_int(value, default))
 
 
+def _timeout_seconds(value, default: int = 30):
+    """MySQL 连接超时归一化：0/None -> None（不设超时），非法/负数回退默认 30 秒。"""
+    try:
+        seconds = int(value or 0)
+    except (TypeError, ValueError):
+        return default
+    if seconds < 0:
+        return default
+    return seconds or None
+
+
+def _json_or(value, fallback) -> str:
+    """JSON 序列化：脏值回落到空结构，保证整块状态仍能落库。"""
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return json.dumps(fallback, ensure_ascii=False)
+
+
+def _json_load(raw, default):
+    """JSON 解析容错：坏数据/空值回落默认结构。"""
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 class Storage:
     def __init__(self, mysql: dict, keep_minutes: int = 30,
                  hit_days: int = 90, eval_minutes: int = 10,
@@ -49,7 +80,8 @@ class Storage:
                  stats_days: int = 7, stats_alpha: float = 0.94,
                  paper_keep_days: int = 0,
                  quant_trade_days: int = 365, quant_event_days: int = 30,
-                 news_days: int = 7, trace_days: int = 30):
+                 news_days: int = 7, trace_days: int = 30,
+                 candle_archive_days: int = 0, agent_chat_days: int = 0):
         # 保留期统一按"天"配置：负数/脏值归一化成 0，0 = 永久保留（prune 跳过）。
         hit_days = _keep_days(hit_days, 90)
         self.keep_ms = keep_minutes * 60 * 1000
@@ -64,6 +96,8 @@ class Storage:
         self.quant_event_days = _keep_days(quant_event_days, 30)    # 决策事件（原 3 天）
         self.news_days = _keep_days(news_days, 7)                   # 新闻存档（原 3 天）
         self.trace_days = _keep_days(trace_days, 30)                # 决策 trace/gate
+        self.candle_archive_days = _keep_days(candle_archive_days)  # K线归档（0=永久）
+        self.agent_chat_days = _keep_days(agent_chat_days)          # Agent 聊天（0=永久）
         self._lock = threading.Lock()
         self._conn = None
         self.enabled = False
@@ -79,6 +113,9 @@ class Storage:
                     user=mysql.get("user", "kline"), password=mysql.get("password", ""),
                     database=mysql.get("database", "kline"), autocommit=True,
                     charset="utf8mb4", connect_timeout=5,
+                    # 读写超时（秒）：0/None -> None（不设超时），非法值回退 30。
+                    read_timeout=_timeout_seconds(mysql.get("read_timeout", 30)),
+                    write_timeout=_timeout_seconds(mysql.get("write_timeout", 30)),
                 )
                 self.enabled = True
             except Exception as e:
@@ -123,6 +160,14 @@ class Storage:
             symbol VARCHAR(16), `interval` VARCHAR(8), open_time BIGINT,
             open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, volume DOUBLE, trades INT,
             PRIMARY KEY(symbol, `interval`, open_time)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # K线长期归档：candles 只保留最近 N 分钟（滚动窗口，供实时计算），
+        # 历史行情在这里按 storage.candle_archive_days 长期保留（0=永久），
+        # 供回测/补算与 Agent 回看历史。interval 是保留字，统一反引号。
+        self._q("""CREATE TABLE IF NOT EXISTS candle_archive(
+            symbol VARCHAR(16), `interval` VARCHAR(8), open_time BIGINT,
+            open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, volume DOUBLE, trades INT,
+            PRIMARY KEY(symbol, `interval`, open_time),
+            INDEX idx_ca_time(open_time)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         self._q("""CREATE TABLE IF NOT EXISTS hits(
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             ts BIGINT, symbol VARCHAR(16), `interval` VARCHAR(8), pattern VARCHAR(40),
@@ -221,6 +266,8 @@ class Storage:
             grade VARCHAR(16), pattern VARCHAR(40), regime VARCHAR(16),
             atr_at_entry DOUBLE, held_ms BIGINT, trailing TINYINT DEFAULT 0,
             recovered TINYINT DEFAULT 0,
+            open_seq INT DEFAULT 0, settle_bars INT DEFAULT 0,
+            settle_approx TINYINT DEFAULT 0,
             trade_key VARCHAR(48) DEFAULT NULL,
             UNIQUE (trade_key),
             INDEX idx_paper_trades_closed(closed_ts),
@@ -231,6 +278,11 @@ class Storage:
         for column, ddl, unique in (
             ("recovered", "ALTER TABLE paper_trades ADD COLUMN recovered TINYINT DEFAULT 0", False),
             ("trade_key", "ALTER TABLE paper_trades ADD COLUMN trade_key VARCHAR(48) DEFAULT NULL", True),
+            # 模拟仓风险修复配套列：进程内开仓序号（同毫秒开仓也不再撞幂等键）、
+            # 补算用了多少根K线、是否近似补算。
+            ("open_seq", "ALTER TABLE paper_trades ADD COLUMN open_seq INT DEFAULT 0", False),
+            ("settle_bars", "ALTER TABLE paper_trades ADD COLUMN settle_bars INT DEFAULT 0", False),
+            ("settle_approx", "ALTER TABLE paper_trades ADD COLUMN settle_approx TINYINT DEFAULT 0", False),
         ):
             try:
                 if not self._qall(f"SHOW COLUMNS FROM paper_trades LIKE '{column}'"):
@@ -261,6 +313,27 @@ class Storage:
             ts BIGINT NOT NULL,
             data MEDIUMTEXT NOT NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # Agent 状态进库：任务列表/记忆/聊天摘要，重启后恢复而不是从零开始。
+        # 三行独立覆盖（name=tasks/memory/meta），meta 带版本号与聊天摘要。
+        self._q("""CREATE TABLE IF NOT EXISTS agent_state(
+            name VARCHAR(32) NOT NULL PRIMARY KEY,
+            ts BIGINT,
+            data MEDIUMTEXT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # Agent 聊天归档：按 storage.agent_chat_days 保留（0=永久），data 存完整消息 JSON。
+        self._q("""CREATE TABLE IF NOT EXISTS agent_chat(
+            msg_id VARCHAR(64) NOT NULL PRIMARY KEY,
+            ts BIGINT, seq INT DEFAULT 0, role VARCHAR(16),
+            content MEDIUMTEXT, data MEDIUMTEXT,
+            INDEX idx_ac_ts(ts)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # 老库迁移：补 seq 列。同一毫秒内的 user/assistant 消息只按 ts/message_id
+        # 排序会颠倒，seq 记录"本批消息内的先后顺序"，重启后聊天窗口顺序才稳定。
+        try:
+            if not self._qall("SHOW COLUMNS FROM agent_chat LIKE 'seq'"):
+                self._q("ALTER TABLE agent_chat ADD COLUMN seq INT DEFAULT 0")
+        except Exception:
+            pass
         # hits 保留期从 7 天拉长到 90 天后，pattern_stats 的 "WHERE ts>=..." 查询
         # 不能再依赖全表扫：老库补一条 ts 索引。SQLite 等方言不支持 SHOW INDEX /
         # ADD INDEX 语法，探测失败或迁移失败都静默跳过，不影响服务启动。
@@ -527,6 +600,129 @@ class Storage:
             return None
         return data if isinstance(data, dict) else None
 
+    # ---- Agent 状态（任务 / 记忆 / 聊天摘要 + 聊天归档） ----
+
+    def save_agent_state(self, tasks: list, memory: dict,
+                         chat_summary: str = "") -> None:
+        """保存 Agent 状态：任务列表、记忆、聊天摘要（三行独立覆盖）。
+
+        meta 行带版本号，摘要截 4000 字；任一段序列化失败回落到空结构，
+        保证三行状态始终能整体恢复（不能因一段脏数据整块写不进去）。
+        """
+        if not self.enabled:
+            return
+        now = int(time.time() * 1000)
+        meta = {"version": 2, "chatSummary": str(chat_summary or "")[:4000]}
+        rows = [
+            ("tasks", now, _json_or(tasks, [])),
+            ("memory", now, _json_or(memory, {})),
+            ("meta", now, _json_or(meta, {})),
+        ]
+        self._qmany("REPLACE INTO agent_state(name,ts,data) VALUES(%s,%s,%s)", rows)
+
+    def load_agent_state(self) -> dict | None:
+        """读回 Agent 状态；三行全无/异常返回 None，坏 JSON 按空结构处理。"""
+        if not self.enabled:
+            return None
+        try:
+            rows = self._qall("SELECT name,data FROM agent_state")
+        except Exception:
+            return None
+        found = {str(name): data for name, data in rows}
+        if not ({"tasks", "memory", "meta"} & set(found)):
+            return None
+        out = {"tasks": [], "memory": {}, "chatSummary": ""}
+        tasks = _json_load(found.get("tasks"), [])
+        out["tasks"] = tasks if isinstance(tasks, list) else []
+        memory = _json_load(found.get("memory"), {})
+        out["memory"] = memory if isinstance(memory, dict) else {}
+        meta = _json_load(found.get("meta"), {})
+        if isinstance(meta, dict):
+            out["chatSummary"] = str(meta.get("chatSummary") or "")[:4000]
+        return out
+
+    def save_agent_chat(self, messages: list[dict]) -> int:
+        """逐条保存 Agent 聊天消息（msg_id 幂等覆盖），返回成功写入条数。
+
+        无 id 的消息跳过（没有稳定主键就无法去重）；content 截 200000 字，
+        data 存完整消息 JSON，坏结构回落成 {id,role,content}。
+        """
+        if not self.enabled or not messages:
+            return 0
+        now = int(time.time() * 1000)
+        rows = []
+        for seq, item in enumerate(messages):
+            if not isinstance(item, dict):
+                continue
+            raw_id = item.get("id")
+            if raw_id is None:
+                continue
+            msg_id = str(raw_id)[:64]
+            if not msg_id:
+                continue
+            role = str(item.get("role") or "")[:16]
+            content = item.get("content")
+            content = "" if content is None else str(content)[:200000]
+            try:
+                data = json.dumps(item, ensure_ascii=False)
+            except (TypeError, ValueError):
+                data = json.dumps({"id": raw_id, "role": role, "content": content},
+                                  ensure_ascii=False)
+            rows.append((msg_id, _safe_int(item.get("ts"), 0) or now, seq, role,
+                         content, data))
+        if not rows:
+            return 0
+        self._qmany("REPLACE INTO agent_chat(msg_id,ts,seq,role,content,data) "
+                    "VALUES(%s,%s,%s,%s,%s,%s)", rows)
+        return len(rows)
+
+    def load_agent_chat(self, limit: int = 40) -> list[dict]:
+        """取最近 limit 条聊天，按时间升序返回（limit 夹 1..500）。"""
+        limit = max(1, min(500, _safe_int(limit, 40)))
+        if not self.enabled:
+            return []
+        rows = self._qall(
+            "SELECT msg_id,ts,seq,role,content,data FROM agent_chat "
+            "ORDER BY ts DESC, seq DESC, msg_id DESC LIMIT %s", (limit,))
+        out = []
+        for msg_id, ts, _seq, role, content, data in reversed(rows):
+            item = _json_load(data, None)
+            if not isinstance(item, dict):
+                # 坏 data 用列上的最小字段重建，不能因为一条脏消息丢掉整页
+                item = {"id": msg_id, "role": role or "", "content": content or ""}
+            out.append(item)
+        return out
+
+    def clear_agent_chat(self) -> None:
+        """清空聊天归档（用户点「清空对话」时调用；任务/偏好在 agent_state 里不受影响）。"""
+        if not self.enabled:
+            return
+        self._q("DELETE FROM agent_chat")
+
+    def trim_agent_chat(self, keep_ids: list[str]) -> int:
+        """只保留给定 msg_id 的聊天归档，返回删除行数。
+
+        Agent 内存窗口被压缩/清空后调用：库里比当前窗口更旧的消息要同步删掉，
+        否则重启时按"最近 40 条"恢复会把已经清掉/压缩掉的对话重新复活。
+        空列表 = 清空（等价 clear_agent_chat）。
+        """
+        if not self.enabled:
+            return 0
+        ids = []
+        for value in keep_ids or []:
+            text = str(value or "")[:64]
+            if text and text not in ids:
+                ids.append(text)
+            if len(ids) > 500:
+                break
+        if not ids:
+            self.clear_agent_chat()
+            return 0
+        marks = ",".join(["%s"] * len(ids))
+        before = self._qall("SELECT COUNT(*) FROM agent_chat")
+        self._q(f"DELETE FROM agent_chat WHERE msg_id NOT IN ({marks})", tuple(ids))
+        return max(0, int((before[0][0] if before else 0) or 0) - len(ids))
+
     # ---- 模拟仓（纸上交易） ----
 
     def save_paper_position(self, pos: dict) -> None:
@@ -579,16 +775,24 @@ class Storage:
             parts_json = None
         symbol = str(trade.get("symbol") or "")[:16]
         entry_ts = _safe_int(trade.get("entryTs"), 0)
-        # 幂等键：同一仓位实例（symbol + 开仓毫秒）只允许一条平仓流水。
+        open_seq = _safe_int(trade.get("openSeq"), 0)
+        # 幂等键：同一仓位实例（symbol + 开仓毫秒 + 进程内开仓序号）只允许一条平仓流水。
         # 网络抖动可能"INSERT 已提交但客户端报错"，重试若再插一条就会让
         # 胜率/盈亏统计翻倍；INSERT IGNORE + 唯一键把重试变成幂等操作。
-        trade_key = f"{symbol}:{entry_ts}" if symbol and entry_ts > 0 else None
+        # 只有 openSeq>0 才拼第三段：老数据/老调用方仍走 symbol:entryTs，
+        # 两种格式各自唯一，互不冲突。
+        if symbol and entry_ts > 0:
+            trade_key = (f"{symbol}:{entry_ts}:{open_seq}" if open_seq > 0
+                         else f"{symbol}:{entry_ts}")
+        else:
+            trade_key = None
         self._q(
             "INSERT IGNORE INTO paper_trades(closed_ts,entry_ts,symbol,direction,entry,"
             "exit_price,sl,tp,leverage,margin,qty,pnl,pnl_pct,reason,score,gap,"
             "winrate,winrate_parts,grade,pattern,regime,atr_at_entry,held_ms,trailing,"
-            "recovered,trade_key) "
-            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "recovered,open_seq,settle_bars,settle_approx,trade_key) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+            "%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (_safe_int(trade.get("closedAt"), now) or now,
              entry_ts,
              symbol,
@@ -614,6 +818,9 @@ class Storage:
              _safe_int(trade.get("heldMs"), 0),
              1 if trade.get("trailing") else 0,
              1 if trade.get("recovered") else 0,
+             open_seq,
+             _safe_int(trade.get("settleBars"), 0),
+             _safe_int(trade.get("settleApprox"), 0),
              trade_key))
 
     def paper_trades(self, limit: int = 200) -> list[dict]:
@@ -622,7 +829,8 @@ class Storage:
         rows = self._qall(
             "SELECT id,symbol,direction,entry,exit_price,sl,tp,leverage,margin,qty,"
             "pnl,pnl_pct,reason,winrate,score,gap,grade,pattern,regime,atr_at_entry,"
-            "held_ms,closed_ts,entry_ts,trailing,recovered,winrate_parts "
+            "held_ms,closed_ts,entry_ts,trailing,recovered,winrate_parts,"
+            "open_seq,settle_bars,settle_approx "
             "FROM paper_trades ORDER BY closed_ts DESC, id DESC LIMIT %s", (limit,))
         out = []
         for r in rows:
@@ -639,6 +847,9 @@ class Storage:
                 "atrAtEntry": float(r[19] or 0), "heldMs": int(r[20] or 0),
                 "closedAt": int(r[21] or 0), "entryTs": int(r[22] or 0),
                 "trailing": bool(r[23]), "recovered": bool(r[24]),
+                # SELECT 顺序与上面对齐：winrate_parts 在 25，新增三列在 26..28。
+                "openSeq": int(r[26] or 0), "settleBars": int(r[27] or 0),
+                "settleApprox": int(r[28] or 0),
             }
             try:
                 parts = json.loads(r[25]) if r[25] else {}
@@ -842,6 +1053,63 @@ class Storage:
         return {"open_time": int(r[0]), "open": float(r[1]), "high": float(r[2]),
                 "low": float(r[3]), "close": float(r[4]), "volume": float(r[5]),
                 "trades": int(r[6])}
+
+    # ---- K线长期归档 ----
+
+    @staticmethod
+    def _archive_row(symbol: str, interval: str, candle) -> tuple | None:
+        """把 Candle（或带同名属性的对象）转成归档行；坏数据返回 None。"""
+        try:
+            open_time = int(getattr(candle, "open_time", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if open_time <= 0:
+            return None
+        return (symbol, interval, open_time,
+                _safe_float(getattr(candle, "open", 0)),
+                _safe_float(getattr(candle, "high", 0)),
+                _safe_float(getattr(candle, "low", 0)),
+                _safe_float(getattr(candle, "close", 0)),
+                _safe_float(getattr(candle, "volume", 0)),
+                _safe_int(getattr(candle, "trades", 0), 0))
+
+    def archive_candle(self, symbol: str, interval: str, candle) -> None:
+        """归档一根K线（同主键 REPLACE 覆盖）；坏数据静默跳过。"""
+        self.archive_candles(symbol, interval, [candle])
+
+    def archive_candles(self, symbol: str, interval: str, candles) -> int:
+        """批量归档K线（REPLACE），返回实际写入根数；坏数据逐根跳过。"""
+        if not self.enabled or not candles:
+            return 0
+        sym = str(symbol or "")[:16]
+        iv = str(interval or "")[:8]
+        if not sym or not iv:
+            return 0
+        rows = [row for row in (self._archive_row(sym, iv, c) for c in candles)
+                if row is not None]
+        if not rows:
+            return 0
+        self._qmany(
+            "REPLACE INTO candle_archive(symbol,`interval`,open_time,open,high,"
+            "low,close,volume,trades) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)", rows)
+        return len(rows)
+
+    def archive_range(self, symbol: str, interval: str, start_ms: int,
+                      end_ms: int, limit: int = 20000) -> list[dict]:
+        """按时间范围（含两端）读归档K线，升序返回；limit 夹 1..200000。"""
+        limit = max(1, min(200_000, _safe_int(limit, 20000)))
+        if not self.enabled:
+            return []
+        rows = self._qall(
+            "SELECT open_time,open,high,low,close,volume,trades FROM candle_archive "
+            "WHERE symbol=%s AND `interval`=%s AND open_time>=%s AND open_time<=%s "
+            "ORDER BY open_time ASC LIMIT %s",
+            (str(symbol or "")[:16], str(interval or "")[:8],
+             _safe_int(start_ms, 0), _safe_int(end_ms, 0), limit))
+        return [{"t": int(r[0]), "o": _safe_float(r[1]), "h": _safe_float(r[2]),
+                 "l": _safe_float(r[3]), "c": _safe_float(r[4]),
+                 "v": _safe_float(r[5]), "trades": _safe_int(r[6], 0)}
+                for r in rows]
 
     # ---- 形态命中 ----
 
@@ -1113,3 +1381,10 @@ class Storage:
         if self.paper_keep_days > 0:
             self._q("DELETE FROM paper_trades WHERE closed_ts < %s",
                     (self._keep_since(now_ms, self.paper_keep_days),))
+        # K线长期归档 / Agent 聊天记录：0 = 永久保留（跳过清理）。
+        if self.candle_archive_days > 0:
+            self._q("DELETE FROM candle_archive WHERE open_time < %s",
+                    (self._keep_since(now_ms, self.candle_archive_days),))
+        if self.agent_chat_days > 0:
+            self._q("DELETE FROM agent_chat WHERE ts < %s",
+                    (self._keep_since(now_ms, self.agent_chat_days),))

@@ -19,6 +19,28 @@
 - `quant_state` 表：风控引擎与机制漂移保护状态快照，重启后按上次状态继续（不会因重启把日亏限额/连亏熔断清零）
 - **胜率判定**：确认信号出现后 `storage.eval_minutes`（默认 10 分钟）的收盘价，如形态方向所预测即为 win；前端卡片上的"胜xx%"徽标由此统计
 - `paper_positions` / `paper_trades` 表：模拟仓（15 分钟纸上交易）的未平仓快照与平仓流水。仓位每轮 tick 覆盖；平仓记录 append-only、默认永久保留（`storage.paper_keep_days`，0=永久），服务重启后自动恢复仓位并接着跑，胜率/盈亏可直接用 SQL 复盘
+- `candle_archive` 表：K线长期归档（每根收线K线，默认永久保留 `storage.candle_archive_days`），滚动表 `candles` 仍只留 30 分钟；回测/复盘用 `tools/export_klines.py` 导出 CSV
+- `agent_state` / `agent_chat` 表：Agent 的任务/偏好/摘要与长期聊天记录（默认永久）。内存里仍只保留最近 40 条对话，更早的只在库里可查；MySQL 不可用时自动退回本地 `agent-state.json`
+
+## 密钥与安全
+
+- `config.yaml` 里的密钥（MySQL 密码、交易所 API Key/Secret、AI key、Telegram token、Webhook URL）支持**加密落盘**：
+  `python tools/encrypt_config.py` 会在备份后把明文改成 `enc:v1:...`，主密钥写到同目录 `secrets.key`（0600）。
+  `--decrypt` 可还原，`--check` 只检查不写文件。**secrets.key 丢失将无法解密，请单独备份**。
+- 也支持环境变量覆盖（优先级最高）：`KLINE_MYSQL_PASSWORD`、`KLINE_AI_KEY`、`KLINE_TELEGRAM_TOKEN`、
+  `KLINE_WEBHOOK_URL`、`KLINE_ACCOUNT_API_KEY`、`KLINE_ACCOUNT_API_SECRET`、`KLINE_SECRET_KEY`。
+- 服务启动会提示哪些密钥仍是明文，并把 `config.yaml` / `secrets.key` 权限收紧到 0600。
+
+## K线归档与回测导出
+
+- 服务启动回补、按需订阅以及主周期每次收线都会写入 `candle_archive`（全部监控币种；
+  1h/4h 辅助周期在启动回补与按需订阅时归档）。
+- 导出 CSV（只读数据库，不连交易所）：
+
+  ```
+  python tools/export_klines.py --symbol btcusdt --interval 1m \
+      --from 2026-01-01 --to 2026-02-01 --out btc_1m.csv
+  ```
 
 ## 自动部署（已配置）
 

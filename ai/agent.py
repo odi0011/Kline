@@ -537,7 +537,8 @@ def _start_at(value):
 
 
 class AgentManager:
-    def __init__(self, config_fn, proxy_fn, context_fn, broadcast, state_path: str):
+    def __init__(self, config_fn, proxy_fn, context_fn, broadcast, state_path: str,
+                 state_store=None):
         self.config_fn, self.proxy_fn = config_fn, proxy_fn
         self.context_fn, self.broadcast = context_fn, broadcast
         self.bars_fn = None             # (symbol, interval) -> list[Candle]，main 注入
@@ -545,6 +546,8 @@ class AgentManager:
         self.symbols_fn = None          # () -> 当前监控币种列表，main 注入
         self.calc_read_fn = None        # (seconds) -> 计算流水，main 注入
         self.state_path = state_path
+        # MySQL 状态存储（main 注入 storage.Storage）；None = 只用本地 JSON（旧行为）。
+        self.state_store = state_store
         # 图片附件落盘目录：会话里只存 url，绝不把 base64 写进状态文件
         self.attachments_dir = os.path.join(os.path.dirname(state_path) or ".", "agent-attachments")
         self.tasks: list[dict] = []
@@ -606,75 +609,102 @@ class AgentManager:
             refs.append(ref)
         return refs
 
-    def _load(self):
+    def _apply_state(self, state: dict) -> bool:
+        """校验一份完整状态并装进内存（JSON 与 DB 共用同一套规则）。
+
+        校验不通过一律 raise ValueError，绝不部分赋值：tasks/chat/memory 只在
+        全部字段都合法之后才整体替换，避免半截状态被当成有效状态写回存储。
+        """
+        if (not isinstance(state, dict) or state.get("version", 1) not in (1, 2)
+                or not isinstance(state.get("tasks"), list) or not isinstance(state.get("chat"), list)):
+            raise ValueError("状态格式/版本不支持")
+        tasks, chat, memory = state["tasks"], state["chat"], state.get("memory", {})
+        summary = state.get("chatSummary", "")
+        if not isinstance(summary, str) or len(summary) > CONTEXT_SUMMARY_CHARS:
+            raise ValueError("chatSummary 格式无效")
+        if len(tasks) > MAX_TASKS or len(chat) > 40 or not isinstance(memory, dict) or len(memory) > 4:
+            raise ValueError("状态容量或 memory 格式无效")
+        seen = set()
+        for task in tasks:
+            if not isinstance(task, dict):
+                raise ValueError("任务格式无效")
+            task_id = _text(task.get("id"), "id", 100, True)
+            if task_id in seen or task.get("status") not in _STATUSES:
+                raise ValueError("任务 ID 重复或状态无效")
+            seen.add(task_id)
+            _text(task.get("prompt"), "任务指令", 6000, True)
+            _text(task.get("title", ""), "title", 80)
+            _text(task.get("model", ""), "model", 200)
+            interval = _interval(task.get("intervalSec", 0))
+            if task.get("kind") != ("recurring" if interval else "once"):
+                raise ValueError("任务 kind 与 intervalSec 不一致")
+            for field in ("startAt", "nextRunAt", "createdAt", "startedAt", "finishedAt"):
+                if field in task:
+                    task[field] = _start_at(task[field])
+            for field in ("result", "error"):
+                if not isinstance(task.get(field, ""), str):
+                    raise ValueError(f"{field} 格式无效")
+            for field in ("progress", "usage"):
+                if not isinstance(task.get(field, {}), dict):
+                    raise ValueError(f"{field} 格式无效")
+            if type(task.get("runCount", 0)) is not int or task.get("runCount", 0) < 0:
+                raise ValueError("runCount 格式无效")
+            for field in ("steps", "runs"):
+                if not isinstance(task.get(field, []), list) or not all(isinstance(x, dict) for x in task.get(field, [])):
+                    raise ValueError(f"{field} 格式无效")
+            if len(task.get("runs", [])) > 10:
+                raise ValueError("runs 超过容量")
+            task.setdefault("steps", [])
+            task.setdefault("runs", [])
+            task.setdefault("progress", {"phase": task["status"], "round": 0, "maxRounds": MAX_ROUNDS})
+            task.setdefault("startAt", None)
+        for item in chat:
+            if (not isinstance(item, dict) or item.get("role") not in ("user", "assistant")
+                    or not isinstance(item.get("content"), str) or not isinstance(item.get("id"), str)):
+                raise ValueError("聊天格式无效")
+            # 附件引用：图片带 url，文本只有名字；旧版本存的是纯字符串，两种都接
+            att = item.get("attachments")
+            if att is not None:
+                if not isinstance(att, list) or len(att) > MAX_ATTACHMENTS:
+                    raise ValueError("聊天附件格式无效")
+                for ref in att:
+                    if isinstance(ref, str):
+                        continue
+                    if not isinstance(ref, dict) or ref.get("kind") not in ("image", "text"):
+                        raise ValueError("聊天附件格式无效")
+                    if ref.get("kind") == "image":
+                        url = ref.get("url")
+                        if not isinstance(url, str) or not url.startswith("/agent-attachments/"):
+                            raise ValueError("聊天附件地址无效")
+        for key, value in memory.items():
+            validate_preference(key, value)
+        self.tasks, self.chat, self.memory = tasks, chat, memory
+        self.chat_summary = summary
+        return True
+
+    def _load(self) -> bool:
+        # 优先读 DB（MySQL 是主存储）；DB 不可用或没有数据时退回本地 JSON 文件。
+        if self.state_store is not None:
+            try:
+                data = self.state_store.load_agent_state()
+                if data:
+                    self._apply_state({
+                        "version": 2,
+                        "tasks": data.get("tasks") or [],
+                        "chat": self.state_store.load_agent_chat(40) or [],
+                        "memory": data.get("memory") or {},
+                        "chatSummary": data.get("chatSummary") or "",
+                    })
+                    self.persistence_error, self._load_blocked = "", False
+                    return True
+            except Exception as exc:
+                # DB 读失败或库里是坏数据都不能把 Agent 锁死：记日志后走 JSON 兜底。
+                _LOG.warning("Agent state DB load failed (%s): %s", type(exc).__name__, exc)
+        # JSON 兜底路径：读取/校验/赋值逻辑与旧版完全一致。
         try:
             with open(self.state_path, encoding="utf-8") as handle:
                 state = json.load(handle)
-            if (not isinstance(state, dict) or state.get("version", 1) not in (1, 2)
-                    or not isinstance(state.get("tasks"), list) or not isinstance(state.get("chat"), list)):
-                raise ValueError("状态格式/版本不支持")
-            tasks, chat, memory = state["tasks"], state["chat"], state.get("memory", {})
-            summary = state.get("chatSummary", "")
-            if not isinstance(summary, str) or len(summary) > CONTEXT_SUMMARY_CHARS:
-                raise ValueError("chatSummary 格式无效")
-            if len(tasks) > MAX_TASKS or len(chat) > 40 or not isinstance(memory, dict) or len(memory) > 4:
-                raise ValueError("状态容量或 memory 格式无效")
-            seen = set()
-            for task in tasks:
-                if not isinstance(task, dict):
-                    raise ValueError("任务格式无效")
-                task_id = _text(task.get("id"), "id", 100, True)
-                if task_id in seen or task.get("status") not in _STATUSES:
-                    raise ValueError("任务 ID 重复或状态无效")
-                seen.add(task_id)
-                _text(task.get("prompt"), "任务指令", 6000, True)
-                _text(task.get("title", ""), "title", 80)
-                _text(task.get("model", ""), "model", 200)
-                interval = _interval(task.get("intervalSec", 0))
-                if task.get("kind") != ("recurring" if interval else "once"):
-                    raise ValueError("任务 kind 与 intervalSec 不一致")
-                for field in ("startAt", "nextRunAt", "createdAt", "startedAt", "finishedAt"):
-                    if field in task:
-                        task[field] = _start_at(task[field])
-                for field in ("result", "error"):
-                    if not isinstance(task.get(field, ""), str):
-                        raise ValueError(f"{field} 格式无效")
-                for field in ("progress", "usage"):
-                    if not isinstance(task.get(field, {}), dict):
-                        raise ValueError(f"{field} 格式无效")
-                if type(task.get("runCount", 0)) is not int or task.get("runCount", 0) < 0:
-                    raise ValueError("runCount 格式无效")
-                for field in ("steps", "runs"):
-                    if not isinstance(task.get(field, []), list) or not all(isinstance(x, dict) for x in task.get(field, [])):
-                        raise ValueError(f"{field} 格式无效")
-                if len(task.get("runs", [])) > 10:
-                    raise ValueError("runs 超过容量")
-                task.setdefault("steps", [])
-                task.setdefault("runs", [])
-                task.setdefault("progress", {"phase": task["status"], "round": 0, "maxRounds": MAX_ROUNDS})
-                task.setdefault("startAt", None)
-            for item in chat:
-                if (not isinstance(item, dict) or item.get("role") not in ("user", "assistant")
-                        or not isinstance(item.get("content"), str) or not isinstance(item.get("id"), str)):
-                    raise ValueError("聊天格式无效")
-                # 附件引用：图片带 url，文本只有名字；旧版本存的是纯字符串，两种都接
-                att = item.get("attachments")
-                if att is not None:
-                    if not isinstance(att, list) or len(att) > MAX_ATTACHMENTS:
-                        raise ValueError("聊天附件格式无效")
-                    for ref in att:
-                        if isinstance(ref, str):
-                            continue
-                        if not isinstance(ref, dict) or ref.get("kind") not in ("image", "text"):
-                            raise ValueError("聊天附件格式无效")
-                        if ref.get("kind") == "image":
-                            url = ref.get("url")
-                            if not isinstance(url, str) or not url.startswith("/agent-attachments/"):
-                                raise ValueError("聊天附件地址无效")
-            for key, value in memory.items():
-                validate_preference(key, value)
-            self.tasks, self.chat, self.memory = tasks, chat, memory
-            self.chat_summary = summary
+            self._apply_state(state)
         except FileNotFoundError:
             self.tasks, self.chat, self.memory = [], [], {}
         except (OSError, ValueError, TypeError, RecursionError) as exc:
@@ -683,10 +713,62 @@ class AgentManager:
             _LOG.error("Agent state load refused (%s): %s", self.state_path, type(exc).__name__)
             return False
         self.persistence_error, self._load_blocked = "", False
+        if self.state_store is not None:
+            # 首次启动（DB 还没有数据）：把本地 JSON 状态镜像进 DB，下次启动就走 DB。
+            try:
+                self.state_store.save_agent_state(self.tasks, self.memory, self.chat_summary)
+                self.state_store.save_agent_chat(self.chat[-40:])
+                _LOG.info("Agent state migrated from JSON to DB (%s)", self.state_path)
+            except Exception as exc:
+                _LOG.warning("Agent state migration to DB failed (%s): %s",
+                             type(exc).__name__, exc)
         return True
 
+    CHAT_STORE_WINDOW = 40
+
+    def _sync_chat_window(self):
+        """内存聊天窗口有意缩短（清空/压缩）时，同步删掉库里的孤儿消息。
+
+        正常满窗口（40 条）时不删：库里更早的对话是长期存档，可以 SQL 检索。
+        只有窗口 < 40 条（清空、手动/自动压缩、失败消息被移除）才收口，
+        否则重启会按"最近 40 条"把已清掉的历史复活。
+        """
+        if self.state_store is None:
+            return
+        trim = getattr(self.state_store, "trim_agent_chat", None)
+        if not callable(trim):
+            return
+        window = self.chat[-self.CHAT_STORE_WINDOW:]
+        if len(window) >= self.CHAT_STORE_WINDOW:
+            return
+        ids = [str(m.get("id")) for m in window
+               if isinstance(m, dict) and m.get("id")]
+        try:
+            trim(ids)
+        except Exception as exc:
+            _LOG.warning("Agent chat window sync failed (%s): %s",
+                         type(exc).__name__, exc)
+
     def _save(self):
+        # DB 先写：MySQL 可用时它就是权威副本，本地 JSON 只是兜底/迁移来源。
+        store_ok = False
+        if self.state_store is not None:
+            try:
+                self.state_store.save_agent_state(self.tasks, self.memory, self.chat_summary or "")
+                self.state_store.save_agent_chat(self.chat[-40:])
+                store_ok = True
+            except Exception as exc:
+                _LOG.warning("Agent state DB save failed (%s): %s", type(exc).__name__, exc)
+        if store_ok:
+            # 窗口缩短（清空/压缩）时同步收口 DB 归档，防止重启复活旧消息
+            self._sync_chat_window()
         if self._load_blocked:
+            # 本地 JSON 已损坏：绝不覆盖原件（留给人工修复/取证）。
+            # 但 DB 若写入成功，状态已经安全落库，可以按降级模式继续工作。
+            if store_ok:
+                self.persistence_error = ""
+                _LOG.info("Agent state saved to DB; corrupt JSON kept untouched (%s)", self.state_path)
+                return
             raise PersistenceError(self.persistence_error)
         try:
             directory = os.path.dirname(self.state_path) or "."
@@ -703,6 +785,12 @@ class AgentManager:
             os.chmod(temporary, 0o600)
             os.replace(temporary, self.state_path)
         except (OSError, ValueError, TypeError) as exc:
+            if store_ok:
+                # DB 已写成功：本地镜像失败只记日志，不把整个 Agent 变成只读。
+                self.persistence_error = ""
+                _LOG.error("Agent state JSON save failed (%s) but DB write succeeded: %s",
+                           self.state_path, type(exc).__name__)
+                return
             self.persistence_error = "状态保存失败，已停止接受操作；请检查本地存储后 recover。"
             _LOG.error("Agent state save failed (%s): %s", self.state_path, type(exc).__name__)
             raise PersistenceError(self.persistence_error) from None
