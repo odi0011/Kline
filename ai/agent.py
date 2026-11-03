@@ -262,22 +262,22 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
  · 用户情绪化时先接住情绪再谈数据，别上来就念评分。
 
 【表情包】你可以用表情包代替说话，或者说完一句再补一个。
-用 send_sticker 工具，由你自己判断，不要每次都发、不要固定套路：
+由你自己判断，不要每次都发、不要固定套路：
  · 适合发：用户调侃/骂人/自嘲、行情很离谱、你又没法给建议、气氛轻松、庆祝
  · 不适合发：用户认真问价位、有持仓风险、在亏钱
- · 服务器上有一份**表情包库**，是之前收集下来的图，每张都带着
-   你自己写的名字和使用场景。所以先看一眼再说：
-   list_stickers 返回 id、name（你起的名字）、when（什么时候用）、tags。
+ · 库里已经攒了一批图，每张都带着名字和使用场景。**有合适的就直接发**，
+   不要把「库里有几张」当成回答内容 —— 用户要的是表情，不是库存清单。
 
- · 标准流程（看完再发，别瞎发）：
-   1) 先 list_stickers 看有没有现成合适的 → 有就直接 send_sticker(sticker_id=...)
-   2) 没有合适的 → search_stickers(query="英文情绪词")，返回 3~5 张候选，
-      每张带 id 和英文描述。你按描述挑一张最贴切当前语境的。
-   3) 挑好了 → save_sticker(candidate_id=..., name="中文名",
-      when="什么时候该用它")，给这张图定下名字和用途，它从此就在库里。
-   4) 最后 send_sticker(sticker_id=刚存下的 id) 发出去。
-   5) 都不满意就换个 query 再搜，或者干脆不发 —— 不要为了发而发。
+ · 怎么发（按顺序，能用前面的就别往下走）：
+   1) 库里有明显合适的 → 直接 send_sticker(sticker_id=...) 发出
+   2) 不太确定库里有啥 → list_stickers 看一眼，看到合适的立刻发
+   3) 都没有合适的 → search_stickers(query="英文情绪词") 拿 3~5 张候选，
+      按英文描述挑一张 → save_sticker(candidate_id, name, when) 定名入库
+      → send_sticker(sticker_id) 发出
+   4) 都不满意就不发 —— 不要为了发而发
 
+ · 用户明说「发个表情包」「来个表情」时，必须真的发出去（返回一张图），
+   不能用「库里两张：麻了、摊手」这种话代替。
  · 情绪词参考：facepalm（捂脸）、shrug（摊手）、mind blown（震撼）、
    crying laughing（笑死）、dead inside（麻了）、thumbs up（认可）、
    clown（小丑）、popcorn（吃瓜）、eye roll（翻白眼）、pray（祈祷）
@@ -285,9 +285,9 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
    {{STICKER_NAMES}}
  · 工具会自己处理标记和落地，你不用手写 `[sticker:...]`。
  · 一条回复最多一个表情包。发了表情包就可以少说话，甚至只发表情包。
-   例：用户「又亏了草」→ list 没合适的 → search("dead inside") → save + send
+   例：用户「发个表情包」→ 直接 send_sticker(sticker_id=库里那张)，不解释
+   例：用户「又亏了草」→ 搜 dead inside → 存 → 发，可以只说一句
    例：用户「BTC 还能涨吗」→「不知道，别问我。」+ 一张摊手
-   例：行情突然暴力拉升 → 「这谁顶得住。」+ 一张震撼脸
 
 需要分成多条时说「|||」切分，客户端会逐条发出；但默认就该一条说完，
 不要靠切分来容纳废话。"""
@@ -1836,6 +1836,16 @@ class AgentManager:
                 total = int(store.sticker_stats().get("count") or 0)
             except Exception:
                 total = 0
+        note = "按 id 用 send_sticker(sticker_id=...) 发送。"
+        if len(rows) == 1:
+            # 只有一张且没被过滤掉：直接指着它说，别让模型只回一句"库里一张"
+            note = (f"库里就这一张（{rows[0].get('name') or rows[0]['id']}）。"
+                    f"要用就直接 send_sticker(sticker_id=\"{rows[0]['id']}\")，"
+                    f"不要把库存当回答。")
+        elif rows:
+            note = ("列表是按最近使用排的，第一张通常最合适；"
+                    "直接 send_sticker(sticker_id=...) 发，别念清单。"
+                    "都不合适再 search_stickers。")
         return {
             "available": bool(rows),
             "count": len(rows),
@@ -1845,8 +1855,7 @@ class AgentManager:
                           "when": r.get("when", ""), "tags": r.get("tags", ""),
                           "width": r.get("width", 0), "height": r.get("height", 0),
                           "uses": r.get("uses", 0)} for r in rows],
-            "note": "按 id 用 send_sticker(sticker_id=...) 发送。"
-                    "没有合适的就 search_stickers 找新的。",
+            "note": note,
         }
 
     async def _search_sticker_candidates(self, arguments: dict) -> dict:
@@ -2395,6 +2404,7 @@ class AgentManager:
                         return {"reply": reply2[:20000], "usage": usage, "perf": perf, "model": selected["id"]}
                     raise RuntimeError("服务商不支持工具调用，改为无工具模式后仍无法给出可信回答")
                 # 工具轮之后这一轮既没内容也没调用：多数是服务商偶发空响应。
+                # （已选好表情包的情况在上面那个分支就放行了，走不到这里。）
                 # 直接报错会把它渲染成红色失败气泡，用户看到的是"系统坏了"；
                 # 给模型一次补答机会更接近真实情况。
                 if round_number < MAX_ROUNDS:

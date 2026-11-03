@@ -4,6 +4,7 @@
 """
 import json
 import unittest
+import urllib.error
 
 from ai import provider
 
@@ -21,9 +22,12 @@ class FakeResponse:
     def __init__(self, chunks):
         self.chunks = list(chunks)
         self.status = 200
+        # 真实响应带 headers；流式路径会读它，缺了会和真实行为不一致
+        self.headers = {"Content-Type": "text/event-stream"}
 
     def read(self, size=-1):
-        # 每次返回预置的一段，读完返回空字节表示结束
+        # 每次返回预置的一段，读完返回空字节表示结束。
+        # 有意忽略 size：模拟"一次 read 带回多帧"的真实情况。
         return self.chunks.pop(0) if self.chunks else b""
 
     def __enter__(self):
@@ -31,6 +35,9 @@ class FakeResponse:
 
     def __exit__(self, *args):
         return False
+
+    def close(self):
+        pass
 
 
 class StreamParseTest(unittest.TestCase):
@@ -163,3 +170,81 @@ class StreamParseTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmptyDeltaRetryTest(unittest.TestCase):
+    """流式返回"有响应但既无文本也无工具调用"时重试一次。
+
+    线上表现：用户发"发个表情包"，偶尔收到红色气泡
+    "模型未返回文本或工具调用"。图其实没发出去，但再请求一次通常就有内容。
+    """
+
+    def setUp(self):
+        self._open = provider.urllib.request.urlopen
+        self._build = provider.urllib.request.build_opener
+        self.calls = []
+
+    def tearDown(self):
+        provider.urllib.request.urlopen = self._open
+        provider.urllib.request.build_opener = self._build
+
+    def _install_sequence(self, bodies):
+        """每次**请求**依次返回一个独立的响应对象。
+
+        注意：FakeResponse 内部会把 chunks 逐个 pop 掉，所以必须每次请求
+        都新建一个实例并传入**未消耗**的拷贝，否则第二次请求读到空流，
+        会被 _chat_completion_stream 判成"没按流式回"而返回 None。
+        """
+        pending = [list(b) for b in bodies]
+        state = {"n": 0}
+
+        def opener(*a, **k):
+            idx = state["n"]
+            state["n"] += 1
+            chunks = pending[idx] if idx < len(pending) else []
+            return FakeResponse(list(chunks))
+
+        provider.urllib.request.urlopen = opener
+        provider.urllib.request.build_opener = lambda *a, **k: _NoopOpener(opener)
+
+    def test_retries_once_on_empty_and_returns_content(self):
+        empty = [b"data: " + json.dumps(
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]}).encode() + b"\n\n",
+            b"data: [DONE]\n\n"]
+        # sse() 返回的是**整段字节**，要放进 list 才算一个 chunk；
+        # 直接传 bytes 会被 list() 拆成单字节，流解析就认不出 data: 行。
+        good = [sse({"choices": [{"delta": {"content": "好"}}]})]
+        self._install_sequence([empty, good])
+        result = provider.chat_completion(
+            {"base": "https://example.invalid", "key": "k"}, "test-model",
+            [{"role": "user", "content": "hi"}], stream=True)
+        assert result.get("ok"), result
+        assert result.get("reply") == "好"
+
+    def test_falls_back_to_non_stream_after_two_empties(self):
+        """两次空响应后退回非流式，而不是把"未返回文本"直接甩给用户。"""
+        empty = [b"data: " + json.dumps(
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]}).encode() + b"\n\n",
+            b"data: [DONE]\n\n"]
+        self._install_sequence([empty, empty])
+        # 非流式兜底：测试里让它直接失败，只断言"确实尝试过"
+        nonstream = []
+
+        def opener(*a, **k):
+            nonstream.append(1)
+            raise urllib.error.URLError("blocked in test")
+
+        provider.urllib.request.urlopen = opener
+        result = provider.chat_completion(
+            {"base": "https://example.invalid", "key": "k"}, "test-model",
+            [{"role": "user", "content": "hi"}], stream=True)
+        assert nonstream, "空响应后应该尝试非流式兜底"
+        assert "未返回文本" not in str(result.get("error") or ""), result
+
+
+class _NoopOpener:
+    def __init__(self, open_fn):
+        self._open = open_fn
+
+    def open(self, *a, **k):
+        return self._open(*a, **k)

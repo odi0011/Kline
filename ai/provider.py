@@ -374,9 +374,19 @@ def chat_completion(cfg: dict, model_id: str, messages: list[dict],
     if stream:
         result = _chat_completion_stream(base, key, model_id, payload, proxy,
                                          timeout, on_progress)
-        # 只有「完全没拿到响应」才退回非流式；4xx/5xx 是服务商的真实答复，不能重试。
         if result is not None:
-            return result
+            empty_reply = (not result.get("ok")
+                           and "未返回文本" in str(result.get("error") or ""))
+            if not empty_reply:
+                # 明确的成功或与空响应无关的错误：直接返回，不重复请求
+                return result
+            # 空响应：再流式试一次；这次流式走不通（None）就让下面的非流式兜底
+            retry = _chat_completion_stream(base, key, model_id, payload, proxy,
+                                            timeout, on_progress)
+            if retry is not None and (
+                    retry.get("ok")
+                    or "未返回文本" not in str(retry.get("error") or "")):
+                return retry
     started = time.monotonic()
     status, body = _request(_join(base, "/chat/completions"), key, payload,
                             proxy=proxy, timeout=min(180, max(1, timeout)))

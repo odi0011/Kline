@@ -810,3 +810,48 @@ def test_download_uses_image_accept_header():
         g._open = original
     assert "image/" in seen["accept"], f"Accept 必须是图片类型，实际: {seen['accept']!r}"
     assert "text/html" not in seen["accept"]
+
+
+# ---------------- I. 已选好表情时，空正文不能报错 ----------------
+
+def test_sticker_only_reply_survives_empty_second_round(tmp_path, monkeypatch):
+    """选好表情包后模型给了空正文：必须正常结束，不能报"未返回文本或工具调用"。
+
+    线上实测：'发个表情包' 那一次，模型调了 list_stickers + send_sticker，
+    第二轮返回空，用户看到红色错误气泡 —— 图其实已经选好了。
+    """
+    from tests.test_agent import finished, make_manager, tool_call, tool_result
+
+    calls = {"n": 0}
+
+    def provider(*args, **kwargs):
+        calls["n"] += 1
+        if kwargs.get("tool_choice") == "required":
+            return tool_result(tool_call("send_sticker", {"name": "崩溃"}, "s1"))
+        # 第二轮：既无正文也无工具调用
+        return {"ok": True, "reply": "", "usage": {"total_tokens": 5}, "model": "test-model"}
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch, provider=provider)
+        manager.sticker_cache = StickerCache(str(tmp_path / "s"))
+        await manager.ask("发个表情包", "test-model")
+        assert await wait_for(lambda: not manager.chat_runners)
+        answer = [m for m in manager.chat if m.get("role") == "assistant"][-1]
+        assert answer["status"] == "succeeded", answer.get("error")
+        assert answer["content"] == "[sticker:崩溃]"
+        await manager.stop()
+
+    from tests.test_agent import wait_for
+    asyncio.run(scenario())
+
+
+def test_list_stickers_note_points_at_single_sticker(tmp_path):
+    """库里只有一张时，note 要直接给出那个 id，避免模型只回"库里一张"。"""
+    manager, cache = _manager_with_stickers(tmp_path)
+    asyncio.run(manager._search_sticker_candidates({"query": "shrug"}))
+    asyncio.run(manager._save_sticker({"candidate_id": "cand-b", "name": "摊手",
+                                      "when": "被问住"}))
+    out = manager._list_stickers({})
+    assert out["count"] == 1
+    assert "cand-b" in out["note"], out["note"]
+    assert "不要把库存当回答" in out["note"]
