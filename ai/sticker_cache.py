@@ -51,6 +51,23 @@ def _ext_of(url: str, content_type: str = "") -> str:
     return ""     # 认不出来就不存（可能是 mp4，<img> 不支持）
 
 
+def _sniff_image(data: bytes) -> str:
+    """按真实字节判断图片类型，返回扩展名；不是图片返回空串。
+
+    不信 URL/Content-Type：GIPHY 的重定向没跟随时，返回的是 HTML 错误页，
+    但静态服务仍会按 .gif 报 image/gif，浏览器就渲染成空白。
+    """
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return ".gif"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return ".webp"
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    return ""
+
+
 def _safe_id(sticker_id: str) -> str:
     """GIPHY 的 id 只含字母数字；统一清洗后当文件名，防止路径穿越。"""
     cleaned = re.sub(r"[^A-Za-z0-9_-]", "", str(sticker_id or ""))[:64]
@@ -94,7 +111,7 @@ class StickerCache:
                 file = str(row.get("file") or "")
                 if not sid or not file:
                     continue
-                if not os.path.exists(os.path.join(self.root, file)):
+                if not self._file_ok({"file": file}):
                     continue      # 文件真没了，交给下面的自愈/淘汰逻辑
                 record = {
                     "id": sid, "file": file,
@@ -176,12 +193,51 @@ class StickerCache:
             if time.time() - float(entry.get("ts") or 0) > QUERY_TTL:
                 self._index["queries"].pop(key, None)
                 return None
-            record = self._index["stickers"].get(str(entry.get("id") or ""))
+    def _file_ok(self, record: dict) -> bool:
+        """这条记录指向的文件是否真是一张能显示的图片。
+
+        只判断 exists 不够：线上曾经存进 HTML 错误页（GIPHY 302 没跟随），
+        扩展名是 .gif、静态服务也报 image/gif，浏览器却渲染成空白。
+        这里读前 16 字节按魔数确认；不合格的记录顺手清掉，避免反复踩。
+        """
+        filename = str(record.get("file") or "")
+        if not filename:
+            return False
+        path = os.path.join(self.root, filename)
+        try:
+            with open(path, "rb") as handle:
+                head = handle.read(16)
+        except OSError:
+            return False
+        return bool(_sniff_image(head))
+
+    def _drop_record(self, sid: str) -> None:
+        """删掉一条不可用的记录及其索引引用（调用方已持锁）。"""
+        self._index["stickers"].pop(sid, None)
+        for key in [k for k, v in self._index["queries"].items()
+                    if isinstance(v, dict) and str(v.get("id")) == sid]:
+            self._index["queries"].pop(key, None)
+        self._save()
+
+    def lookup(self, query) -> dict | None:
+        """按情绪词找已落盘的贴纸；命中直接返回本地地址（不打 API、不下载）。"""
+        key = _norm_query(query)
+        if not key:
+            return None
+        with self._lock:
+            entry = self._index["queries"].get(key)
+            if not isinstance(entry, dict):
+                return None
+            if time.time() - float(entry.get("ts") or 0) > QUERY_TTL:
+                self._index["queries"].pop(key, None)
+                return None
+            sid = str(entry.get("id") or "")
+            record = self._index["stickers"].get(sid)
             if not isinstance(record, dict):
                 return None
-            # 文件被手工删了/构建覆盖了 → 当成未命中，重新去搜
-            if not os.path.exists(os.path.join(self.root, str(record.get("file") or ""))):
-                self._index["queries"].pop(key, None)
+            # 文件被删、或里面其实不是图片（旧版存进过 HTML 错误页）→ 当未命中
+            if not self._file_ok(record):
+                self._drop_record(sid)
                 return None
             return self._public(record)
 
@@ -193,8 +249,8 @@ class StickerCache:
             record = self._index["stickers"].get(sid)
             if not isinstance(record, dict):
                 return None
-            if not os.path.exists(os.path.join(self.root, str(record.get("file") or ""))):
-                self._index["stickers"].pop(sid, None)
+            if not self._file_ok(record):
+                self._drop_record(sid)
                 return None
             return self._public(record)
 
@@ -221,7 +277,7 @@ class StickerCache:
                 file = str(row.get("file") or "")
                 if not sid or not file:
                     continue
-                if not os.path.exists(os.path.join(self.root, file)):
+                if not self._file_ok({"file": file}):
                     continue
                 out.append({
                     "id": sid,
@@ -244,7 +300,7 @@ class StickerCache:
             for sid, record in self._index["stickers"].items():
                 if not isinstance(record, dict):
                     continue
-                if not os.path.exists(os.path.join(self.root, str(record.get("file") or ""))):
+                if not self._file_ok(record):
                     continue
                 tags = " ".join(sorted(words.get(sid, [])))[:200]
                 name = str(record.get("name") or "")[:80]
@@ -278,7 +334,7 @@ class StickerCache:
                 if not isinstance(record, dict):
                     continue
                 item = self._public(record)
-                if not os.path.exists(os.path.join(self.root, str(record.get("file") or ""))):
+                if not self._file_ok(record):
                     continue
                 item["savedAt"] = int(record.get("ts") or 0)
                 out.append(item)
@@ -308,7 +364,7 @@ class StickerCache:
             for sid, record in self._index["stickers"].items():
                 if not isinstance(record, dict):
                     continue
-                if not os.path.exists(os.path.join(self.root, str(record.get("file") or ""))):
+                if not self._file_ok(record):
                     continue
                 keys = words.get(sid, [])
                 score = 0
@@ -373,7 +429,10 @@ class StickerCache:
         不是 GIPHY 的英文标题。存下来之后 list_stickers 会原样返回，
         下次 Agent 就能按"名字 + 使用场景"直接挑，不用再猜情绪词。
 
-        扩展名认不出来（比如 GIPHY 返回 mp4）就放弃——`<img>` 放不了视频。
+        扩展名**按真实字节判断**，不信 URL/Content-Type：
+        之前存进去的"GIF"实际是 HTML 错误页，静态服务照样按 .gif 返回
+        image/gif，浏览器渲染成空白——正是这个坑。
+        认不出是图片就直接拒绝，绝不把错误页写进库。
         """
         sid = _safe_id(sticker_id)
         ext = _ext_of(url_hint, content_type)
@@ -381,6 +440,11 @@ class StickerCache:
             return None
         if int(width or 0) <= 0 or int(height or 0) <= 0:
             return None
+        # 字节层面确认真的是图；对不上的话按真实类型纠正扩展名
+        real = _sniff_image(data)
+        if not real:
+            return None
+        ext = real
         filename = f"{sid}{ext}"
         path = os.path.join(self.root, filename)
         with self._lock:

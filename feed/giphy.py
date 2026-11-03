@@ -30,7 +30,8 @@ import urllib.request
 
 # 复用搜索模块的 HTTP 层：代理、超时、DNS 校验、禁自动重定向都一致，
 # 不再写第二套（两套 HTTP 迟早会在代理/超时上行为不一致）。
-from feed.search import HEADERS, _clean_proxy, _open, _short_error
+from feed.search import (HEADERS, MAX_REDIRECTS, _REDIRECT_CODES, _clean_proxy,
+                         _header_value, _open, _redirect_target, _short_error)
 
 GIPHY_URL = "https://api.giphy.com/v1/stickers/search"
 KEY_ENV = "KLINE_GIPHY_KEY"
@@ -178,36 +179,80 @@ def clear_cache() -> None:
 
 
 MAX_IMAGE_BYTES = 4 * 1024 * 1024   # 单张贴纸上限：超过这个不是图，是别的东西
+# 下载图片必须用图片的 Accept。复用 feed/search.py 的 HEADERS 会带上
+# "Accept: text/html,..."，GIPHY 的 CDN 据此返回 HTML 页面而不是图——
+# 线上三个"GIF"全是 <!DOCTYPE html 就是这么来的。
+IMAGE_HEADERS = {
+    "User-Agent": HEADERS["User-Agent"],
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "Accept-Language": HEADERS["Accept-Language"],
+    "Referer": "https://giphy.com/",
+}
+# 图片头魔数：GIPHY 有时会返回 HTML 错误页/登录页（比如重定向没跟随时），
+# 只看 Content-Type 会被骗——必须以真实字节判断。
+_IMAGE_MAGIC = (
+    (b"GIF87a", ".gif"), (b"GIF89a", ".gif"),
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"RIFF", ".webp"),          # RIFF....WEBP，下面再确认 WEBP 标记
+)
+
+
+def _sniff_image(data: bytes) -> str:
+    """按内容判断图片类型，返回扩展名；不是图片返回空串。"""
+    for magic, ext in _IMAGE_MAGIC:
+        if data.startswith(magic):
+            if ext == ".webp" and data[8:12] != b"WEBP":
+                continue
+            return ext
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    return ""
 
 
 def download_image(url: str, proxy: str = "", timeout: float = DEFAULT_TIMEOUT
                    ) -> tuple[bytes, str]:
     """把贴纸图片下载到内存，返回 (bytes, content_type)。
 
-    走 search 模块的 _open：同样有 DNS 校验、禁自动重定向、代理支持。
-    落盘由调用方负责（ai/sticker_cache.py）——这样"下载"和"存哪"分开，
-    测试下可以只断言下载，不碰磁盘。
+    两个必须做对的地方（都是踩过的坑）：
+
+    1. **跟随重定向，逐跳重新校验。** GIPHY 的 media 地址会 302 到
+       mediaN.giphy.com；`_open` 故意不自动跟随，所以必须自己跟，
+       否则存下的是 302 响应体（HTML 错误页）——浏览器打开就是空白，
+       而 Content-Type 还按扩展名报 image/gif，看着像"200 正常"。
+    2. **按字节判断是不是图片。** 用魔数而不是 Content-Type/扩展名，
+       否则 HTML 错误页会被当成功存进去。
     """
     if not _media_host_ok(url):
         raise ValueError("贴纸地址不在 GIPHY 域名下")
-    request = urllib.request.Request(url, headers=dict(HEADERS))
-    response = _open(request, proxy, timeout)
-    try:
-        raw = response.read(MAX_IMAGE_BYTES + 1)
-        headers = getattr(response, "headers", None)
-        content_type = ""
-        if headers is not None:
-            try:
-                content_type = str(headers.get("Content-Type") or "")
-            except Exception:
-                content_type = ""
-    finally:
+    current = url
+    for hop in range(MAX_REDIRECTS + 1):
+        request = urllib.request.Request(current, headers=dict(IMAGE_HEADERS))
+        response = _open(request, proxy, timeout)
         try:
-            response.close()
-        except Exception:
-            pass
-    if not raw:
-        raise ValueError("贴纸内容为空")
-    if len(raw) > MAX_IMAGE_BYTES:
-        raise ValueError("贴纸文件过大")
-    return bytes(raw), content_type
+            status = int(getattr(response, "status", 0) or 0)
+            location = _header_value(getattr(response, "headers", None), "Location")
+            if status in _REDIRECT_CODES and location:
+                target, why = _redirect_target(current, location)
+                if not target:
+                    raise ValueError(f"重定向被拒绝：{why}")
+                current = target
+                continue
+            if status >= 400:
+                raise ValueError(f"贴纸下载失败（HTTP {status}）")
+            raw = response.read(MAX_IMAGE_BYTES + 1)
+            headers = getattr(response, "headers", None)
+            content_type = _header_value(headers, "Content-Type")
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
+        if not raw:
+            raise ValueError("贴纸内容为空")
+        if len(raw) > MAX_IMAGE_BYTES:
+            raise ValueError("贴纸文件过大")
+        data = bytes(raw)
+        if not _sniff_image(data):
+            raise ValueError("返回的不是图片（可能是错误页）")
+        return data, content_type
+    raise ValueError("重定向次数过多")

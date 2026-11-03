@@ -646,3 +646,167 @@ def test_resaving_keeps_accumulated_tags(tmp_path, monkeypatch):
     cache.save("sid1", b"GIF89a" + b"y" * 32, 100, 100,
                url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
     assert "shrug" in store.stickers()[0]["tags"], "重复保存不能清空 tags"
+
+
+# ---------------- H. 存储的必须是真图片（线上踩过的坑） ----------------
+
+def test_save_rejects_html_error_page():
+    """GIPHY 重定向没跟随时返回 HTML，不能当 GIF 存进去。
+
+    线上三个文件字节都以 <!DOCT 开头，静态服务仍按 .gif 报 image/gif，
+    浏览器渲染成空白——只留一行 Powered by GIPHY。
+    """
+    root = tempfile.mkdtemp()
+    cache = StickerCache(root)
+    html = b"<!DOCTYPE html><html><body>Not found</body></html>"
+    assert cache.save("bad1", html, 480, 480,
+                      url_hint="https://media.giphy.com/a.gif",
+                      content_type="image/gif") is None
+    assert cache.stats()["stickers"] == 0
+
+
+def test_save_corrects_extension_by_real_bytes():
+    """扩展名按真实字节纠正：URL 说是 .gif、实际是 PNG 就存成 .png。"""
+    root = tempfile.mkdtemp()
+    cache = StickerCache(root)
+    png = b"\x89PNG\r\n\x1a\n" + b"x" * 32
+    saved = cache.save("p1", png, 100, 100,
+                       url_hint="https://media.giphy.com/a.gif",
+                       content_type="image/gif")
+    assert saved and saved["url"].endswith(".png")
+    # 文件本体也是 PNG
+    data = pathlib.Path(root, "p1.png").read_bytes()
+    assert data.startswith(b"\x89PNG")
+
+
+def test_cached_corrupt_sticker_is_dropped():
+    """索引里有、但文件内容是错误页：查出来要当不存在，别把空白图发出去。"""
+    root = tempfile.mkdtemp()
+    cache = StickerCache(root)
+    # 手工伪造一条脏记录（模拟旧版本存进去的坏数据）
+    pathlib.Path(root, "dirty.gif").write_bytes(b"<!DOCTYPE html><html></html>")
+    cache._index["stickers"]["dirty"] = {
+        "id": "dirty", "file": "dirty.gif", "width": 100, "height": 100,
+        "url": "/agent-attachments/stickers/dirty.gif", "bytes": 30, "ts": 1}
+    cache._index["queries"]["x"] = {"id": "dirty", "ts": 1}
+    cache._save()
+
+    fresh = StickerCache(root)
+    assert fresh.lookup_id("dirty") is None, "坏文件不能当成可用贴纸"
+    assert fresh.lookup("x") is None
+    assert fresh.catalog() == []
+
+
+def test_download_follows_redirect():
+    """贴纸下载必须自己跟随 302，且每跳重新校验。
+
+    不跟随时存下的是 302 响应体（HTML），这就是线上坏文件的来源。
+    """
+    calls = []
+
+    class Resp:
+        def __init__(self, status, headers, body):
+            self.status, self.headers, self._body = status, headers, body
+
+        def read(self, n=-1):
+            return self._body[:n] if n and n > 0 else self._body
+
+        def close(self):
+            pass
+
+    def fake_open(request, proxy="", timeout=0):
+        calls.append(request.full_url)
+        if request.full_url.endswith("/giphy.gif"):
+            return Resp(302, {"Location": "https://media2.giphy.com/real.gif"}, b"")
+        return Resp(200, {"Content-Type": "image/gif"}, b"GIF89a" + b"z" * 40)
+
+    import feed.giphy as g
+    original = g._open
+    g._open = fake_open
+    try:
+        data, ctype = g.download_image("https://media.giphy.com/giphy.gif")
+    finally:
+        g._open = original
+    assert data.startswith(b"GIF89a")
+    assert len(calls) == 2, f"应该跟一次重定向: {calls}"
+
+
+def test_download_rejects_redirect_to_non_giphy():
+    """重定向到非 GIPHY 域名必须拒绝（防 SSRF 绕道）。"""
+    class Resp:
+        def __init__(self, status, headers, body):
+            self.status, self.headers, self._body = status, headers, body
+
+        def read(self, n=-1):
+            return self._body
+
+        def close(self):
+            pass
+
+    def fake_open(request, proxy="", timeout=0):
+        return Resp(302, {"Location": "http://127.0.0.1/admin"}, b"")
+
+    import feed.giphy as g
+    original = g._open
+    g._open = fake_open
+    try:
+        with pytest.raises(ValueError):
+            g.download_image("https://media.giphy.com/giphy.gif")
+    finally:
+        g._open = original
+
+
+def test_download_rejects_non_image_body():
+    """200 + image/gif 但内容是 HTML：必须拒绝。"""
+    class Resp:
+        def __init__(self):
+            self.status = 200
+            self.headers = {"Content-Type": "image/gif"}
+
+        def read(self, n=-1):
+            return b"<!DOCTYPE html><html>blocked</html>"
+
+        def close(self):
+            pass
+
+    import feed.giphy as g
+    original = g._open
+    g._open = lambda request, proxy="", timeout=0: Resp()
+    try:
+        with pytest.raises(ValueError):
+            g.download_image("https://media.giphy.com/giphy.gif")
+    finally:
+        g._open = original
+
+
+def test_download_uses_image_accept_header():
+    """下载图片必须用图片 Accept。
+
+    复用搜索用的 HEADERS（Accept: text/html,...）时，GIPHY CDN 会返回
+    HTML 页面——线上三个"GIF"全是 <!DOCTYPE html，根因就在这。
+    """
+    seen = {}
+
+    class Resp:
+        status = 200
+        headers = {"Content-Type": "image/gif"}
+
+        def read(self, n=-1):
+            return b"GIF89a" + b"z" * 40
+
+        def close(self):
+            pass
+
+    def fake_open(request, proxy="", timeout=0):
+        seen["accept"] = request.get_header("Accept") or ""
+        return Resp()
+
+    import feed.giphy as g
+    original = g._open
+    g._open = fake_open
+    try:
+        g.download_image("https://media.giphy.com/giphy.gif")
+    finally:
+        g._open = original
+    assert "image/" in seen["accept"], f"Accept 必须是图片类型，实际: {seen['accept']!r}"
+    assert "text/html" not in seen["accept"]
