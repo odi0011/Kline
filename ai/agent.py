@@ -1903,6 +1903,9 @@ class AgentManager:
                 "id": str(row.get("id") or "")[:64],
                 "caption": str(row.get("title") or "")[:120] or "(无描述)",
                 "width": width, "height": height, "_url": url,
+                # 记住"是哪次搜索找到它的"：存库时要写成 tags，
+                # 否则这张图以后按情绪词搜不到，只能靠名字碰。
+                "_query": query,
             })
         if not candidates:
             return {"available": False, "reason": "没有搜到可用候选", "candidates": []}
@@ -1959,8 +1962,17 @@ class AgentManager:
             return {"saved": False, "reason": f"保存失败: {str(clean(str(exc)))[:120]}"}
         if not saved:
             return {"saved": False, "reason": "保存失败（格式不支持或尺寸异常）"}
+        # 把当初搜到它的情绪词记下来，这张图以后才能被 query 命中。
+        # 不做这一步，库里只有名字，下次搜"dead inside"根本找不到它。
+        query = str(cand.get("_query") or "").strip()
+        if query:
+            try:
+                cache.remember_query(query, saved["id"])
+            except Exception:
+                pass
         pending.pop(cid, None)
         return {"saved": True, "id": saved["id"], "name": name, "when": when,
+                "tags": query,
                 "note": "已入库，接下来用 send_sticker(sticker_id=...) 发送"}
 
     async def _send_sticker(self, arguments: dict, target: dict) -> dict:

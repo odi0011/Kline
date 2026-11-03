@@ -347,9 +347,13 @@ class StickerCache:
         store = self.store
         if store is not None and getattr(store, "enabled", False) and isinstance(record, dict):
             try:
+                # 必须把 name/whenToUse 一起带上：save_sticker 是 REPLACE INTO，
+                # 少传这两个字段会把 Agent 刚定好的名字和用途擦成空字符串。
                 store.save_sticker({
                     "id": sid, "file": record.get("file"),
                     "title": record.get("title"),
+                    "name": record.get("name") or "",
+                    "whenToUse": record.get("whenToUse") or "",
                     "tags": " ".join(tags),
                     "width": record.get("width"), "height": record.get("height"),
                     "bytes": record.get("bytes"),
@@ -407,11 +411,18 @@ class StickerCache:
         store = self.store
         if store is not None and getattr(store, "enabled", False):
             try:
+                # tags 不能写死成空：重复保存同一张时会把已累积的情绪词清掉。
+                # 从本地索引里取回这张图已有的所有情绪词。
+                with self._lock:
+                    tags = sorted({k for k, v in self._index["queries"].items()
+                                   if isinstance(v, dict)
+                                   and str(v.get("id")) == sid})
                 store.save_sticker({
                     "id": sid, "file": filename, "title": record["title"],
                     "name": record.get("name") or "",
                     "whenToUse": record.get("whenToUse") or "",
-                    "tags": "", "width": record["width"], "height": record["height"],
+                    "tags": " ".join(tags),
+                    "width": record["width"], "height": record["height"],
                     "bytes": record["bytes"], "ts": record["ts"] * 1000,
                 })
             except Exception:

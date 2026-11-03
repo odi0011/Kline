@@ -584,3 +584,65 @@ def test_search_and_save_tools_registered():
     from ai.agent_tools import TOOL_NAMES
     for name in ("search_stickers", "save_sticker", "list_stickers", "send_sticker"):
         assert name in TOOL_NAMES
+
+
+# ---------------- G. 闭环不能断的两个坑 ----------------
+
+def test_save_records_search_query_as_tag(tmp_path):
+    """存图时要把"当初搜到它的情绪词"记成 tag，否则以后按情绪搜不到。"""
+    manager, cache = _manager_with_stickers(tmp_path)
+    asyncio.run(manager._search_sticker_candidates({"query": "dead inside"}))
+    asyncio.run(manager._save_sticker({"candidate_id": "cand-a", "name": "麻了",
+                                      "when": "心态崩了"}))
+    # 按当初的搜索词能命中
+    assert cache.lookup("dead inside") is not None
+    rows = cache.catalog()
+    assert "dead inside" in rows[0]["tags"]
+
+
+def test_remember_query_does_not_wipe_name_and_when(tmp_path, monkeypatch):
+    """REPLACE INTO 的坑：remember_query 少传 name/when 会把它们清空。"""
+    import storage as storage_mod
+    from tests.test_paper_store import SQLConnection
+
+    conn = SQLConnection()
+    conn.db.execute("CREATE TABLE equity(acct TEXT,ts BIGINT,bal DOUBLE,"
+                    "upnl DOUBLE,PRIMARY KEY(acct,ts))")
+    monkeypatch.setattr(storage_mod.pymysql, "connect", lambda **_: conn)
+    store = storage_mod.Storage({"user": "isolated-test"})
+
+    cache = StickerCache(str(tmp_path / "s"), store=store)
+    cache.save("sid1", b"GIF89a" + b"x" * 32, 200, 150,
+               url_hint="https://media.giphy.com/a.gif", content_type="image/gif",
+               name="捂脸", when_to_use="自嘲的时候")
+    assert store.stickers()[0]["name"] == "捂脸"
+
+    # 之后才被情绪词命中
+    cache.remember_query("facepalm", "sid1")
+    row = store.stickers()[0]
+    assert row["name"] == "捂脸", "记住情绪词不能把名字擦掉"
+    assert row["whenToUse"] == "自嘲的时候", "也不能把用途擦掉"
+    assert "facepalm" in row["tags"]
+
+
+def test_resaving_keeps_accumulated_tags(tmp_path, monkeypatch):
+    """重复保存同一张时，已累积的 tags 不能被清空。"""
+    import storage as storage_mod
+    from tests.test_paper_store import SQLConnection
+
+    conn = SQLConnection()
+    conn.db.execute("CREATE TABLE equity(acct TEXT,ts BIGINT,bal DOUBLE,"
+                    "upnl DOUBLE,PRIMARY KEY(acct,ts))")
+    monkeypatch.setattr(storage_mod.pymysql, "connect", lambda **_: conn)
+    store = storage_mod.Storage({"user": "isolated-test"})
+
+    cache = StickerCache(str(tmp_path / "s"), store=store)
+    cache.save("sid1", b"GIF89a" + b"x" * 32, 100, 100,
+               url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    cache.remember_query("shrug", "sid1")
+    assert "shrug" in store.stickers()[0]["tags"]
+
+    # 同一张再存一次（例如重新下载）
+    cache.save("sid1", b"GIF89a" + b"y" * 32, 100, 100,
+               url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    assert "shrug" in store.stickers()[0]["tags"], "重复保存不能清空 tags"
