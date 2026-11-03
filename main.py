@@ -843,8 +843,12 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         state_store=storage if storage.enabled else None,
     )
     # 贴纸落盘缓存：和聊天图片附件放同一棵目录，静态服务已经在对外提供。
-    sticker_cache = StickerCache(os.path.join(
-        os.path.dirname(os.path.abspath(config_path)), "agent-attachments", "stickers"))
+    # 表情包库：图片落 agent-attachments/stickers/，元数据进 MySQL stickers 表。
+    # 传 storage 进去，Agent 才能列出库里有什么（而不是盲猜情绪词）。
+    sticker_cache = StickerCache(
+        os.path.join(os.path.dirname(os.path.abspath(config_path)),
+                     "agent-attachments", "stickers"),
+        store=storage if storage.enabled else None)
     # 联网搜索 / 网页读取：由模型自己决定是否调用 web_search/read_web_page。
     # 默认无 key 走 DuckDuckGo/Bing HTML；有 KLINE_SERPER_KEY 时优先 Serper。
     # 代理沿用 feed.proxy（海外服务器可直连；本地开发可配 search.proxy 覆盖）。

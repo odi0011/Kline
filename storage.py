@@ -357,6 +357,22 @@ class Storage:
                 self._q("ALTER TABLE agent_chat ADD COLUMN seq INT DEFAULT 0")
         except Exception:
             pass
+        # 表情包库：GIPHY 搜到的贴纸落盘后在这里登记一份元数据。
+        # 这是 Agent 挑选表情时的**真实数据源**——它能列出库里有什么、按 id 直接发，
+        # 而不是只能猜一个查不到的名字。图片本体在 agent-attachments/stickers/，
+        # 表里只存文件名和尺寸（浏览器据此预占空间，不会加载后撑开气泡）。
+        self._ddl("""CREATE TABLE IF NOT EXISTS stickers(
+            id VARCHAR(64) NOT NULL PRIMARY KEY,
+            file VARCHAR(128) NOT NULL,
+            title VARCHAR(200) DEFAULT '',
+            tags VARCHAR(600) DEFAULT '',
+            width INT DEFAULT 0, height INT DEFAULT 0,
+            bytes INT DEFAULT 0,
+            created_ts BIGINT DEFAULT 0,
+            last_used_ts BIGINT DEFAULT 0,
+            use_count INT DEFAULT 0,
+            INDEX idx_stickers_used(last_used_ts)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         # hits 保留期从 7 天拉长到 90 天后，pattern_stats 的 "WHERE ts>=..." 查询
         # 不能再依赖全表扫：老库补一条 ts 索引。SQLite 等方言不支持 SHOW INDEX /
         # ADD INDEX 语法，探测失败或迁移失败都静默跳过，不影响服务启动。
@@ -1377,6 +1393,80 @@ class Storage:
             # 对齐到 UTC 零点：那一天整天都保留
             return cutoff - (cutoff % 86400_000)
         return cutoff
+
+    # ---- 表情包库（Agent 挑选用的真实数据） ----
+
+    def save_sticker(self, record: dict) -> bool:
+        """登记/更新一张已落盘的贴纸。tags 是它对应的情绪词（空格分隔）。"""
+        if not self.enabled:
+            return False
+        sid = str(record.get("id") or "")[:64]
+        file = str(record.get("file") or "")[:128]
+        if not sid or not file:
+            return False
+        now = int(record.get("ts") or time.time() * 1000)
+        self._q(
+            "REPLACE INTO stickers(id,file,title,tags,width,height,bytes,"
+            "created_ts,last_used_ts,use_count) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (sid, file, str(record.get("title") or "")[:200],
+             str(record.get("tags") or "")[:600],
+             _safe_int(record.get("width"), 0), _safe_int(record.get("height"), 0),
+             _safe_int(record.get("bytes"), 0), now, 0, 0))
+        return True
+
+    def stickers(self, query: str = "", limit: int = 200) -> list[dict]:
+        """表情包清单（最近用过的排前面）。
+
+        query 为空时返回全部；否则按 tags 里的词做包含匹配。
+        Agent 就是靠这个看到"库里到底有什么"，再按 id 指定发送。
+        """
+        limit = max(1, min(1000, _safe_int(limit, 200)))
+        like = f"%{str(query or '').strip().lower()[:60]}%" if str(query or "").strip() else ""
+        if like:
+            rows = self._qall(
+                "SELECT id,file,title,tags,width,height,bytes,created_ts,"
+                "last_used_ts,use_count FROM stickers WHERE LOWER(tags) LIKE %s "
+                "ORDER BY last_used_ts DESC, created_ts DESC LIMIT %s", (like, limit))
+        else:
+            rows = self._qall(
+                "SELECT id,file,title,tags,width,height,bytes,created_ts,"
+                "last_used_ts,use_count FROM stickers "
+                "ORDER BY last_used_ts DESC, created_ts DESC LIMIT %s", (limit,))
+        return [{"id": r[0], "file": r[1], "title": r[2] or "", "tags": r[3] or "",
+                 "width": int(r[4] or 0), "height": int(r[5] or 0),
+                 "bytes": int(r[6] or 0), "createdTs": int(r[7] or 0),
+                 "lastUsedTs": int(r[8] or 0), "useCount": int(r[9] or 0)}
+                for r in rows]
+
+    def touch_sticker(self, sticker_id: str) -> None:
+        """记一次使用：让"最近发过的"排在前面，也让重复发送有据可查。"""
+        if not self.enabled:
+            return
+        self._q("UPDATE stickers SET last_used_ts=%s, use_count=use_count+1 WHERE id=%s",
+                (int(time.time() * 1000), str(sticker_id or "")[:64]))
+
+    def forget_stickers(self, keep_ids: list[str]) -> list[str]:
+        """删掉不在 keep_ids 里的记录，返回被删掉的 id（供调用方清理文件）。"""
+        if not self.enabled:
+            return []
+        keep = [str(i)[:64] for i in (keep_ids or [])]
+        rows = self._qall("SELECT id FROM stickers")
+        all_ids = [r[0] for r in rows]
+        drop = [sid for sid in all_ids if sid not in set(keep)]
+        if not drop:
+            return []
+        placeholders = ",".join(["%s"] * len(drop))
+        try:
+            self._q(f"DELETE FROM stickers WHERE id IN ({placeholders})", tuple(drop))
+        except Exception:
+            return []
+        return drop
+
+    def sticker_stats(self) -> dict:
+        rows = self._qall("SELECT COUNT(*), COALESCE(SUM(bytes),0) FROM stickers")
+        if not rows:
+            return {"count": 0, "bytes": 0}
+        return {"count": int(rows[0][0] or 0), "bytes": int(rows[0][1] or 0)}
 
     def prune(self, now_ms: int) -> None:
         if now_ms - self._last_prune < 60_000:

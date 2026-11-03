@@ -357,3 +357,126 @@ def test_send_sticker_builtin_is_last_resort(tmp_path):
     out = asyncio.run(manager._send_sticker({"query": "dead", "name": "崩溃"}, target))
     assert out["source"] == "builtin"
     assert target["pendingSticker"] == {"builtin": "崩溃"}
+
+
+# ---------------- E. 表情包表：作为真实数据交给 Agent ----------------
+
+def test_stickers_table_round_trip(tmp_path, monkeypatch):
+    """落盘 → 进表 → 能按情绪词和按 id 查回来。"""
+    import storage as storage_mod
+    from tests.test_paper_store import SQLConnection
+
+    conn = SQLConnection()
+    conn.db.execute("CREATE TABLE equity(acct TEXT,ts BIGINT,bal DOUBLE,"
+                    "upnl DOUBLE,PRIMARY KEY(acct,ts))")
+    monkeypatch.setattr(storage_mod.pymysql, "connect", lambda **_: conn)
+    store = storage_mod.Storage({"user": "isolated-test"})
+    assert store.enabled
+
+    cache = StickerCache(str(tmp_path / "s"), store=store)
+    cache.save("sid1", b"GIF89a" + b"x" * 32, 300, 200, title="facepalm",
+               url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    cache.remember_query("facepalm", "sid1")
+    cache.remember_query("dead inside", "sid1")
+
+    rows = store.stickers()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == "sid1" and row["width"] == 300 and row["height"] == 200
+    # 两个情绪词都累积到 tags 里
+    assert "facepalm" in row["tags"] and "dead inside" in row["tags"]
+
+    # 按情绪过滤
+    assert [r["id"] for r in store.stickers("dead")] == ["sid1"]
+    assert store.stickers("nothing") == []
+
+    store.touch_sticker("sid1")
+    assert store.stickers()[0]["useCount"] == 1
+
+
+def test_catalog_exposes_library_to_agent(tmp_path):
+    """Agent 通过 catalog 看到库里有什么（这是它挑表情的依据）。"""
+    root = tmp_path / "s"
+    cache = StickerCache(str(root))
+    for sid, word in (("a1", "facepalm"), ("b2", "shrug")):
+        cache.save(sid, b"GIF89a" + sid.encode(), 120, 90,
+                   url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+        cache.remember_query(word, sid)
+
+    rows = cache.catalog()
+    assert {r["id"] for r in rows} == {"a1", "b2"}
+    assert all("tags" in r and "width" in r and "height" in r for r in rows)
+    # 按情绪过滤
+    assert [r["id"] for r in cache.catalog("shrug")] == ["b2"]
+
+
+def test_list_stickers_tool_returns_catalog(tmp_path):
+    from ai.agent import AgentManager
+
+    cache = StickerCache(str(tmp_path / "s"))
+    cache.save("pick-me", b"GIF89a" + b"p" * 16, 200, 150, title="popcorn",
+               url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    cache.remember_query("popcorn", "pick-me")
+
+    manager = AgentManager(lambda: {}, lambda: "", lambda: {}, lambda m: None,
+                           str(tmp_path / "state.json"))
+    manager.sticker_cache = cache
+    out = manager._list_stickers({"query": "popcorn"})
+    assert out["available"] is True
+    assert out["stickers"][0]["id"] == "pick-me"
+    assert "popcorn" in out["stickers"][0]["tags"]
+    assert "sticker_id" in out["note"]
+
+
+def test_list_stickers_without_library(tmp_path):
+    from ai.agent import AgentManager
+
+    manager = AgentManager(lambda: {}, lambda: "", lambda: {}, lambda m: None,
+                           str(tmp_path / "state.json"))
+    out = manager._list_stickers({})
+    assert out["available"] is False and out["stickers"] == []
+
+
+def test_send_by_sticker_id_skips_search(tmp_path):
+    """模型看过清单后按 id 发：不该再去联网搜。"""
+    from ai.agent import AgentManager
+
+    cache = StickerCache(str(tmp_path / "s"))
+    cache.save("chosen", b"GIF89a" + b"c" * 16, 240, 180, title="clown",
+               url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    manager = AgentManager(lambda: {}, lambda: "", lambda: {}, lambda m: None,
+                           str(tmp_path / "state.json"))
+    manager.sticker_cache = cache
+    searches = []
+    manager.sticker_search_fn = lambda q, c: searches.append(q) or {"ok": False}
+
+    target = {}
+    out = asyncio.run(manager._send_sticker({"sticker_id": "chosen"}, target))
+    assert out["sent"] is True and out["source"] == "stored"
+    assert target["pendingSticker"]["id"] == "chosen"
+    assert searches == [], "按 id 发送时不该联网搜索"
+
+
+def test_unknown_sticker_id_falls_back_gracefully(tmp_path):
+    """指定了不存在的 id 不能直接失败，要退回按 query 处理。"""
+    from ai.agent import AgentManager
+
+    cache = StickerCache(str(tmp_path / "s"))
+    cache.save("real1", b"GIF89a" + b"r" * 16, 100, 100,
+               url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    cache.remember_query("dead inside", "real1")
+    manager = AgentManager(lambda: {}, lambda: "", lambda: {}, lambda m: None,
+                           str(tmp_path / "state.json"))
+    manager.sticker_cache = cache
+    manager.sticker_search_fn = lambda q, c: {"ok": False}
+
+    target = {}
+    out = asyncio.run(manager._send_sticker(
+        {"sticker_id": "does-not-exist", "query": "dead"}, target))
+    assert out["sent"] is True and out["source"] == "stored"
+    assert target["pendingSticker"]["id"] == "real1"
+
+
+def test_list_stickers_is_a_real_tool():
+    from ai.agent_tools import TOOL_NAMES
+    assert "list_stickers" in TOOL_NAMES

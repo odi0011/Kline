@@ -58,13 +58,64 @@ def _safe_id(sticker_id: str) -> str:
 
 
 class StickerCache:
-    """线程安全的贴纸落盘缓存（搜索/下载在 to_thread 里跑，必须加锁）。"""
+    """线程安全的贴纸落盘缓存（搜索/下载在 to_thread 里跑，必须加锁）。
 
-    def __init__(self, root: str):
+    **两处存储，各司其职**（不是重复）：
+      · MySQL `stickers` 表 —— Agent 要用的真实数据：库里有哪些表情、各自的
+        情绪词、尺寸、用过几次。模型能直接列出/按 id 发送。
+      · 本地 index.json —— 文件级映射（id→文件名）+ 搜索结果的缓存，
+        没连数据库时也能独立工作。
+
+    表是权威来源：启动时会用表里的记录重建本地索引，文件丢了也补得回来。
+    """
+
+    def __init__(self, root: str, store=None):
         self.root = root
+        # store 是 storage.Storage；None（或未连库）时只靠本地 JSON。
+        self.store = store
         self._lock = threading.RLock()
         self._index: dict = {"stickers": {}, "queries": {}}
         self._load()
+        self._sync_from_store()
+
+    def _sync_from_store(self) -> None:
+        """用数据库里的记录重建本地索引（文件在、索引丢的恢复路径）。"""
+        store = self.store
+        if store is None or not getattr(store, "enabled", False):
+            return
+        try:
+            rows = store.stickers(limit=1000)
+        except Exception:
+            return
+        changed = False
+        with self._lock:
+            for row in rows or []:
+                sid = _safe_id(row.get("id"))
+                file = str(row.get("file") or "")
+                if not sid or not file:
+                    continue
+                if not os.path.exists(os.path.join(self.root, file)):
+                    continue      # 文件真没了，交给下面的自愈/淘汰逻辑
+                record = {
+                    "id": sid, "file": file,
+                    "width": int(row.get("width") or 0),
+                    "height": int(row.get("height") or 0),
+                    "title": str(row.get("title") or "")[:120],
+                    "url": f"/agent-attachments/stickers/{file}",
+                    "bytes": int(row.get("bytes") or 0),
+                    "ts": int(row.get("createdTs") or 0) // 1000 or int(time.time()),
+                }
+                if self._index["stickers"].get(sid) != record:
+                    self._index["stickers"][sid] = record
+                    changed = True
+                for word in str(row.get("tags") or "").split():
+                    key = _norm_query(word)
+                    if key and key not in self._index["queries"]:
+                        self._index["queries"][key] = {"id": sid,
+                                                       "ts": int(time.time())}
+                        changed = True
+        if changed:
+            self._save()
 
     # ---------- 索引 ----------
 
@@ -147,6 +198,74 @@ class StickerCache:
                 return None
             return self._public(record)
 
+    # ---------- 清单（给 Agent 看的真实数据） ----------
+
+    def catalog(self, query: str = "", limit: int = 120) -> list[dict]:
+        """表情包清单：库里有什么、各自对应什么情绪、用过几次。
+
+        这是给模型看的：它可以先看清单再决定发哪张（按 id），
+        而不是只能盲猜一个 emotion 词。有数据库时以表为准（含使用次数），
+        没连库时退回本地索引，字段保持一致。
+        """
+        store = self.store
+        rows: list[dict] = []
+        if store is not None and getattr(store, "enabled", False):
+            try:
+                rows = store.stickers(query=query, limit=limit)
+            except Exception:
+                rows = []
+        if rows:
+            out = []
+            for row in rows:
+                sid = _safe_id(row.get("id"))
+                file = str(row.get("file") or "")
+                if not sid or not file:
+                    continue
+                if not os.path.exists(os.path.join(self.root, file)):
+                    continue
+                out.append({
+                    "id": sid,
+                    "title": str(row.get("title") or "")[:120],
+                    "tags": str(row.get("tags") or "")[:200],
+                    "width": int(row.get("width") or 0),
+                    "height": int(row.get("height") or 0),
+                    "uses": int(row.get("useCount") or 0),
+                })
+            return out[:limit]
+        # 没连库：用本地索引拼一份同样形状的
+        want = _norm_query(query)
+        with self._lock:
+            words: dict[str, list[str]] = {}
+            for key, entry in self._index["queries"].items():
+                if isinstance(entry, dict):
+                    words.setdefault(str(entry.get("id") or ""), []).append(key)
+            out = []
+            for sid, record in self._index["stickers"].items():
+                if not isinstance(record, dict):
+                    continue
+                if not os.path.exists(os.path.join(self.root, str(record.get("file") or ""))):
+                    continue
+                tags = " ".join(sorted(words.get(sid, [])))[:200]
+                if want and want not in tags.lower():
+                    continue
+                out.append({"id": sid, "title": str(record.get("title") or "")[:120],
+                            "tags": tags,
+                            "width": int(record.get("width") or 0),
+                            "height": int(record.get("height") or 0),
+                            "uses": 0})
+            out.sort(key=lambda x: x["id"])
+            return out[:limit]
+
+    def touch(self, sticker_id) -> None:
+        """记一次使用（给"最近用过的排前面"和重复度判断用）。"""
+        store = self.store
+        if store is None or not getattr(store, "enabled", False):
+            return
+        try:
+            store.touch_sticker(_safe_id(sticker_id))
+        except Exception:
+            pass
+
     # ---------- 本地挑选（配额用尽 / 断网时的退路） ----------
 
     def all_items(self) -> list[dict]:
@@ -208,6 +327,11 @@ class StickerCache:
             return self._public(pool[0][3])
 
     def remember_query(self, query, sticker_id) -> None:
+        """记住"这个情绪词对应哪张图"。
+
+        同时写本地索引和数据库——表里的 tags 就是靠这里累积起来的，
+        Agent 之后看到的就是"这张图会用在 dead inside / 麻了 这类情绪上"。
+        """
         key = _norm_query(query)
         sid = _safe_id(sticker_id)
         if not key or not sid:
@@ -215,6 +339,22 @@ class StickerCache:
         with self._lock:
             self._index["queries"][key] = {"id": sid, "ts": int(time.time())}
             self._save()
+            record = self._index["stickers"].get(sid)
+            tags = sorted({k for k, v in self._index["queries"].items()
+                           if isinstance(v, dict) and str(v.get("id")) == sid})
+        store = self.store
+        if store is not None and getattr(store, "enabled", False) and isinstance(record, dict):
+            try:
+                store.save_sticker({
+                    "id": sid, "file": record.get("file"),
+                    "title": record.get("title"),
+                    "tags": " ".join(tags),
+                    "width": record.get("width"), "height": record.get("height"),
+                    "bytes": record.get("bytes"),
+                    "ts": int(record.get("ts") or 0) * 1000,
+                })
+            except Exception:
+                pass
 
     # ---------- 写入 ----------
 
@@ -254,7 +394,19 @@ class StickerCache:
             self._index["stickers"][sid] = record
             self._prune_locked()
             self._save()
-            return self._public(record)
+        # 立刻同步进表：Agent 的清单要能看到"存了但还没被用过"的图，
+        # tags 留空，等某个情绪词命中它时再由 remember_query 补上。
+        store = self.store
+        if store is not None and getattr(store, "enabled", False):
+            try:
+                store.save_sticker({
+                    "id": sid, "file": filename, "title": record["title"],
+                    "tags": "", "width": record["width"], "height": record["height"],
+                    "bytes": record["bytes"], "ts": record["ts"] * 1000,
+                })
+            except Exception:
+                pass
+        return self._public(record)
 
     def _prune_locked(self) -> None:
         """超量时按"最久没用到"淘汰。调用方已持锁。"""

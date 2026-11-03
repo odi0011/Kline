@@ -265,14 +265,17 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
 用 send_sticker 工具，由你自己判断，不要每次都发、不要固定套路：
  · 适合发：用户调侃/骂人/自嘲、行情很离谱、你又没法给建议、气氛轻松、庆祝
  · 不适合发：用户认真问价位、有持仓风险、在亏钱
- · 两种调用方式：
-   ① send_sticker(query="英文情绪描述") —— 首选。从在线贴纸库里找更贴切的，
-      比如 "facepalm"（捂脸）、"shrug"（摊手）、"mind blown"（震撼）、
-      "crying laughing"（笑死）、"dead inside"（麻了）、"thumbs up"（认可）、
-      "clown"（小丑）、"popcorn"（吃瓜）、"pray"（祈祷）、"eye roll"（翻白眼）
-   ② send_sticker(name=内置图) —— 在线库不可用时才会用到，也可以用这两个一起给：
-      name 作为 query 搜索失败时的兜底。可用的内置名（只用这些，不要编）：
-      {{STICKER_NAMES}}
+ · 服务器上有一份**表情包库**（都是之前按情绪搜到并存下来的图）。
+   想发之前，如果拿不准库里有什么，先调 list_stickers 看一眼：
+   它会返回每张图的 id、tags（这张图对应的情绪）、用过几次。
+   然后直接 send_sticker(sticker_id="那张的 id") —— 这是最准的方式。
+ · 也可以直接给情绪让系统去找：
+   send_sticker(query="英文情绪描述")，比如 "facepalm"（捂脸）、"shrug"（摊手）、
+   "mind blown"（震撼）、"crying laughing"（笑死）、"dead inside"（麻了）、
+   "thumbs up"（认可）、"clown"（小丑）、"popcorn"（吃瓜）、"eye roll"（翻白眼）。
+   库里已有匹配的直接用；没有才联网找，并自动存进库。
+ · 只有在库和联网都拿不到时，才会用内置图 send_sticker(name=...)，
+   内置名（不要编）：{{STICKER_NAMES}}
  · 工具会自己处理标记和落地，你不用手写 `[sticker:...]`。
  · 一条回复最多一个表情包。发了表情包就可以少说话，甚至只发表情包。
    例：用户「又亏了草」→ 只调 send_sticker(query="dead inside")，不用再说话
@@ -314,6 +317,8 @@ def _status_line(prompt: str, tool: str = "", round_number: int = 1) -> str:
             return "在看网页"
         if tool == "send_sticker":
             return "在发表情包"
+        if tool == "list_stickers":
+            return "在翻表情包"
         return "在查数据"
     if round_number > 1:
         return "在想结论"
@@ -1795,31 +1800,79 @@ class AgentManager:
                 "title": str(data.get("title") or "")[:300],
                 "text": text, "truncated": truncated}
 
+    def _list_stickers(self, arguments: dict) -> dict:
+        """列出表情包库：让模型看到"库里到底有什么"，再决定发哪张。
+
+        这是把已存表情当**真实数据**交给 Agent 的入口——没有它，模型只能
+        盲猜一个情绪词，猜不中就什么都发不出去。
+        """
+        if not isinstance(arguments, dict):
+            raise ValueError("list_stickers 参数需为对象")
+        if set(arguments) - {"query", "limit"}:
+            raise ValueError("list_stickers 包含不支持的参数")
+        query = str(arguments.get("query") or "").strip()[:60]
+        limit = arguments.get("limit", 40)
+        if type(limit) is not int or not 1 <= limit <= 60:
+            raise ValueError("limit 需为 1–60 的整数")
+        cache = self.sticker_cache
+        if cache is None:
+            return {"available": False, "reason": "表情包库未启用", "stickers": []}
+        try:
+            rows = cache.catalog(query=query, limit=limit)
+        except Exception:
+            rows = []
+        total = 0
+        store = getattr(cache, "store", None)
+        if store is not None and getattr(store, "enabled", False):
+            try:
+                total = int(store.sticker_stats().get("count") or 0)
+            except Exception:
+                total = 0
+        return {
+            "available": bool(rows),
+            "count": len(rows),
+            "total": total or len(rows),
+            "filter": query,
+            "stickers": [{"id": r["id"], "tags": r.get("tags", ""),
+                          "title": r.get("title", ""),
+                          "width": r.get("width", 0), "height": r.get("height", 0),
+                          "uses": r.get("uses", 0)} for r in rows],
+            "note": "按 id 用 send_sticker(sticker_id=...) 发送；tags 是这个表情对应的情绪。"
+                    "没有完全匹配的可以用 query 让系统联网找新的。",
+        }
+
     async def _send_sticker(self, arguments: dict, target: dict) -> dict:
         """表情包工具：登记"这一条回复要附图"，真正落地在回复组装时统一处理。
 
         取图顺序（能发出去比"精确但不发"重要）：
-          1. query → 先查本地已存的贴纸（命中直接复用，不打 API）
-          2. 本地没有 → 去在线库搜，搜到就下载落盘
-          3. 搜不到（配额用完/断网/无结果）→ 从**已存的贴纸里挑一张**
-          4. 库里一张都没有 → 内置三张图（永远可用）
-
-        第 3 步是重点：以前配额一满就只能退回那 3 张内置图，或者干脆不发；
-        但服务器上明明已经有几十上百张存过的图，没理由不用。
+          0. sticker_id → 直接用库里指定的那张（模型先看过清单后的选择）
+          1. query → 先查库里已存的贴纸（命中直接复用，不打 API）
+          2. 库里没有 → 去在线库搜，搜到就下载入库
+          3. 搜不到（配额用完/断网/无结果）→ 从**已存贴纸里挑**最贴近的
+          4. 库里一张都没有 → 内置三张图（最后手段）
 
         一条回复最多一个：target 上已有 pendingSticker，或回复正文里已经出现
         [sticker: 标记时直接拒绝，返回 sent=False（不抛异常，让模型自己换个说法）。
         """
-        if not isinstance(arguments, dict) or set(arguments) - {"name", "query"}:
-            raise ValueError("send_sticker 参数需为 {name} 或 {query}")
+        if not isinstance(arguments, dict) or set(arguments) - {"name", "query", "sticker_id"}:
+            raise ValueError("send_sticker 参数需为 {sticker_id} / {query} / {name}")
         target = target if isinstance(target, dict) else {}
         if target.get("pendingSticker"):
             return {"sent": False, "reason": "本条回复已经选过表情包，一条回复最多一个"}
         if "[sticker:" in str(target.get("content") or ""):
             return {"sent": False, "reason": "回复正文里已经有表情包标记，不再追加"}
 
+        sticker_id = str(arguments.get("sticker_id") or "").strip()
         query = str(arguments.get("query") or "").strip()
         name = arguments.get("name")
+        if sticker_id:
+            picked = self._sticker_by_id(sticker_id)
+            if picked:
+                target["pendingSticker"] = picked
+                return {"sent": True, "source": "stored", "id": picked.get("id", ""),
+                        "title": picked.get("title", ""),
+                        "note": "已选用库里这张表情"}
+            # 指定了 id 却找不到：退回按 query/name 处理，而不是直接失败
         if query:
             found = await self._search_sticker(query)
             if found:
@@ -1914,10 +1967,19 @@ class AgentManager:
         if cache is None:
             return None
         try:
-            picked = cache.pick_for(query, avoid_id)
+            return cache.pick_for(query, avoid_id)
         except Exception:
             return None
-        return picked
+
+    def _sticker_by_id(self, sticker_id: str) -> dict | None:
+        """按 id 取库里某张表情（模型看过清单后直接指定）。"""
+        cache = self.sticker_cache
+        if cache is None:
+            return None
+        try:
+            return cache.lookup_id(sticker_id)
+        except Exception:
+            return None
 
     async def _store_sticker(self, row: dict, url: str, width: int, height: int,
                              query: str) -> dict | None:
@@ -2233,7 +2295,8 @@ class AgentManager:
                    in TOOL_NAMES - {"read_memory", "save_preference", "read_candles", "read_advice",
                                     "create_watch", "list_watches", "stop_watch", "read_calc_trace",
                                     "sandbox_write", "sandbox_read", "sandbox_list", "sandbox_run",
-                                    "web_search", "read_web_page", "send_sticker"}
+                                    "web_search", "read_web_page", "send_sticker",
+                                    "list_stickers"}
                    for call in normalized):
                 try:
                     # 先投影/脱敏再复制；绝不把整个上下文或配置拼到 prompt。
@@ -2306,6 +2369,8 @@ class AgentManager:
                         output = await self._web_search(arguments)
                     elif name == "read_web_page":
                         output = await self._read_web_page(arguments)
+                    elif name == "list_stickers":
+                        output = self._list_stickers(arguments)
                     elif name == "send_sticker":
                         output = await self._send_sticker(arguments, target)
                     elif name == "read_calc_trace":
