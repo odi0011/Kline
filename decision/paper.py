@@ -391,9 +391,12 @@ class PaperBook:
            用当前值算「peak − 1.4 ATR」就等于把止损贴到现价上，
            价格回抽一点点就被打掉。线上实测止损距离被压到 0.01%–0.17%，
            9 笔里 8 笔在 2–6 分钟内止损，全是被这一条坑的。
-        2. **先触发再移（arming）。** 价格至少朝有利方向走 1 个 ATR，
-           才允许把止损抬到成本之上；没走出这段空间就保持原止损不动，
-           否则等于开仓即被一个极窄的止损罩住。
+        2. **先触发再移（arming），且触发距离 = 回撤距离。**
+           价格必须朝有利方向走过 TRAIL_ATR 个 ATR，才允许移动止损；
+           没走出来就保持原止损不动。触发距离与回撤距离取同一个值，
+           武装的那一刻止损正好落在成本线上——不会出现
+            "刚走 1 个 ATR 就把止损收紧到成本下方 0.4 ATR" 那种
+           一有回抽就出局的窄口袋。
 
         移动后仍保证止损在现价的正确一侧（多头的止损必须低于现价）。
         """
@@ -401,19 +404,20 @@ class PaperBook:
         if not atr or atr <= 0:
             return
         long_ = pos.direction == "long"
-        # 未武装：价格还没走出 1 个 ATR，不动止损
+        arm = atr * TRAIL_ATR
+        # 未武装：价格还没走出来，不动止损
         if long_:
-            if pos.peak < pos.entry + atr:
+            if pos.peak < pos.entry + arm:
                 return
-            candidate = pos.peak - atr * TRAIL_ATR
+            candidate = pos.peak - arm
             if candidate > pos.sl and candidate < pos.mark:
                 pos.sl = _round(candidate, 4)
                 pos.trailing = True
                 pos.sl_pct = round((pos.entry - pos.sl) / pos.entry * 100, 2)
         else:
-            if pos.peak > pos.entry - atr:
+            if pos.peak > pos.entry - arm:
                 return
-            candidate = pos.peak + atr * TRAIL_ATR
+            candidate = pos.peak + arm
             if candidate < pos.sl and candidate > pos.mark:
                 pos.sl = _round(candidate, 4)
                 pos.trailing = True
