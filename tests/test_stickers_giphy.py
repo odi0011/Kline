@@ -1086,3 +1086,154 @@ def test_emotion_reply_gets_sticker_end_to_end(tmp_path, monkeypatch):
         await manager.stop()
 
     asyncio.run(scenario())
+
+
+# ---------------- L. read_situation：综合局势判断，而不是关键词 ----------------
+
+def _snapshot(market=None, evals=None, positions=None, events=None):
+    return {
+        "ts": 1,
+        "market": market or {},
+        "evaluations": evals or {},
+        "positions": positions or [],
+        "recentEvents": events or [],
+    }
+
+
+def test_situation_reports_losing_positions():
+    """有持仓在亏 → hint 要明确"别开玩笑"。"""
+    from ai.agent_tools import _situation_view
+    view = _situation_view(_snapshot(
+        market={"btcusdt": {"roc": 0.002, "atrPct": 0.5}},
+        positions=[{"symbol": "btcusdt", "side": "BUY", "upnl": -12.5},
+                   {"symbol": "ethusdt", "side": "SELL", "upnl": -3.0}],
+    ))
+    assert view["positions"]["count"] == 2
+    assert view["positions"]["losing"] == 2
+    assert "别开玩笑" in view["hint"]
+
+
+def test_situation_empty_position_is_relaxed():
+    """空仓 + 无信号 → 可以放松。"""
+    from ai.agent_tools import _situation_view
+    view = _situation_view(_snapshot(
+        market={"btcusdt": {"roc": 0.0001, "atrPct": 0.2}}))
+    assert view["positions"]["count"] == 0
+    assert "放松" in view["hint"]
+
+
+def test_situation_detects_volatility():
+    from ai.agent_tools import _situation_view
+    view = _situation_view(_snapshot(
+        market={"btcusdt": {"roc": 0.02, "atrPct": 1.4}}))
+    assert view["marketTone"]["volatile"] is True
+    assert "波动很大" in view["hint"]
+
+
+def test_situation_lists_strong_signals_only():
+    from ai.agent_tools import _situation_view
+    view = _situation_view(_snapshot(
+        market={"a": {}, "b": {}, "c": {}},
+        evals={"a": {"direction": "bullish", "score": 75},
+               "b": {"direction": "bearish", "score": 40},
+               "c": {"direction": "bullish", "score": 58}}))
+    assert [s["symbol"] for s in view["signals"]] == ["A"]
+    assert view["signals"][0]["score"] == 75
+
+
+def test_situation_surfaces_recent_issues():
+    from ai.agent_tools import _situation_view
+    view = _situation_view(_snapshot(events=[
+        {"kind": "error", "reason": "API 限频"},
+        {"kind": "system", "reason": "正常启动"},
+        {"kind": "slippage", "reason": "滑点过大"},
+    ]))
+    assert "API 限频" in view["recentIssues"]
+    assert all("正常启动" not in x for x in view["recentIssues"])
+
+
+def test_read_situation_tool_registered():
+    from ai.agent_tools import TOOL_NAMES
+    assert "read_situation" in TOOL_NAMES
+
+
+def test_read_situation_returns_view():
+    from ai.agent_tools import read_snapshot
+    out = read_snapshot("read_situation", {}, _snapshot(
+        market={"btcusdt": {"roc": 0.01, "atrPct": 0.9}}))
+    assert out["available"] is True
+    assert out["data"]["marketTone"]["bias"] in ("偏强", "偏弱", "分化/横盘")
+
+
+def test_model_consulted_situation_skips_keyword_fallback(tmp_path, monkeypatch):
+    """模型已经看过局势 → 它决定不发就别用关键词硬塞。
+
+    这正是"关键词触发"被推翻的核心：会不会该发要综合行情/持仓/信号，
+    模型看过这些数据还没发，说明它判断此刻不该发。
+    """
+    from tests.test_agent import make_manager, tool_call, tool_result, wait_for
+
+    def provider(*args, **kwargs):
+        if kwargs.get("tool_choice") == "required":
+            return tool_result(tool_call("read_situation", {}, "s1"))
+        return {"ok": True, "reply": "麻了就先别看了。",
+                "usage": {"total_tokens": 5}, "model": "test-model"}
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch, provider=provider,
+                                  context=lambda: _snapshot(
+                                      market={"btcusdt": {"roc": 0.01, "atrPct": 0.9}}))
+        cache = StickerCache(str(tmp_path / "s"))
+        cache.save("sad1", b"GIF89a" + b"s" * 16, 200, 150,
+                   url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+        cache.remember_query("dead inside", "sad1")
+        manager.sticker_cache = cache
+        await manager.ask("麻了", "test-model")
+        assert await wait_for(lambda: not manager.chat_runners)
+        answer = [m for m in manager.chat if m.get("role") == "assistant"][-1]
+        assert "[sticker:" not in (answer.get("content") or ""), \
+            f"模型看过局势且没发，不该被关键词兜底塞图: {answer.get('content')!r}"
+        await manager.stop()
+
+    asyncio.run(scenario())
+
+
+def test_keyword_fallback_still_works_without_consultation(tmp_path, monkeypatch):
+    """模型压根没管表情这件事 → 关键词兜底仍要生效（否则又回到"从不发"）。"""
+    from tests.test_agent import make_manager, tool_call, tool_result, wait_for
+
+    def provider(*args, **kwargs):
+        if kwargs.get("tool_choice") == "required":
+            return tool_result(tool_call("read_market", {}, "m1"))
+        return {"ok": True, "reply": "麻了。",
+                "usage": {"total_tokens": 5}, "model": "test-model"}
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch, provider=provider)
+        cache = StickerCache(str(tmp_path / "s"))
+        cache.save("sad1", b"GIF89a" + b"s" * 16, 200, 150,
+                   url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+        cache.remember_query("dead inside", "sad1")
+        manager.sticker_cache = cache
+        await manager.ask("麻了", "test-model")
+        assert await wait_for(lambda: not manager.chat_runners)
+        answer = [m for m in manager.chat if m.get("role") == "assistant"][-1]
+        assert "[sticker:" in (answer.get("content") or ""), answer.get("content")
+        await manager.stop()
+
+    asyncio.run(scenario())
+
+
+def test_marker_is_never_truncated():
+    """表情包标记比 SHORT_REPLY_CHARS 长，截断后前端就认不出来、会显示成乱码。"""
+    from ai.agent import _trim_bubble, _sticker_marker
+    marker = _sticker_marker({"url": "/agent-attachments/stickers/abcdefgh.gif",
+                              "width": 480, "height": 311})
+    assert len(marker) > 60, "前提：标记确实比限制长"
+    out = _trim_bubble(marker)
+    assert out == marker, f"标记被截断了: {out!r}"
+    # 正文超长时也要保住标记
+    long = "很长的正文，" * 30 + "\n" + marker
+    out2 = _trim_bubble(long)
+    assert marker in out2
+    assert len(out2) < len(long)

@@ -21,25 +21,26 @@ def test_prompt_lists_every_sticker():
         assert name in text
 
 
-def test_prompt_says_when_it_must_send():
-    """提示词必须给出"必须发"的场合。
+def test_prompt_makes_model_read_situation_first():
+    """要不要发表情必须基于局势综合判断，不能只看用户说了哪几个字。
 
-    早先是「由你自己判断」——结果模型永远判断为不发，实测几乎从不触发。
-    现在改成明确的场合清单（短情绪、骂人自嘲、明说要表情），
-    并且服务端还有一层 _auto_sticker 兜底。
+    早先的做法是关键词触发（看到"笑死"就发），那样完全不看行情、持仓、
+    信号——用户正在亏钱也会收到搞笑图。现在提示词要求先 read_situation。
     """
     from ai.agent import SYSTEM_PROMPT
-    assert "必须发的场合" in SYSTEM_PROMPT
-    assert "直接发出去" in SYSTEM_PROMPT
+    assert "先看局势再决定" in SYSTEM_PROMPT
+    assert "read_situation" in SYSTEM_PROMPT
     assert "一条回复最多一个" in SYSTEM_PROMPT
+
 
 
 def test_prompt_gives_when_not_to_use():
     """认真问价位/仓位/风险时不该发表情包，带情绪词也不行。"""
     from ai.agent import SYSTEM_PROMPT
-    assert "不发的场合" in SYSTEM_PROMPT
+    assert "不该发" in SYSTEM_PROMPT
     assert "价位" in SYSTEM_PROMPT
     assert "还能加仓吗" in SYSTEM_PROMPT
+
 
 
 def test_prompt_allows_sticker_only_reply():

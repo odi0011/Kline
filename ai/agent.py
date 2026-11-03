@@ -157,21 +157,40 @@ def split_reply(text, detailed: bool = True, identity: bool = False) -> list[str
     return _split_by_sentences(raw)
 
 
+_STICKER_TOKEN = re.compile(r"\[sticker[:：][^\]]*\]")
+
+
 def _trim_bubble(text: str) -> str:
     """单个气泡的长度保护：超长就在标点处断开并补句号。
 
     只限制**单个气泡**，不跨气泡合并或删除——分段是模型的决定。
+
+    **表情包标记必须整体保留**：`[sticker:url=...&w=480&h=311]` 有 77 字符，
+    比 SHORT_REPLY_CHARS(60) 还长。之前直接截断会把标记切成半截
+    （`[sticker:url=...QlR`），前端正则匹配不到闭合的 `]`，
+    整段标记就当成普通文字显示在气泡里——线上截图里那串乱码就是它。
     """
     text = str(text or "").strip()
-    if len(text) <= SHORT_REPLY_CHARS:
-        return text
-    window = text[:SHORT_REPLY_CHARS]
+    # 先把标记摘出来，只对正文截断，最后再拼回去
+    tokens = _STICKER_TOKEN.findall(text)
+    body = _STICKER_TOKEN.sub("", text).strip()
+    if len(body) <= SHORT_REPLY_CHARS:
+        return _join_markers(body, tokens)
+    window = body[:SHORT_REPLY_CHARS]
     cut = max(window.rfind("，"), window.rfind(","), window.rfind("；"),
               window.rfind("、"), window.rfind(" "))
     out = (window[:cut] if cut >= 20 else window).rstrip("，,；、 ")
     if out and out[-1] not in "。！？!?":
         out += "。"
-    return out
+    return _join_markers(out, tokens)
+
+
+def _join_markers(body: str, tokens: list[str]) -> str:
+    """把表情包标记接回正文末尾（一个气泡里最多一个，但兼容多个）。"""
+    if not tokens:
+        return body
+    marker = "".join(tokens)
+    return f"{body}\n{marker}" if body else marker
 
 
 def _sticker_marker(sticker) -> str:
@@ -339,13 +358,17 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
  · 用户情绪化时先接住情绪再谈数据，别上来就念评分。
 
 【表情包】你可以用表情包代替说话，或者说完一句再补一个。
- · **必须发的场合**（不要犹豫、不要只在心里想"该发"，要真的调工具）：
-   · 用户只回一个「？」「额」「……」「笑死」「哈哈哈」「麻了」这种短情绪
-   · 用户在骂人、自嘲、说又亏了、说行情离谱
-   · 用户明说「发个表情包」「来个表情」
-   以上都**直接发出去**，别用「库里两张：麻了、摊手」这种话代替。
- · **不发的场合**：用户认真问价位/止损/仓位/方向/风险时一律不发。
-   哪怕句子里带了情绪词（「我麻了，还能加仓吗」），只要在问交易就别发。
+ · **先看局势再决定**：要不要发、发什么，不能只看用户说了哪几个字。
+   决定前先 read_situation，看：大盘偏强还是偏弱、波动大不大、
+   你有没有持仓（有浮亏就别嬉皮笑脸）、量化当前有多少明确信号、最近有没有异常。
+   例：用户「又亏了」但你其实空仓 → 不用真安慰，可以调侃一句；
+      用户「笑死」但你有两个仓在亏 → 别发搞笑的，先讲怎么处理；
+      用户「……」且你空仓、行情在磨 → 这张摊手就挺合适。
+ · **该发的时候要真的发**（不要只在心里想"该发"，要调工具）：
+   短促的情绪反应、调侃、自嘲、行情离谱、庆祝、无语；
+   用户明说「发个表情包」「来个表情」时必须发出图。
+ · **不该发**：用户认真问价位/止损/仓位/方向/风险时一律不发；
+   哪怕带情绪词（「我麻了，还能加仓吗」），只要在问交易就别发。
  · 库里已经攒了一批图，每张都带着名字和使用场景。**有合适的就直接发**，
    不要把「库里有几张」当成回答内容 —— 用户要的是表情，不是库存清单。
 
@@ -2695,10 +2718,17 @@ class AgentManager:
             # 模型可能只调工具不给正文，也可能在正文里已经自己写了 [sticker: 标记。
             sticker = message.get("pendingSticker")
             if not sticker:
-                # 模型没主动发，但这句该配图 → 服务端兜底挑一张。
-                # 只写提示词时模型几乎从不发（实测），所以这一层是必须的：
-                # 判定"该不该发"用规则，"发哪张"用贴纸库。
-                sticker = self._auto_sticker(prompt)
+                # 模型没主动发表情。如果它这轮**看过局势**（read_situation）或
+                # 翻过表情库，说明它已经做过"要不要发"的判断——尊重它，不覆盖。
+                # 只有它压根没关注表情这件事时，才用关键词规则兜底一句。
+                # 关键词只是"最后一道保险"，不该当成主逻辑：真正该不该发
+                # 取决于行情/持仓/信号这些综合上下文。
+                consulted = any((step.get("tool") or "") in
+                                ("read_situation", "list_stickers",
+                                 "search_stickers", "save_sticker")
+                                for step in (message.get("steps") or []))
+                if not consulted:
+                    sticker = self._auto_sticker(prompt)
             if sticker:
                 pieces = _attach_sticker(pieces, sticker, result["reply"])
                 # 真的出现在最终消息里，才记冷却 + 使用计数。
