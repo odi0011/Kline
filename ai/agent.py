@@ -61,45 +61,57 @@ def _split_by_sentences(text: str) -> list[str]:
 
 
 def split_reply(text, detailed: bool = True, identity: bool = False) -> list[str]:
-    """把一条回复拆成多条短消息。
+    """把一条回复拆成多条短消息（多条 = 多个气泡）。
 
-    detailed=False（用户没要求分析）时按交易员短答处理：只留第一句，
-    并裁到 SHORT_REPLY_CHARS 以内——模型经常无视"别废话"的提示词，
-    与其把一整段废话切成多条气泡发出去，不如直接砍掉。
+    优先级：
+      1) 模型自己用 `|||` 分了段 → **尊重它的分段**。
+         这是它判断"这个场景该分几条说"的结果（先结论再补一句、
+         或者一次说两件事），服务端不该把它压成一条。
+      2) identity=True（问"你是谁/什么模型"）→ 不裁，保持完整。
+      3) detailed=False（用户没要求分析）→ 只留第一句并裁到
+         SHORT_REPLY_CHARS。注意：这只在模型**没有**主动分段时兜底，
+         防止它无视"别废话"的提示词写一整段。
+      4) detailed=True → 按句聚合。
 
-    identity=True（问"你是谁/什么模型"）时不裁：这种回答本身只有一两小句，
-    硬裁会把模型名这类关键信息切掉。
+    历史问题：早先短答模式无条件 `raw.split("|||")[0]`，模型想分两条也发不出来，
+    用户看到的永远是单气泡。
     """
     raw = str(text or "").strip()
     if not raw:
         return []
-    if identity:
-        # 身份回答保持完整，但仍按句聚合成气泡
-        return _split_by_sentences(raw.split(REPLY_SPLIT)[0])
-    if not detailed:
-        # 注意：不能用 _split_by_sentences 取 [0]——那是"每 3 句一组"，
-        # 首组就是 3 句，等于没裁。这里要的是真正的第一句。
-        head = raw.split(REPLY_SPLIT)[0]
-        sentences = [seg.strip() for seg in re.split(r"(?<=[。！？!?])", head) if seg.strip()]
-        first = sentences[0] if sentences else head.strip()
-        if len(first) > SHORT_REPLY_CHARS:
-            # 在限额之内找最靠后的标点断开，保证不超出长度上限；
-            # 找不到合适标点才硬切。之前取的是最后一个逗号（可能在限额之外），
-            # 结果等于没截。
-            window = first[:SHORT_REPLY_CHARS]
-            cut = max(window.rfind("，"), window.rfind(","), window.rfind("；"),
-                      window.rfind("、"), window.rfind(" "))
-            first = (window[:cut] if cut >= 20 else window).rstrip("，,；、 ")
-            if first and first[-1] not in "。！？!?":
-                first += "。"
-        return [first] if first else []
+    # 1) 模型主动分段：每段独立成一个气泡（每段仍做长度保护）
     chunks = [part.strip() for part in raw.split(REPLY_SPLIT) if part.strip()]
     if len(chunks) > 1:
-        out = []
-        for chunk in chunks:
-            out.extend(_split_by_sentences(chunk))
-        return out
+        return [_trim_bubble(chunk) for chunk in chunks]
+
+    if identity:
+        # 身份回答保持完整
+        return [_trim_bubble(raw)]
+    if not detailed:
+        # 没分段 + 没要求分析：真正的"只留第一句"
+        # 注意：不能用 _split_by_sentences 取 [0]——那是"每 3 句一组"，
+        # 首组就是 3 句，等于没裁。
+        sentences = [seg.strip() for seg in re.split(r"(?<=[。！？!?])", raw) if seg.strip()]
+        first = sentences[0] if sentences else raw
+        return [_trim_bubble(first)] if first else []
     return _split_by_sentences(raw)
+
+
+def _trim_bubble(text: str) -> str:
+    """单个气泡的长度保护：超长就在标点处断开并补句号。
+
+    只限制**单个气泡**，不跨气泡合并或删除——分段是模型的决定。
+    """
+    text = str(text or "").strip()
+    if len(text) <= SHORT_REPLY_CHARS:
+        return text
+    window = text[:SHORT_REPLY_CHARS]
+    cut = max(window.rfind("，"), window.rfind(","), window.rfind("；"),
+              window.rfind("、"), window.rfind(" "))
+    out = (window[:cut] if cut >= 20 else window).rstrip("，,；、 ")
+    if out and out[-1] not in "。！？!?":
+        out += "。"
+    return out
 
 
 def _sticker_marker(sticker) -> str:
@@ -294,8 +306,16 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
    例：用户「又亏了草」→ 搜 dead inside → 存 → 发，可以只说一句
    例：用户「BTC 还能涨吗」→「不知道，别问我。」+ 一张摊手
 
-需要分成多条时说「|||」切分，客户端会逐条发出；但默认就该一条说完，
-不要靠切分来容纳废话。"""
+【什么时候分多条气泡】用「|||」切分，客户端会把每段发成一个独立气泡。
+像人发微信：想到哪说到哪，一条说完了再补一条。
+ · 适合分条：先给结论、再补一句提醒（「空。」|||「跌破 77744 才算数。」）；
+   一次要说两件事（判断 + 该怎么做）；结论完之后想吐槽一句
+ · 不适合分条：整段废话切成好几条（那只是刷屏）；一句话能说完硬拆
+ · 一条消息最多 3 个气泡；每个气泡自己说完整，不要一条话断成两半
+ · 默认还是一条说完。分条是为了像人，不是为了多。
+   例：用户「BTC 能做吗」→「能，空。」|||「79500 止损，20 倍。」
+   例：用户「又亏了草」→「这波确实难受。」|||「不过仓位不大，扛得住。」
+"""
 
 
 def _status_line(prompt: str, tool: str = "", round_number: int = 1) -> str:

@@ -31,10 +31,30 @@ def test_detail_request_keeps_structure():
     assert out[0] == "第一句。第二句。第三句。"
 
 
-def test_short_mode_uses_only_first_chunk():
-    """短答模式下模型给的 ||| 分段也只取第一段，避免把废话切成几条发。"""
-    text = "空。|||因为评分偏高。|||还有别的理由。"
+def test_short_mode_respects_explicit_bubbles():
+    """短答模式下模型主动用 ||| 分段 → 尊重它的分段，每段一个气泡。
+
+    这条规则反转过一次：早先短答模式无条件只取第一段，模型想分两条
+    也发不出来，用户看到的永远是单气泡（"回复多个气泡"做不出来）。
+    分段是模型判断"这个场景该分几条"的结果，服务端只做长度保护。
+    """
+    text = "空。|||因为评分偏高。"
+    assert split_reply(text, detailed=False) == ["空。", "因为评分偏高。"]
+
+
+def test_short_mode_still_trims_when_no_split():
+    """没分段时仍然是"只留第一句"：防模型无视提示词写一整段。"""
+    text = "空。因为评分偏高。还有别的理由。"
     assert split_reply(text, detailed=False) == ["空。"]
+
+
+def test_bubble_count_is_capped_by_prompt_not_code():
+    """代码不硬砍气泡数量，但每个气泡要单独满足长度保护。"""
+    text = "第一句。" + "长" * 80 + "。|||第二句。"
+    out = split_reply(text, detailed=False)
+    assert len(out) == 2
+    assert len(out[0]) <= SHORT_REPLY_CHARS + 1, out
+    assert out[1] == "第二句。"
 
 
 def test_empty_reply_stays_empty():
@@ -158,3 +178,38 @@ def test_analysis_request_keeps_multiple_bubbles(tmp_path, monkeypatch):
         assert len(answers) == 2, f"明确要求分析时应保留多条: {answers!r}"
         await manager.stop()
     asyncio.run(scenario())
+
+
+def test_model_split_becomes_multiple_messages(tmp_path, monkeypatch):
+    """端到端：模型用 ||| 分段时，服务端要落成多条消息（多气泡）。"""
+    from tests.test_agent import make_manager, wait_for
+
+    def provider(*args, **kwargs):
+        if kwargs.get("tool_choice") == "required":
+            from tests.test_agent import tool_call, tool_result
+            return tool_result(tool_call())
+        return {"ok": True, "reply": "能，空。|||79500 止损，20 倍。",
+                "usage": {"total_tokens": 10}, "model": "test-model"}
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch, provider=provider)
+        await manager.ask("BTC 能做吗", "test-model")
+        assert await wait_for(lambda: not manager.chat_runners)
+        answers = [m for m in manager.chat
+                   if m.get("role") == "assistant" and m.get("content")]
+        assert len(answers) == 2, f"应落成两条消息: {answers!r}"
+        assert answers[0]["content"] == "能，空。"
+        assert answers[1]["content"] == "79500 止损，20 倍。"
+        # 第二条必须能和第一条归到同一轮（前端按 id 前缀分组）
+        base = answers[0]["id"]
+        assert answers[1]["id"].startswith(base + "-")
+        await manager.stop()
+
+    asyncio.run(scenario())
+
+
+def test_prompt_teaches_when_to_split():
+    """提示词要教模型什么时候分多条气泡。"""
+    from ai.agent import SYSTEM_PROMPT
+    assert "分多条气泡" in SYSTEM_PROMPT
+    assert "最多 3 个气泡" in SYSTEM_PROMPT

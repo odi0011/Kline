@@ -137,17 +137,30 @@ const MessageGroup = memo(function MessageGroup({ items }) {
   const files = unique.filter((r) => r.kind !== "image" || !r.url)
   return (
     <>
-      {/* 文字气泡：一轮一个，分段之间用段落间距区分；附件不再混在文字里 */}
-      {(texts.length > 0 || failed || cancelled) && (
+      {/* 文字：每段一个独立气泡（像连发几条微信），不是一个气泡里塞多段。
+          后端把模型用 ||| 分的段拆成多条消息（id 带 -2/-3），
+          这里按段逐个渲染；只有"失败/停止"提示才并入最后一个气泡。 */}
+      {texts.map((text, index) => {
+        const isLast = index === texts.length - 1
+        return (
+          <div key={`t-${index}`} className={styles.bubbleRow} data-role={mine ? "user" : "bot"}>
+            <div className={styles.bubble} data-role={mine ? "user" : "bot"}>
+              <p className={styles.text}>{text}</p>
+              {isLast && failed && (
+                <p className={styles.error} role="alert">{failed.error || STATUS_TEXT.failed}</p>
+              )}
+              {isLast && cancelled && !failed && <span className={styles.muted}>已停止</span>}
+            </div>
+          </div>
+        )
+      })}
+      {/* 只有失败/停止、没有任何正文：单独给一个提示气泡（否则什么都不显示） */}
+      {!texts.length && (failed || cancelled) && (
         <div className={styles.bubbleRow} data-role={mine ? "user" : "bot"}>
           <div className={styles.bubble} data-role={mine ? "user" : "bot"}>
-            {texts.map((text, index) => (
-              <p key={index} className={styles.text}>{text}</p>
-            ))}
-            {failed && (
-              <p className={styles.error} role="alert">{failed.error || STATUS_TEXT.failed}</p>
-            )}
-            {cancelled && !failed && <span className={styles.muted}>已停止</span>}
+            {failed
+              ? <p className={styles.error} role="alert">{failed.error || STATUS_TEXT.failed}</p>
+              : <span className={styles.muted}>已停止</span>}
           </div>
         </div>
       )}
@@ -588,8 +601,8 @@ export default function ChatDock({ messages = [], onSend, connected = true, stat
         <div className={styles.composer}>
           <div className={styles.composerShell}>
             <ChatStats stats={stats} busy={busy} />
-            <ChatComposer onSend={send} busy={busy} disabled={!connected}
-              onCancel={onCancel} />
+            {/* 不传 onCancel：这个输入框支持连续发多条，发送键不做"停止" */}
+            <ChatComposer onSend={send} disabled={!connected} />
           </div>
         </div>
       </div>

@@ -116,7 +116,7 @@
 .chipX:hover { background: rgba(28, 35, 51, 0.12); color: #1c2333; }
 
 /* 发送 / 停止：内嵌在右侧 */
-.sendBtn, .stopBtn {
+.sendBtn {
   flex: none;
   display: grid;
   place-items: center;
@@ -136,8 +136,6 @@
 .sendBtn:active:not(:disabled) { transform: scale(0.92); }
 .sendBtn:disabled { background: rgba(28, 35, 51, 0.12); color: rgba(28, 35, 51, 0.32); cursor: default; }
 
-.stopBtn { background: rgba(28, 35, 51, 0.08); color: #1c2333; }
-.stopBtn:hover { background: rgba(28, 35, 51, 0.15); }
 
 .error {
   margin: 0 4px 2px;

@@ -351,6 +351,30 @@ def _chat_completion_stream(base: str, key: str, model_id: str, payload: dict,
                       payload.get("tool_choice"), timing)
 
 
+# 服务商临时故障：过载/限流/网关错误。这类错误必须重试，
+# 而不是当成"配置不对"报给用户。DeepSeek 过载时返回 503 +
+# "Service is too busy"，之前被错误地标成了"服务商可能不支持 tools"。
+RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+RETRY_ATTEMPTS = 3          # 总尝试次数（首次 + 2 次重试）
+RETRY_BASE_DELAY = 0.8      # 秒，指数退避 0.8 / 1.6
+
+
+def _is_retryable(result: dict) -> bool:
+    try:
+        status = int(result.get("status") or 0)
+    except (TypeError, ValueError):
+        return False
+    return status in RETRYABLE_STATUS
+
+
+def _busy_message(status: int, detail: str) -> str:
+    """把"服务商繁忙"翻译成用户能懂、且不会误导排查方向的话。"""
+    hint = {429: "请求太频繁（限流）", 503: "服务过载", 502: "网关异常",
+            504: "网关超时", 500: "服务端错误"}.get(status, "服务暂时不可用")
+    extra = f"（{detail}）" if detail else ""
+    return f"模型{ hint }，这次没答上。稍后重发即可{ extra }"
+
+
 def chat_completion(cfg: dict, model_id: str, messages: list[dict],
                     proxy: str | None = None, max_tokens: int = 1800,
                     timeout: float = 150, tools: list[dict] | None = None,
@@ -362,6 +386,9 @@ def chat_completion(cfg: dict, model_id: str, messages: list[dict],
     「解码速度」，非流式只能算端到端耗时（含提示词预填充，偏低）。
     流式不可用（服务商不支持 / 代理异常 / 没吐出任何事件）时自动退回非流式，
     保证对话本身绝不因为统计而失败。
+
+    **过载会重试**：429/5xx 是服务商临时繁忙，重试一两次往往就好；
+    直接把这类错误报给用户，只会让人以为是自己配置错了。
     """
     base = (cfg.get("base") or "").strip()
     key = (cfg.get("key") or "").strip()
@@ -371,6 +398,29 @@ def chat_completion(cfg: dict, model_id: str, messages: list[dict],
                "max_tokens": max_tokens, "stream": False}
     if tools is not None:
         payload.update(tools=tools, tool_choice=tool_choice or "auto")
+
+    result = None
+    for attempt in range(RETRY_ATTEMPTS):
+        result = _attempt_completion(base, key, model_id, payload, proxy, timeout,
+                                     stream, on_progress)
+        if result.get("ok") or not _is_retryable(result):
+            return result
+        if attempt < RETRY_ATTEMPTS - 1:
+            # 最后一次不睡：别让用户白等
+            time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+    # 重试完还是过载：给一句人话，而不是"服务商可能不支持 tools"。
+    # 注意 _interpret 里已经翻译过一次，这里只在它没翻译时补：
+    # 否则会出现「模型服务过载…（模型服务过载…（Service is too busy））」的套娃。
+    status = int(result.get("status") or 0)
+    if status in RETRYABLE_STATUS and not result.get("busy"):
+        detail = str(result.get("error") or "")[:200]
+        return {**result, "error": _busy_message(status, detail), "busy": True}
+    return result
+
+
+def _attempt_completion(base, key, model_id, payload, proxy, timeout, stream,
+                        on_progress) -> dict:
+    """发一次请求（含流式→非流式的降级）。重试逻辑由调用方负责。"""
     if stream:
         result = _chat_completion_stream(base, key, model_id, payload, proxy,
                                          timeout, on_progress)
@@ -391,7 +441,8 @@ def chat_completion(cfg: dict, model_id: str, messages: list[dict],
     status, body = _request(_join(base, "/chat/completions"), key, payload,
                             proxy=proxy, timeout=min(180, max(1, timeout)))
     ms = int((time.monotonic() - started) * 1000)
-    return _interpret(status, body, ms, key, model_id, tools, tool_choice)
+    return _interpret(status, body, ms, key, model_id, payload.get("tools"),
+                      payload.get("tool_choice"))
 
 
 def _interpret(status: int, body, ms: int, key: str, model_id: str,
@@ -414,8 +465,16 @@ def _interpret(status: int, body, ms: int, key: str, model_id: str,
         if isinstance(body, dict):
             err = body.get("error")
             detail = err.get("message") if isinstance(err, dict) else err or body.get("message")
-        prefix = "工具请求失败（服务商可能不支持 tools/tool_choice），未降级执行：" if tools is not None else ""
-        return failure(prefix + str(detail or body or f"HTTP {status}"))
+        detail = str(detail or body or f"HTTP {status}")[:400]
+        # 只有「请求本身不被接受」才可能是 tools 相关（400/404/422）。
+        # 429/5xx 是服务商过载，跟工具有没有关系 —— 之前一律加上
+        # "服务商可能不支持 tools/tool_choice" 的前缀，把用户引到了错方向。
+        if status in RETRYABLE_STATUS:
+            return {**failure(_busy_message(status, detail)), "busy": True}
+        prefix = ""
+        if tools is not None and status in (400, 404, 422):
+            prefix = "工具请求失败（服务商可能不支持 tools/tool_choice）："
+        return failure(prefix + detail)
     choices = body.get("choices") if isinstance(body, dict) else None
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         return failure("模型返回 choices 格式无效或为空")

@@ -248,3 +248,73 @@ class _NoopOpener:
 
     def open(self, *a, **k):
         return self._open(*a, **k)
+
+
+class BusyRetryTest(unittest.TestCase):
+    """服务商过载（503 Service is too busy）必须重试，且报错不能说成"不支持 tools"。"""
+
+    def setUp(self):
+        self._request = provider._request
+        self._sleep = provider.time.sleep
+        provider.time.sleep = lambda s: None      # 测试不等退避
+
+    def tearDown(self):
+        provider._request = self._request
+        provider.time.sleep = self._sleep
+
+    def _install(self, responses):
+        queue = list(responses)
+
+        def fake(url, key="", payload=None, proxy=None, timeout=0):
+            return queue.pop(0) if queue else (500, {"error": "no more"})
+
+        provider._request = fake
+
+    def test_retries_on_503_then_succeeds(self):
+        ok_body = {"choices": [{"finish_reason": "stop",
+                                "message": {"role": "assistant", "content": "好"}}]}
+        self._install([
+            (503, {"error": {"message": "Service is too busy"}}),
+            (200, ok_body),
+        ])
+        out = provider.chat_completion(
+            {"base": "https://x.invalid", "key": "k"}, "m",
+            [{"role": "user", "content": "hi"}], stream=False)
+        assert out.get("ok"), out
+        assert out.get("reply") == "好"
+
+    def test_busy_error_does_not_blame_tools(self):
+        """重试耗尽后，报错不能出现"服务商可能不支持 tools"这种误导。"""
+        self._install([(503, {"error": {"message": "Service is too busy"}})] * 5)
+        out = provider.chat_completion(
+            {"base": "https://x.invalid", "key": "k"}, "m",
+            [{"role": "user", "content": "hi"}], tools=[{"x": 1}], stream=False)
+        assert not out.get("ok")
+        err = str(out.get("error") or "")
+        assert "不支持 tools" not in err, err
+        assert out.get("busy") is True
+        assert "过载" in err or "繁忙" in err, err
+
+    def test_400_still_mentions_tools(self):
+        """真正的 400（请求不被接受）才提 tools。"""
+        self._install([(400, {"error": {"message": "tools not supported"}})])
+        out = provider.chat_completion(
+            {"base": "https://x.invalid", "key": "k"}, "m",
+            [{"role": "user", "content": "hi"}], tools=[{"x": 1}], stream=False)
+        assert not out.get("ok")
+        assert "tools" in str(out.get("error") or "").lower()
+
+    def test_auth_error_is_not_retried(self):
+        """401 是配置问题，重试没意义。"""
+        calls = []
+
+        def fake(url, key="", payload=None, proxy=None, timeout=0):
+            calls.append(1)
+            return 401, {"error": {"message": "bad key"}}
+
+        provider._request = fake
+        out = provider.chat_completion(
+            {"base": "https://x.invalid", "key": "k"}, "m",
+            [{"role": "user", "content": "hi"}], stream=False)
+        assert not out.get("ok")
+        assert len(calls) == 1, f"401 不该重试，实际请求 {len(calls)} 次"

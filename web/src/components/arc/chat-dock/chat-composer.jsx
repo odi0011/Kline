@@ -1,7 +1,7 @@
 /* 单行输入框：文字与附件 chip 都在同一行，发送键内嵌在右侧。
    粘贴 / 拖入 / 选文件都会转成行内附件，只在这里维护，不向上冒泡重渲染整个聊天窗。 */
 import { useCallback, useEffect, useRef, useState } from "react"
-import { ArrowUp, FileText, Image as ImageIcon, Loader2, Paperclip, Square, X } from "lucide-react"
+import { ArrowUp, FileText, Image as ImageIcon, Loader2, Paperclip, X } from "lucide-react"
 import styles from "./chat-composer.module.css"
 
 const MAX_ATTACHMENTS = 4
@@ -40,7 +40,7 @@ const fmtSize = (bytes) => {
   return `${bytes}B`
 }
 
-export default function ChatComposer({ onSend, busy, disabled, onCancel }) {
+export default function ChatComposer({ onSend, disabled }) {
   const [text, setText] = useState("")
   const [files, setFiles] = useState([])
   const [sending, setSending] = useState(false)
@@ -156,13 +156,14 @@ export default function ChatComposer({ onSend, busy, disabled, onCancel }) {
             maxLength={6000} aria-label="输入消息" />
         </div>
 
-        {busy
-          ? <button type="button" className={styles.stopBtn} aria-label="停止回复" title="停止回复"
-              onClick={() => onCancel?.()}><Square size={11} fill="currentColor" /></button>
-          : <button type="button" className={styles.sendBtn} disabled={!canSend}
-              aria-label="发送" title={disabled ? "未连接服务端" : "发送"} onClick={submit}>
-              {sending ? <Loader2 size={15} className={styles.spin} /> : <ArrowUp size={15} strokeWidth={2.6} />}
-            </button>}
+        {/* 只用发送键，不做"停止"形态：
+            这个输入框支持在前一条还没答完时继续发下一条（服务端并发 2 轮），
+            所以有回复在跑的时候，按钮仍然应该是"发送"，而不是变成"停止"。
+            发送时转圈只是本地提交中的瞬间状态，提交完立刻回到箭头。 */}
+        <button type="button" className={styles.sendBtn} disabled={!canSend}
+          aria-label="发送" title={disabled ? "未连接服务端" : "发送"} onClick={submit}>
+          {sending ? <Loader2 size={15} className={styles.spin} /> : <ArrowUp size={15} strokeWidth={2.6} />}
+        </button>
       </div>
     </div>
   )
