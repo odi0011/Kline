@@ -486,3 +486,35 @@ def test_cli_refuses_new_key_when_config_already_encrypted(tmp_path):
         cli.run(str(config))
     assert config.read_text(encoding="utf-8") == before
     assert not (tmp_path / "secrets.key").exists()
+
+
+def test_startup_audit_runs_on_raw_config_not_decrypted(tmp_path, monkeypatch):
+    """启动时的"仍是明文"提示必须基于磁盘原文，不能基于解密后的配置。
+
+    曾经的 bug：main() 先 decrypt_config() 再 audit_plaintext(解密结果)，
+    解密后每个字段当然都是明文，于是配置全部加密后日志仍在喊"仍是明文"，
+    这条安全提示完全失去意义（也就看不出加密到底有没有生效）。
+    这里直接跑 main() 的启动段，断言加密配置下不再出现该提示。
+    """
+    import main as main_mod
+
+    config = write_yaml(tmp_path / "config.yaml", full_cfg())
+    cli.run(str(config))
+    assert "enc:v1:" in config.read_text(encoding="utf-8")
+
+    printed: list[str] = []
+    monkeypatch.setattr(main_mod, "load_config", lambda path: yaml.safe_load(
+        Path(path).read_text(encoding="utf-8")))
+
+    def fake_run(cfg, config_path):
+        # 解密后的配置必须能拿到真实值（说明密钥确实生效）
+        assert cfg["mysql"]["password"] == full_cfg()["mysql"]["password"]
+
+    monkeypatch.setattr(main_mod, "run", fake_run)
+    monkeypatch.setattr(main_mod.asyncio, "run", lambda coro: coro)
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    monkeypatch.setattr(sys, "argv", ["main.py", "-c", str(config)])
+    main_mod.main()
+    text = "\n".join(printed)
+    assert "仍是明文" not in text, f"配置已加密却仍提示明文：{text}"
+    assert "均已加密" in text
