@@ -1025,13 +1025,31 @@ def test_auto_sticker_uses_library(tmp_path):
 
 
 def test_auto_sticker_respects_cooldown(tmp_path):
-    """最近几条已经贴过图 → 不再连贴，避免刷屏。"""
+    """刚贴过图 → 短时间不再自动贴，避免刷屏。
+
+    冷却用独立的时间戳列表，不翻 self.chat：并发 2 轮时上一条回复还在
+    running、content 是空字符串，翻 chat 永远看不到上一张图（线上实测
+    连发三条都贴了）。
+    """
+    import time as _time
     manager, cache = _manager_with_stickers(tmp_path)
     cache.save("sad1", b"GIF89a" + b"s" * 16, 200, 150,
                url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
     cache.remember_query("dead inside", "sad1")
-    manager.chat = [{"role": "assistant", "content": "x\n[sticker:url=%2Fa.gif&w=1&h=1]"}]
-    assert manager._auto_sticker("麻了") is None
+    manager._recent_sticker_ts = [int(_time.time() * 1000)]
+    assert manager._auto_sticker("麻了") is None, "冷却期内不该再贴"
+
+
+def test_auto_sticker_after_cooldown_expires(tmp_path):
+    """冷却过期后可以再贴。"""
+    import time as _time
+    from ai.agent import STICKER_COOLDOWN_MS
+    manager, cache = _manager_with_stickers(tmp_path)
+    cache.save("sad1", b"GIF89a" + b"s" * 16, 200, 150,
+               url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    cache.remember_query("dead inside", "sad1")
+    manager._recent_sticker_ts = [int(_time.time() * 1000) - STICKER_COOLDOWN_MS - 1000]
+    assert manager._auto_sticker("麻了") is not None
 
 
 def test_auto_sticker_needs_library_match(tmp_path):

@@ -78,8 +78,9 @@ _EMOTION_QUERY = (
     (re.compile(r"^[\s？?！!。.…~～]*$|额|呃|啊$|嗯$|哦$|诶|欸", re.I), "shrug"),
     (re.compile(r"好|行|可以|收到|谢谢|赞", re.I), "thumbs up"),
 )
-# 一条回复里最多一个表情包；但连续几条都贴会很吵，所以有冷却
-STICKER_COOLDOWN_MESSAGES = 4
+# 一条回复里最多一个表情包；但连续几条都贴会很吵，所以有冷却。
+# 用时间而不是"条数"：并发回复时条数不可靠（上一条还在跑就开始了下一条）。
+STICKER_COOLDOWN_MS = 8 * 60 * 1000      # 8 分钟内不再自动补图
 
 
 def _auto_sticker_query(prompt: str) -> str:
@@ -757,6 +758,10 @@ class AgentManager:
         self._chat_slots = asyncio.Semaphore(MAX_CHAT_CONCURRENT)
         self._action_lock = asyncio.Lock()
         self._chat_id = None
+        # 最近几次"真的贴了表情"的时刻（毫秒）。冷却不能看 self.chat：
+        # 并发 2 轮时，前一条回复还在 running、content 还是空字符串，
+        # 下一条就已经进入组装阶段了，检查 chat 永远看不到上一张图。
+        self._recent_sticker_ts: list[int] = []
         # 从历史调用学到的"字符 → token"换算比。流式过程中拿不到 usage，
         # 状态栏需要用它估算输入/输出量。按真实 usage 滚动更新，
         # 比写死一个常数更准（不同服务商、中英文混排差异很大）。
@@ -2200,10 +2205,14 @@ class AgentManager:
         cache = self.sticker_cache
         if cache is None:
             return None
-        # 冷却：最近几条已经贴过就不再贴，避免连续刷图
-        recent = [m for m in self.chat[-STICKER_COOLDOWN_MESSAGES:]
-                  if m.get("role") == "assistant"]
-        if any("[sticker:" in str(m.get("content") or "") for m in recent):
+        # 冷却：最近几条已经贴过就不再贴，避免连续刷图。
+        # 用独立的时间戳列表而不是翻 self.chat —— 并发回复时上一条
+        # 还在 running、content 为空，翻 chat 永远看不到上一张图，
+        # 冷却等于没写（线上实测连发三条都贴了）。
+        now_ms_value = now_ms()
+        self._recent_sticker_ts = [t for t in self._recent_sticker_ts
+                                   if now_ms_value - t < STICKER_COOLDOWN_MS]
+        if self._recent_sticker_ts:
             return None
         # 必须有真的相关的图。pick_for 在完全不匹配时会退一张最新的
         # （给"配额用尽"那条路径兜底），但自动发表情不能这样——
@@ -2692,9 +2701,15 @@ class AgentManager:
                 sticker = self._auto_sticker(prompt)
             if sticker:
                 pieces = _attach_sticker(pieces, sticker, result["reply"])
+                # 真的出现在最终消息里，才记冷却 + 使用计数。
+                # 判据是"最终文本里有没有标记"，而不是"有没有调用过工具"——
+                # 前者才是用户看到的。
+                attached = any("[sticker:" in piece for piece in pieces)
+                if attached:
+                    self._recent_sticker_ts.append(now_ms())
                 # 真发出去了才记一次使用：模型选了又没用上的不算。
                 # 有了这个计数，list_stickers 才能按"最近常用"排序。
-                if (isinstance(sticker, dict) and sticker.get("id")
+                if (attached and isinstance(sticker, dict) and sticker.get("id")
                         and self.sticker_cache is not None):
                     try:
                         self.sticker_cache.touch(sticker["id"])
