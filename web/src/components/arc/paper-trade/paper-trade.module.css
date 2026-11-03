@@ -69,6 +69,23 @@
 }
 .winrate[data-hi] { background: rgba(22, 163, 74, 0.16); color: #15803d; }
 
+/* 「模拟」标：左上角。这张卡的仓位不是真实委托，必须一眼能分清——
+   否则会和账户卡里的真实持仓混成一套数据。 */
+.paperTag {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  padding: 0 4px;
+  height: 13px;
+  line-height: 13px;
+  border-radius: 4px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: rgba(28, 35, 51, 0.09);
+  color: rgba(28, 35, 51, 0.55);
+}
+
 /* ---------- 头部：图标 · 币种 · 方向 · 杠杆 · 刷新 ---------- */
 .head {
   display: flex;

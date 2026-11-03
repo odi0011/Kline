@@ -22,6 +22,14 @@
 
 4. **强平价按维持保证金折算**
    liq = entry × (1 ∓ 1/leverage × 0.95)，0.95 是维持保证金余量。
+
+5. **方向翻转不提前离场**
+   评分每 5 秒重算一次，方向在小分差上来回摆是常态。曾经把"方向翻了"
+   当成离场信号，结果线上 11 小时平了 9762 笔、100% 是 flip、中位持有
+   6 秒——15 分钟的窗口一次都走不完，胜率统计全是噪声。
+   纸上交易要验证的假设是"按信号方向持有 15 分钟"，所以只由
+   止盈 / 止损 / 到期离场；方向变了也等这一仓走完，下一仓再按新方向开。
+   风险仍由止损兜底，不需要用"翻向就跑"来控风险。
 """
 from __future__ import annotations
 
@@ -165,6 +173,59 @@ class PaperBook:
         with self._lock:
             return list(self.history[-MAX_HISTORY:])
 
+    def summary(self) -> dict:
+        """按币种汇总模拟仓战绩（只统计已平仓）。
+
+        两个口径必须分开报，否则会把"最近 200 条"当成"全部"：
+          · session：进程启动以来的累计计数（stats，可能远多于窗口）
+          · bySymbol：只覆盖内存里最近 MAX_HISTORY 条平仓记录
+        Agent 回答"哪个模拟仓胜率最高"用的就是 bySymbol；不能拿实盘账户去推。
+        """
+        with self._lock:
+            rows = list(self.history)
+            open_count = len(self.positions)
+            stats = dict(self.stats)
+        by: dict[str, dict] = {}
+        for r in rows:
+            sym = str(r.get("symbol") or "")
+            if not sym:
+                continue
+            item = by.setdefault(sym, {"symbol": sym, "closed": 0, "wins": 0,
+                                       "losses": 0, "timeouts": 0, "netPnl": 0.0})
+            item["closed"] += 1
+            pnl = _num(r.get("pnl")) or 0.0
+            item["netPnl"] = round(item["netPnl"] + pnl, 4)
+            if pnl > 0:
+                item["wins"] += 1
+            elif pnl < 0:
+                item["losses"] += 1
+            if r.get("reason") == "timeout":
+                item["timeouts"] += 1
+        ranked = []
+        for item in by.values():
+            item["winrate"] = (round(item["wins"] / item["closed"] * 100, 1)
+                               if item["closed"] else None)
+            item["avgPnl"] = (round(item["netPnl"] / item["closed"], 4)
+                              if item["closed"] else None)
+            ranked.append(item)
+        # 胜率高的在前；胜率相同比样本量。没有平仓记录的币不上榜。
+        ranked.sort(key=lambda x: (-(x["winrate"] or 0.0), -x["closed"]))
+        return {
+            "note": "模拟仓=15 分钟纸上交易，不产生真实委托，与账户实盘持仓无关。"
+                    "session 是进程启动以来的累计值；bySymbol 只覆盖内存里最近 "
+                    f"{MAX_HISTORY} 条平仓记录，样本少时不要当稳定胜率。",
+            "openCount": open_count,
+            "session": {
+                "closed": stats["closed"], "wins": stats["wins"],
+                "losses": stats["losses"], "timeouts": stats["timeouts"],
+                "winrate": (round(stats["wins"] / stats["closed"] * 100, 1)
+                            if stats["closed"] else None),
+                "netPnl": round(stats["netPnl"], 4),
+            },
+            "window": {"records": len(rows), "limit": MAX_HISTORY},
+            "bySymbol": ranked,
+        }
+
     def force(self, symbol: str, ctx: dict) -> dict:
         """手动刷新：立刻平掉当前仓（按现价），再按当前数据重开一个。"""
         with self._lock:
@@ -205,7 +266,7 @@ class PaperBook:
                (pos.direction == "short" and price < pos.peak):
                 pos.peak = price
 
-            exit_reason = self._check_exit(pos, price, ctx)
+            exit_reason = self._check_exit(pos, price)
             if exit_reason:
                 self._close(pos, price, exit_reason, ctx)
                 # 平完立刻按当前数据重开，仓位永不停
@@ -294,8 +355,13 @@ class PaperBook:
         self.positions[symbol] = pos
         self.stats["opened"] += 1
 
-    def _check_exit(self, pos: PaperPosition, price: float, ctx: dict) -> str:
-        """判断是否该离场：止盈 / 止损 / 到期 / 方向反转。"""
+    def _check_exit(self, pos: PaperPosition, price: float) -> str:
+        """判断是否该离场：止盈 / 止损 / 到期。
+
+        方向翻转**不算**离场信号：评分每 5 秒重算、方向在小分差上反复摆，
+        拿它当离场条件会让 15 分钟的窗口永远走不完（线上实测中位持有 6 秒、
+        100% 靠 flip 平仓），胜率统计随之失真。见模块注释第 5 条。
+        """
         long_ = pos.direction == "long"
         if long_:
             if price >= pos.tp:
@@ -307,10 +373,6 @@ class PaperBook:
                 return "tp"
             if price >= pos.sl:
                 return "sl"
-        # 方向反转：评估翻了，说明信号失效，别硬扛
-        flipped = str(ctx.get("direction") or "")
-        if flipped and flipped != ("bullish" if long_ else "bearish"):
-            return "flip"
         if int(time.time() * 1000) >= pos.expires_ts:
             return "timeout"
         return ""

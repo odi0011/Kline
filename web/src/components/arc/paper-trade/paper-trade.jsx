@@ -140,10 +140,13 @@ const PaperCard = memo(function PaperCard({ pos, onRefresh, busy, price }) {
     <article className={styles.card} data-tone={long ? "long" : "short"}>
       <div className={styles.chartWrap}>
         <MiniCandles candles={pos.candles} pos={pos} />
-        {/* 右上角胜率徽标：这是这张卡最该先看到的信息 */}
+        {/* 左上角「模拟」标：这些仓位不是真实委托，不能和账户卡的真实持仓混淆 */}
+        <span className={styles.paperTag} title="纸上交易，不产生任何真实委托">模拟</span>
+        {/* 右上角胜率徽标：这是这张卡最该先看到的信息。先写「估算」两个字，
+            避免被当成已实现的历史胜率。 */}
         <span className={styles.winrate} data-hi={pos.winrate >= 60 || undefined}
-          title={`估算胜率 ${pos.winrate ?? "--"}%（含 SL/TP 距离、信号分、形态历史）`}>
-          {pos.winrate == null ? "--" : `${Math.round(pos.winrate)}%`}
+          title={`估算胜率 ${pos.winrate ?? "--"}%（含 SL/TP 距离、信号分、形态历史），不是已平仓的历史胜率`}>
+          估 {pos.winrate == null ? "--" : `${Math.round(pos.winrate)}%`}
         </span>
       </div>
 

@@ -122,7 +122,22 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
    绝不要把前者说成"不在监控范围"，也不要编一个方向
 你的个人判断和系统建议不一致时，一句话点明分歧："系统偏空，我看多，因为××"，
 绝不假装一致、也不要只讲自己那套。
-你只能读取行情、账户、风险、事件、新闻，以及保存/读取用户明确同意的白名单偏好。
+
+【账户 vs 模拟仓 是两套数据，不许混】
+ · **账户 = 实盘账户**：系统真正下单的那个交易账户。read_accounts 返回它的权益、
+   真实持仓、真实成交。部署用的是测试网 key 只是运维细节，**账户身份始终是实盘**，
+   不要说"这是测试盘/模拟盘账户"。
+ · **模拟仓 = 纸上交易**：每个币一个 15 分钟周期，只在内存里记账、**永不产生委托**。
+   它跟账户的权益、持仓、成交完全无关。用 read_paper 读。
+ · 问「我持仓/权益/赚多少」→ read_accounts；
+   问「模拟仓/纸上交易/哪个模拟仓胜率最高」→ read_paper。
+ · 模拟仓的仓位胜率是**估算概率**（estimatedWinrate，按止损止盈距离与信号分算的），
+   不是历史胜率。被问"胜率"时，若指的是模拟仓，用 realized.bySymbol 里
+   已平仓的实际胜率；估算概率要明确说"这是估算"。
+ · 模拟仓统计只在内存，重启清零、最多 200 条，引用时要说明样本量。
+ · 账户里没有模拟仓的仓位，模拟仓也不能解释账户的盈亏——两者绝不能互相引用。
+
+你只能读取行情、账户、模拟仓、风险、事件、新闻，以及保存/读取用户明确同意的白名单偏好。
 绝无 shell、任意文件读取、下单、平仓、修改风控或系统参数的能力，不得声称做过这些操作。
 
 【沙盒】你有一个受限沙盒，可以写脚本、跑命令、处理数据：
@@ -222,6 +237,8 @@ def _status_line(prompt: str, tool: str = "", round_number: int = 1) -> str:
             return "在看行情"
         if tool == "read_accounts":
             return "在看持仓"
+        if tool == "read_paper":
+            return "在翻模拟仓"
         if tool == "read_risk":
             return "在查风险"
         if tool in ("read_news", "read_events"):
@@ -229,6 +246,8 @@ def _status_line(prompt: str, tool: str = "", round_number: int = 1) -> str:
         return "在查数据"
     if round_number > 1:
         return "在想结论"
+    if re.search(r"模拟仓|纸上交易", text):
+        return "在翻模拟仓"
     if re.search(r"胜率|哪种形态|哪个形态", text):
         return "在翻形态胜率"
     if re.search(r"[Kk]\s*线|走势|趋势|形态|支撑|压力", text):
@@ -1817,7 +1836,9 @@ class AgentManager:
                         raise ValueError("context 快照必须为对象")
                     fields = ("ts", "market", "symbols", "stats", "evaluations", "accounts", "positions",
                               "trades", "positionPlans", "risk", "drawdown", "drift", "params", "health",
-                              "enabled", "recentEvents", "events", "news", "patternStats")
+                              "enabled", "recentEvents", "events", "news", "patternStats",
+                              # 模拟仓是另一套数据：未平仓、已实现战绩、最近平仓
+                              "paper", "paperStats", "paperHistory", "paperSummary")
                     snapshot = copy.deepcopy(clean({k: raw[k] for k in fields if k in raw}))
                 except Exception:
                     snapshot_error = "无法采集 context 快照"

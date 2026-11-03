@@ -43,6 +43,7 @@ from server.hub import BroadcastHub
 from storage import Storage
 from accounts import fetch_account
 from ai.agent import AgentManager
+from ai.agent_tools import project_paper_positions
 from ai.provider import (
     PROVIDER_PRESETS, CAPABILITIES, mask_cfg, merge_cfg,
     list_models as ai_list_models, test_model as ai_test_model, guess_model_meta,
@@ -690,6 +691,14 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         for item in hub.last_accounts or []:
             accounts.append({key: item.get(key) for key in (
                 "name", "balance", "unrealized", "available", "positions", "error")})
+        # 模拟仓（15 分钟纸上交易）：与上面的账户/持仓/成交是两套数据。
+        # 之前根本没接进 context，Agent 只能拿账户去答"模拟仓"，把实盘账户
+        # 当成了模拟仓。这里单独投影一份不带K线的精简持仓。
+        paper_rows = project_paper_positions(analysis.get("paper"))
+        try:
+            paper_summary = quant.paper.summary()
+        except Exception:
+            paper_summary = {}
         return {
             "ts": snapshot.get("ts"),
             "enabled": snapshot.get("enabled"),
@@ -699,6 +708,12 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             "positions": snapshot.get("positions") or [],
             "accounts": accounts,
             "trades": list(getattr(quant, "trades", [])[-20:]),
+            # 模拟仓：未平仓的纸上仓位、按币种已实现战绩、最近平仓记录。
+            # read_paper 专用；read_accounts 不会读这三项。
+            "paper": paper_rows,
+            "paperStats": analysis.get("paperStats") or {},
+            "paperHistory": (analysis.get("paperHistory") or [])[-12:],
+            "paperSummary": paper_summary,
             "positionPlans": analysis.get("positionPlans") or [],
             "drawdown": analysis.get("drawdown") or {},
             "drift": analysis.get("drift") or {},
@@ -935,7 +950,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     async def supervisor():
         # 行情断开/停流一律重连，绝不自动切换演示数据：
-        # 假行情会驱动形态引擎产生假信号 → 量化在测试盘下真单 + 污染胜率统计。
+        # 假行情会驱动形态引擎产生假信号 → 量化在账户上真下单 + 污染胜率统计。
         # 演示模式只能来自 config 的 feed.mode: demo（显式选择）。
         await feed.run()
 

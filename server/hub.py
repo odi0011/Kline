@@ -53,7 +53,7 @@ class BroadcastHub:
         self.stats_fn = None              # 形态统计（storage.pattern_stats）
         self.symbol_stats_fn = None       # 按币种统计（storage.symbol_stats）
         self.query_fn = None              # bar 记录查询（storage）
-        self.last_accounts = None         # 最近一轮测试盘账户数据（main 轮询写入）
+        self.last_accounts = None         # 最近一轮账户（实盘）数据（main 轮询写入）
         self.stats_dirty = False
         self.settings_fn = None           # 当前可编辑设置（main 注入）
         self.on_settings = None           # 客户端下发设置时的回调：应用+持久化，返回新设置

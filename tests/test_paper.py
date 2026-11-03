@@ -131,12 +131,18 @@ def test_stop_loss_closes():
     assert book.stats["losses"] == 1
 
 
-def test_direction_flip_closes():
-    """评估翻向说明信号失效，不该硬扛到止损。"""
+def test_direction_flip_does_not_close():
+    """方向翻转不是离场信号：15 分钟的窗口必须走完。
+
+    线上实测：把 flip 当离场条件时，11 小时平了 9762 笔、100% 是 flip、
+    中位持有 6 秒——统计全是噪声。只由止盈/止损/到期离场。
+    """
     book = PaperBook()
-    book.tick("btcusdt", ctx(direction="bullish"))
+    first = book.tick("btcusdt", ctx(direction="bullish"))
     book.tick("btcusdt", ctx(direction="bearish"))
-    assert book.history[-1]["reason"] == "flip"
+    assert book.stats["closed"] == 0
+    assert book.positions["btcusdt"].entry == first["entry"], "还是同一个仓"
+    assert book.positions["btcusdt"].direction == "long"
 
 
 def test_timeout_closes():

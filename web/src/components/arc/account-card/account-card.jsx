@@ -104,7 +104,9 @@ export default function AccountCard({ account, series, chartColors, accent = "#f
         </span>
         <div className={styles.ident}>
           <span className={styles.name} title={account.name}>{account.name}</span>
-          <span className={styles.sub}>USDT 本位合约</span>
+          {/* 标「实盘」是为了和模拟仓卡片区分：账户里的权益/持仓是真实委托，
+              模拟仓只是纸上记账，两者不能互相解释。 */}
+          <span className={styles.sub}>USDT 本位合约 · 实盘</span>
         </div>
         <div className={styles.curve}>
           <EquityCurve samples={series || []} hue={hue} height={showHistory ? 28 : 46} onHover={setHoverS} />
