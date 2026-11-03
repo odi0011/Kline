@@ -282,3 +282,78 @@ def test_remote_sticker_is_downloaded_then_cached(tmp_path):
     assert first["url"].startswith("/agent-attachments/stickers/")
     assert second["id"] == first["id"]
     assert download_calls == ["https://media.giphy.com/a.gif"], "第二次不该再下载"
+
+
+# ---------------- D. 联网不可用时从已存表情里挑 ----------------
+
+def test_pick_for_matches_stored_emotion():
+    """配额用完/断网时，从已存的贴纸里挑一张贴近当前情绪的。"""
+    root = tempfile.mkdtemp()
+    cache = StickerCache(root)
+    for sid, word in (("id-dead", "dead inside"), ("id-shrug", "shrug"),
+                      ("id-pop", "popcorn")):
+        cache.save(sid, b"GIF89a" + sid.encode()[:8], 100, 100,
+                   url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+        cache.remember_query(word, sid)
+    # "dead" 应该命中 dead inside 那张
+    assert cache.pick_for("dead")["id"] == "id-dead"
+    # 换词大小写/多余空白也要能匹配
+    assert cache.pick_for("  SHRUG  ")["id"] == "id-shrug"
+    # 完全不相关时不能返回 None——总比不发强，退回最新的一张
+    assert cache.pick_for("something totally unrelated") is not None
+
+
+def test_pick_for_avoids_repeating_same_sticker():
+    root = tempfile.mkdtemp()
+    cache = StickerCache(root)
+    cache.save("a", b"GIF89a" + b"a" * 8, 10, 10,
+               url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    cache.save("b", b"GIF89a" + b"b" * 8, 10, 10,
+               url_hint="https://media.giphy.com/b.gif", content_type="image/gif")
+    first = cache.pick_for("anything")
+    second = cache.pick_for("anything", avoid_id=first["id"])
+    assert first["id"] != second["id"], "不该连续发同一张"
+
+
+def test_empty_cache_pick_returns_none():
+    root = tempfile.mkdtemp()
+    assert StickerCache(root).pick_for("dead") is None
+
+
+def test_send_sticker_falls_back_to_stored_not_builtin(tmp_path):
+    """核心场景：联网挂了，但库里已有贴纸 → 用库里的，不要退回内置图。"""
+    from ai.agent import AgentManager
+
+    cache = StickerCache(str(tmp_path / "s"))
+    cache.save("stored1", b"GIF89a" + b"s" * 16, 200, 200,
+               url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    cache.remember_query("dead inside", "stored1")
+
+    manager = AgentManager(lambda: {}, lambda: "", lambda: {}, lambda m: None,
+                           str(tmp_path / "state.json"))
+    manager.sticker_cache = cache
+    # 模拟配额用完 / 断网
+    manager.sticker_search_fn = lambda q, c: {"ok": False, "error": "rate limit"}
+
+    target = {}
+    out = asyncio.run(manager._send_sticker({"query": "dead", "name": "崩溃"}, target))
+    assert out["sent"] is True
+    assert out["source"] == "stored", out
+    assert target["pendingSticker"]["id"] == "stored1"
+    # 标记要带本地地址，前端才能直接加载
+    marker = _sticker_marker(target["pendingSticker"])
+    assert marker.startswith("[sticker:url=")
+
+
+def test_send_sticker_builtin_is_last_resort(tmp_path):
+    """库里一张都没有时才退回内置图。"""
+    from ai.agent import AgentManager
+
+    manager = AgentManager(lambda: {}, lambda: "", lambda: {}, lambda m: None,
+                           str(tmp_path / "state.json"))
+    manager.sticker_cache = StickerCache(str(tmp_path / "empty"))
+    manager.sticker_search_fn = lambda q, c: {"ok": False, "error": "offline"}
+    target = {}
+    out = asyncio.run(manager._send_sticker({"query": "dead", "name": "崩溃"}, target))
+    assert out["source"] == "builtin"
+    assert target["pendingSticker"] == {"builtin": "崩溃"}

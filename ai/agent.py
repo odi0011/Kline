@@ -1798,9 +1798,14 @@ class AgentManager:
     async def _send_sticker(self, arguments: dict, target: dict) -> dict:
         """表情包工具：登记"这一条回复要附图"，真正落地在回复组装时统一处理。
 
-        两种来源：
-          · query → 去在线贴纸库搜（更贴切，素材量大）
-          · name  → 内置三张图（永远可用，也是 query 失败时的兜底）
+        取图顺序（能发出去比"精确但不发"重要）：
+          1. query → 先查本地已存的贴纸（命中直接复用，不打 API）
+          2. 本地没有 → 去在线库搜，搜到就下载落盘
+          3. 搜不到（配额用完/断网/无结果）→ 从**已存的贴纸里挑一张**
+          4. 库里一张都没有 → 内置三张图（永远可用）
+
+        第 3 步是重点：以前配额一满就只能退回那 3 张内置图，或者干脆不发；
+        但服务器上明明已经有几十上百张存过的图，没理由不用。
 
         一条回复最多一个：target 上已有 pendingSticker，或回复正文里已经出现
         [sticker: 标记时直接拒绝，返回 sent=False（不抛异常，让模型自己换个说法）。
@@ -1819,10 +1824,16 @@ class AgentManager:
             found = await self._search_sticker(query)
             if found:
                 target["pendingSticker"] = found
-                return {"sent": True, "source": "giphy", "title": found.get("title", ""),
-                        "note": "在线贴纸会附在本条回复末尾"}
-            # 搜不到（没配 key / 网络失败 / 无结果）时退回内置图，
-            # 让模型显式给的 name 兜底；连 name 都没有就用"疑问"这张最低风险的。
+                return {"sent": True, "source": found.pop("_source", "giphy"),
+                        "title": found.get("title", ""),
+                        "note": "贴纸会附在本条回复末尾"}
+            # 联网不可用时，从已存的贴纸里挑一张贴近这个情绪的
+            picked = self._pick_stored_sticker(query)
+            if picked:
+                target["pendingSticker"] = picked
+                return {"sent": True, "source": "stored", "title": picked.get("title", ""),
+                        "note": "在线贴纸不可用，已从已存的表情里挑了一张"}
+            # 库里也空着：退回内置图，优先用模型给的名字
             if name not in STICKER_NAMES:
                 name = "疑问"
             target["pendingSticker"] = {"builtin": name}
@@ -1846,7 +1857,7 @@ class AgentManager:
         """
         cached = self._sticker_cached(query)
         if cached:
-            return cached
+            return {**cached, "_source": "stored"}
         fn = self.sticker_search_fn
         if not fn:
             return None
@@ -1878,11 +1889,11 @@ class AgentManager:
             return None
         saved = await self._store_sticker(row, url, width, height, query)
         if saved:
-            return saved
+            return {**saved, "_source": "giphy"}
         # 下载失败也把远程地址回给前端：至少还能试着直接加载，
         # 总比"模型想发表情却什么都没有"强。
         return {"url": url, "width": width, "height": height,
-                "title": str(row.get("title") or "")[:120]}
+                "title": str(row.get("title") or "")[:120], "_source": "giphy"}
 
     def _sticker_cached(self, query: str) -> dict | None:
         cache = self.sticker_cache
@@ -1892,6 +1903,21 @@ class AgentManager:
             return cache.lookup(query)
         except Exception:
             return None
+
+    def _pick_stored_sticker(self, query: str, avoid_id: str = "") -> dict | None:
+        """从已落盘的贴纸里挑一张贴近 query 的。
+
+        联网搜不了（配额用完/断网）时的退路：库里已有的图总比不发强。
+        挑选规则见 StickerCache.pick_for。
+        """
+        cache = self.sticker_cache
+        if cache is None:
+            return None
+        try:
+            picked = cache.pick_for(query, avoid_id)
+        except Exception:
+            return None
+        return picked
 
     async def _store_sticker(self, row: dict, url: str, width: int, height: int,
                              query: str) -> dict | None:

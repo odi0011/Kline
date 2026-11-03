@@ -147,6 +147,66 @@ class StickerCache:
                 return None
             return self._public(record)
 
+    # ---------- 本地挑选（配额用尽 / 断网时的退路） ----------
+
+    def all_items(self) -> list[dict]:
+        """所有已落盘的贴纸（带它记住的情绪词），供挑选时排序。"""
+        with self._lock:
+            out = []
+            for sid, record in self._index["stickers"].items():
+                if not isinstance(record, dict):
+                    continue
+                item = self._public(record)
+                if not os.path.exists(os.path.join(self.root, str(record.get("file") or ""))):
+                    continue
+                item["savedAt"] = int(record.get("ts") or 0)
+                out.append(item)
+            return out
+
+    def pick_for(self, query, avoid_id: str = "") -> dict | None:
+        """在已存的表情里挑一张最贴近 query 的；一张都没有时返回 None。
+
+        为什么要有这个：GIPHY 免费 key 只有 100 次/小时，用完了或者断网时，
+        "明明该发表情却发不出去"是最差的结果。库里已经有图，就该从里面选。
+
+        排序依据（命中优先级从高到低）：
+          1) 记住的情绪词与 query 有词重叠（"dead inside" ↔ "inside dead"）
+          2) 互为子串（"facepalm" ↔ "face palm"）
+          3) 越新保存的越优先
+        avoid_id 用于避开"上一次刚发过的那张"，免得同一张连发两次。
+        """
+        want = _norm_query(query)
+        tokens = {t for t in re.split(r"[^a-z0-9]+", want) if len(t) > 1}
+        with self._lock:
+            # 先建立 贴纸 id -> 记住的情绪词 的反向表
+            words: dict[str, list[str]] = {}
+            for key, entry in self._index["queries"].items():
+                if isinstance(entry, dict):
+                    words.setdefault(str(entry.get("id") or ""), []).append(str(key))
+            ranked = []
+            for sid, record in self._index["stickers"].items():
+                if not isinstance(record, dict):
+                    continue
+                if not os.path.exists(os.path.join(self.root, str(record.get("file") or ""))):
+                    continue
+                keys = words.get(sid, [])
+                score = 0
+                for key in keys:
+                    key_tokens = {t for t in re.split(r"[^a-z0-9]+", key) if len(t) > 1}
+                    score += 3 * len(tokens & key_tokens)
+                    if want and (want in key or key in want):
+                        score += 5
+                if sid == _safe_id(avoid_id):
+                    score -= 2          # 刚发过，除非没有别的选择
+                ranked.append((score, int(record.get("ts") or 0), sid, record))
+            if not ranked:
+                return None
+            # 先看有没有真正相关的；完全没有时退回最新一张（总比不发强）
+            related = [row for row in ranked if row[0] > 0]
+            pool = related or ranked
+            pool.sort(key=lambda row: (row[0], row[1]), reverse=True)
+            return self._public(pool[0][3])
+
     def remember_query(self, query, sticker_id) -> None:
         key = _norm_query(query)
         sid = _safe_id(sticker_id)
