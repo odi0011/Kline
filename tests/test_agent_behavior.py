@@ -543,9 +543,9 @@ def test_prompt_chats_like_a_human():
         assert rule in SYSTEM_PROMPT, f"原有短答约束丢失: {rule}"
 
 
-def test_prompt_sticker_still_self_decided():
-    for phrase in ("send_sticker", "由你自己判断", "不要每次都发", "一条回复最多一个",
-                   "不适合发", "只发表情包", "[sticker:"):
+def test_prompt_sticker_says_when_to_send():
+    for phrase in ("send_sticker", "必须发的场合", "直接发出去", "一条回复最多一个",
+                   "不发的场合", "只发表情包", "[sticker:"):
         assert phrase in SYSTEM_PROMPT, f"表情包说明缺少: {phrase}"
 
 

@@ -21,19 +21,25 @@ def test_prompt_lists_every_sticker():
         assert name in text
 
 
-def test_prompt_says_ai_decides_not_fixed():
-    """提示词必须明确"由你自己判断"，否则模型会每句都带表情包。"""
+def test_prompt_says_when_it_must_send():
+    """提示词必须给出"必须发"的场合。
+
+    早先是「由你自己判断」——结果模型永远判断为不发，实测几乎从不触发。
+    现在改成明确的场合清单（短情绪、骂人自嘲、明说要表情），
+    并且服务端还有一层 _auto_sticker 兜底。
+    """
     from ai.agent import SYSTEM_PROMPT
-    assert "由你自己判断" in SYSTEM_PROMPT
-    assert "不要每次都发" in SYSTEM_PROMPT
+    assert "必须发的场合" in SYSTEM_PROMPT
+    assert "直接发出去" in SYSTEM_PROMPT
     assert "一条回复最多一个" in SYSTEM_PROMPT
 
 
 def test_prompt_gives_when_not_to_use():
-    """认真问价位、有持仓风险时不该发表情包。"""
+    """认真问价位/仓位/风险时不该发表情包，带情绪词也不行。"""
     from ai.agent import SYSTEM_PROMPT
-    assert "不适合发" in SYSTEM_PROMPT
+    assert "不发的场合" in SYSTEM_PROMPT
     assert "价位" in SYSTEM_PROMPT
+    assert "还能加仓吗" in SYSTEM_PROMPT
 
 
 def test_prompt_allows_sticker_only_reply():

@@ -47,6 +47,65 @@ def _wants_detail(prompt: str) -> bool:
     return bool(_DETAIL_REQUEST.search(str(prompt or "")))
 
 
+# ---------------------------------------------------------------------------
+# 表情包的"必须触发"判定
+#
+# 只写进提示词是没用的：「由你自己判断」的意思是模型可以永远判断为"不发"，
+# 实测它几乎从不发。所以服务端要能认出"这句该配张图"，再主动兜底。
+# ---------------------------------------------------------------------------
+# 社交/情绪信号：短促的疑惑、笑意、麻木、惊叹、认可。
+_SOCIAL_CUE = re.compile(
+    r"^[\s？?！!。.…~～]*$"                       # 纯标点（"？"、"……"）
+    r"|^(额|呃|啊|哈+|呵+|嗯|哦|诶|欸|em+|emm+|)\.*$"
+    r"|笑死|哈哈哈哈|草|卧槽|我靠|离谱|绝了|服了|无语|麻了|难绷|绷不住|"
+    r"牛|厉害|猛|起飞|拉爆|砸穿|又亏|亏麻|爆仓|"
+    r"lol|lmao|wtf|omg|haha",
+    re.I)
+# 认真问行情/价位/风险时一律不发：这种时候插科打诨很烦人。
+# 注意要覆盖"带问句的追问"（"还能加仓吗"），情绪词出现不代表可以不认真。
+_SERIOUS_TRADING = re.compile(
+    r"止损|止盈|价位|几个点|多少|开仓|平仓|入仓|进场|出场|仓位|杠杆|爆仓价|"
+    r"挂单|限价|市价|下单|委托|保证金|强平|加仓|补仓|减仓|"
+    r"能买|能卖|能不能入|该不该|要不要|建议|方向|多还是空|做多|做空|"
+    r"支撑|压力|阻力|目标价|盈亏比|风险|"
+    r"analy[sz]e|entry|stop|target|position|risk", re.I)
+# 情绪 → 贴纸库里该搜的词（英文是 GIPHY 的标签体系）。
+# 顺序重要：更具体的情绪排前面，"又亏了草"里的"草"不该被当成笑。
+_EMOTION_QUERY = (
+    (re.compile(r"麻|无语|服了|难绷|绷不住|又亏|亏麻|爆仓|卧槽|草", re.I), "dead inside"),
+    (re.compile(r"笑|哈|离谱|绝了|lol|lmao", re.I), "crying laughing"),
+    (re.compile(r"牛|厉害|猛|起飞|拉爆|砸穿", re.I), "mind blown"),
+    (re.compile(r"^[\s？?！!。.…~～]*$|额|呃|啊$|嗯$|哦$|诶|欸", re.I), "shrug"),
+    (re.compile(r"好|行|可以|收到|谢谢|赞", re.I), "thumbs up"),
+)
+# 一条回复里最多一个表情包；但连续几条都贴会很吵，所以有冷却
+STICKER_COOLDOWN_MESSAGES = 4
+
+
+def _auto_sticker_query(prompt: str) -> str:
+    """这句用户消息该配哪种情绪的表情包；不该发就返回 ""。
+
+    "该不该发"由服务端的**规则**决定，"发哪张"仍然由模型/贴纸库决定。
+    只写在提示词里时模型几乎从不发，所以必须有这一层。
+    """
+    text = str(prompt or "").strip()
+    if not text:
+        return ""
+    # 认真问行情：不发，绝不打扰
+    if _SERIOUS_TRADING.search(text):
+        return ""
+    # 明确要求分析：不发
+    if _wants_detail(text):
+        return ""
+    if not _SOCIAL_CUE.search(text):
+        return ""
+    for pattern, query in _EMOTION_QUERY:
+        if pattern.search(text):
+            return query
+    return "shrug"
+
+
+
 def _split_by_sentences(text: str) -> list[str]:
     """按中英文句末标点断句，每 MAX_SENTENCES 句一条。"""
     parts = [seg.strip() for seg in re.split(r"(?<=[。！？!?])", text) if seg.strip()]
@@ -279,9 +338,13 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
  · 用户情绪化时先接住情绪再谈数据，别上来就念评分。
 
 【表情包】你可以用表情包代替说话，或者说完一句再补一个。
-由你自己判断，不要每次都发、不要固定套路：
- · 适合发：用户调侃/骂人/自嘲、行情很离谱、你又没法给建议、气氛轻松、庆祝
- · 不适合发：用户认真问价位、有持仓风险、在亏钱
+ · **必须发的场合**（不要犹豫、不要只在心里想"该发"，要真的调工具）：
+   · 用户只回一个「？」「额」「……」「笑死」「哈哈哈」「麻了」这种短情绪
+   · 用户在骂人、自嘲、说又亏了、说行情离谱
+   · 用户明说「发个表情包」「来个表情」
+   以上都**直接发出去**，别用「库里两张：麻了、摊手」这种话代替。
+ · **不发的场合**：用户认真问价位/止损/仓位/方向/风险时一律不发。
+   哪怕句子里带了情绪词（「我麻了，还能加仓吗」），只要在问交易就别发。
  · 库里已经攒了一批图，每张都带着名字和使用场景。**有合适的就直接发**，
    不要把「库里有几张」当成回答内容 —— 用户要的是表情，不是库存清单。
 
@@ -293,8 +356,6 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
       → send_sticker(sticker_id) 发出
    4) 都不满意就不发 —— 不要为了发而发
 
- · 用户明说「发个表情包」「来个表情」时，必须真的发出去（返回一张图），
-   不能用「库里两张：麻了、摊手」这种话代替。
  · 情绪词参考：facepalm（捂脸）、shrug（摊手）、mind blown（震撼）、
    crying laughing（笑死）、dead inside（麻了）、thumbs up（认可）、
    clown（小丑）、popcorn（吃瓜）、eye roll（翻白眼）、pray（祈祷）
@@ -2125,6 +2186,42 @@ class AgentManager:
         except Exception:
             return None
 
+    def _auto_sticker(self, prompt: str) -> dict | None:
+        """模型没发、但这句明显该配图时，服务端兜底挑一张。
+
+        **只从库里挑，不联网搜、也不硬塞内置图**：
+        这条路径在回复组装的最后一步、是同步的，不能为了配图等一次 HTTP 下载；
+        库里没有合适的就不发——内置那三张是自绘的，风格和 GIPHY 贴纸差太远，
+        混着发反而怪。
+        """
+        query = _auto_sticker_query(prompt)
+        if not query:
+            return None
+        cache = self.sticker_cache
+        if cache is None:
+            return None
+        # 冷却：最近几条已经贴过就不再贴，避免连续刷图
+        recent = [m for m in self.chat[-STICKER_COOLDOWN_MESSAGES:]
+                  if m.get("role") == "assistant"]
+        if any("[sticker:" in str(m.get("content") or "") for m in recent):
+            return None
+        # 必须有真的相关的图。pick_for 在完全不匹配时会退一张最新的
+        # （给"配额用尽"那条路径兜底），但自动发表情不能这样——
+        # 用户说"麻了"却收到一张爆米花，比不发更糟。
+        try:
+            rows = cache.catalog(query=query, limit=8)
+        except Exception:
+            return None
+        if not rows:
+            return None
+        # 优先用 pick_for 的排序（它还会避开刚用过的），但必须落在这次筛选出的
+        # 相关集合里；否则直接取筛选结果的第一条。
+        ids = {r["id"] for r in rows}
+        picked = self._pick_stored_sticker(query)
+        if picked and picked.get("id") in ids:
+            return picked
+        return self._sticker_by_id(rows[0]["id"])
+
     def _pick_stored_sticker(self, query: str, avoid_id: str = "") -> dict | None:
         """从已落盘的贴纸里挑一张贴近 query 的。
 
@@ -2588,6 +2685,11 @@ class AgentManager:
             # send_sticker 工具只是把名字记在 target 上，真正的标记统一在这里追加：
             # 模型可能只调工具不给正文，也可能在正文里已经自己写了 [sticker: 标记。
             sticker = message.get("pendingSticker")
+            if not sticker:
+                # 模型没主动发，但这句该配图 → 服务端兜底挑一张。
+                # 只写提示词时模型几乎从不发（实测），所以这一层是必须的：
+                # 判定"该不该发"用规则，"发哪张"用贴纸库。
+                sticker = self._auto_sticker(prompt)
             if sticker:
                 pieces = _attach_sticker(pieces, sticker, result["reply"])
                 # 真发出去了才记一次使用：模型选了又没用上的不算。

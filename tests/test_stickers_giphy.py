@@ -987,3 +987,84 @@ def test_attach_does_not_duplicate_when_marker_kept():
     sticker = {"url": "/agent-attachments/stickers/a.gif", "width": 10, "height": 10}
     out = _attach_sticker(["[sticker:摊手]"], sticker, "[sticker:摊手]")
     assert out == ["[sticker:摊手]"]
+
+
+# ---------------- K. 服务端兜底：该发时必须真的发 ----------------
+
+def test_emotion_detection_triggers_sticker():
+    """情绪词/纯标点要能被识别成"该配图"。"""
+    from ai.agent import _auto_sticker_query
+    for text in ("？", "额", "笑死", "哈哈哈哈", "麻了", "又亏了草", "卧槽", "牛", "起飞"):
+        assert _auto_sticker_query(text), f"{text!r} 应该触发表情包"
+
+
+def test_serious_trading_question_never_gets_sticker():
+    """认真问价位/仓位/风险时不发，哪怕带情绪词。"""
+    from ai.agent import _auto_sticker_query
+    for text in ("BTC能不能入？", "止损设多少", "现在该做多还是做空",
+                 "分析一下BTC", "仓位多少", "我麻了，还能加仓吗",
+                 "这波亏麻了，要不要平仓"):
+        assert _auto_sticker_query(text) == "", f"{text!r} 不该发表情包"
+
+
+def test_plain_statement_is_not_emotional():
+    from ai.agent import _auto_sticker_query
+    assert _auto_sticker_query("试了，还是多。") == ""
+    assert _auto_sticker_query("") == ""
+
+
+def test_auto_sticker_uses_library(tmp_path):
+    """模型没发时，服务端从库里挑一张补上。"""
+    manager, cache = _manager_with_stickers(tmp_path)
+    cache.save("sad1", b"GIF89a" + b"s" * 16, 200, 150, name="麻了",
+               url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    cache.remember_query("dead inside", "sad1")
+    manager.chat = []
+    picked = manager._auto_sticker("麻了")
+    assert picked and picked["id"] == "sad1", picked
+
+
+def test_auto_sticker_respects_cooldown(tmp_path):
+    """最近几条已经贴过图 → 不再连贴，避免刷屏。"""
+    manager, cache = _manager_with_stickers(tmp_path)
+    cache.save("sad1", b"GIF89a" + b"s" * 16, 200, 150,
+               url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    cache.remember_query("dead inside", "sad1")
+    manager.chat = [{"role": "assistant", "content": "x\n[sticker:url=%2Fa.gif&w=1&h=1]"}]
+    assert manager._auto_sticker("麻了") is None
+
+
+def test_auto_sticker_needs_library_match(tmp_path):
+    """库里没有匹配的情绪 → 不发（不硬塞内置图，风格差太远）。"""
+    manager, cache = _manager_with_stickers(tmp_path)
+    cache.save("other", b"GIF89a" + b"o" * 16, 100, 100,
+               url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    cache.remember_query("popcorn", "other")
+    manager.chat = []
+    assert manager._auto_sticker("麻了") is None
+
+
+def test_emotion_reply_gets_sticker_end_to_end(tmp_path, monkeypatch):
+    """端到端：用户只说"麻了"，模型没调工具，服务端也要补一张图。"""
+    from tests.test_agent import make_manager, tool_call, tool_result, wait_for
+
+    def provider(*args, **kwargs):
+        if kwargs.get("tool_choice") == "required":
+            return tool_result(tool_call("read_market", {}, "c1"))
+        return {"ok": True, "reply": "麻了就麻着吧。",
+                "usage": {"total_tokens": 5}, "model": "test-model"}
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch, provider=provider)
+        cache = StickerCache(str(tmp_path / "s"))
+        cache.save("sad1", b"GIF89a" + b"s" * 16, 200, 150,
+                   url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+        cache.remember_query("dead inside", "sad1")
+        manager.sticker_cache = cache
+        await manager.ask("麻了", "test-model")
+        assert await wait_for(lambda: not manager.chat_runners)
+        answer = [m for m in manager.chat if m.get("role") == "assistant"][-1]
+        assert "[sticker:" in (answer.get("content") or ""), answer.get("content")
+        await manager.stop()
+
+    asyncio.run(scenario())
