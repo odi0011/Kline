@@ -2562,6 +2562,14 @@ class AgentManager:
             sticker = message.get("pendingSticker")
             if sticker:
                 pieces = _attach_sticker(pieces, sticker, result["reply"])
+                # 真发出去了才记一次使用：模型选了又没用上的不算。
+                # 有了这个计数，list_stickers 才能按"最近常用"排序。
+                if (isinstance(sticker, dict) and sticker.get("id")
+                        and self.sticker_cache is not None):
+                    try:
+                        self.sticker_cache.touch(sticker["id"])
+                    except Exception:
+                        pass
             message.pop("pendingSticker", None)
             if not pieces:
                 pieces = [""]

@@ -310,17 +310,38 @@ class StickerCache:
                 out.append({"id": sid, "name": name, "when": when, "tags": tags,
                             "width": int(record.get("width") or 0),
                             "height": int(record.get("height") or 0),
-                            "uses": 0})
-            out.sort(key=lambda x: x["id"])
+                            "uses": int(record.get("uses") or 0),
+                            "_lastUsed": int(record.get("lastUsed") or 0)})
+            # 没连库时也要按"最近用过"排：否则 touch() 的计数在清单里看不出效果
+            out.sort(key=lambda x: (x.get("_lastUsed") or 0,
+                                    x.get("uses") or 0,
+                                    x["id"]), reverse=True)
+            for row in out:
+                row.pop("_lastUsed", None)
             return out[:limit]
 
     def touch(self, sticker_id) -> None:
-        """记一次使用（给"最近用过的排前面"和重复度判断用）。"""
+        """记一次使用：最近发过的排在清单前面，重复度也靠它判断。
+
+        本地索引和数据库都要记：
+          · 数据库是权威来源（跨重启保留）
+          · 本地索引是没连库时的唯一来源，不写它 use_count 会永远是 0
+        """
+        sid = _safe_id(sticker_id)
+        if not sid:
+            return
+        now = int(time.time())
+        with self._lock:
+            record = self._index["stickers"].get(sid)
+            if isinstance(record, dict):
+                record["lastUsed"] = now
+                record["uses"] = int(record.get("uses") or 0) + 1
+                self._save()
         store = self.store
         if store is None or not getattr(store, "enabled", False):
             return
         try:
-            store.touch_sticker(_safe_id(sticker_id))
+            store.touch_sticker(sid)
         except Exception:
             pass
 
@@ -373,16 +394,27 @@ class StickerCache:
                     score += 3 * len(tokens & key_tokens)
                     if want and (want in key or key in want):
                         score += 5
+                last_used = int(record.get("lastUsed") or 0)
+                # 刚用过 = 最近 10 分钟内发过。作为独立排序维度而不是减分：
+                # 减固定分会被"相关性更高"直接盖过去，于是连发同一张。
+                # 排序时先比相关性，相关性相同再让"刚用过的"靠后。
+                used_recently = 1 if (last_used and time.time() - last_used < 600) else 0
                 if sid == _safe_id(avoid_id):
-                    score -= 2          # 刚发过，除非没有别的选择
-                ranked.append((score, int(record.get("ts") or 0), sid, record))
+                    used_recently = 1   # 这次明确要求避开，等同"刚用过"
+                ranked.append((score, used_recently, int(record.get("ts") or 0), sid, record))
             if not ranked:
                 return None
             # 先看有没有真正相关的；完全没有时退回最新一张（总比不发强）
             related = [row for row in ranked if row[0] > 0]
             pool = related or ranked
-            pool.sort(key=lambda row: (row[0], row[1]), reverse=True)
-            return self._public(pool[0][3])
+            # 相关性降序 → 同分时"刚用过的"靠后 → 再比新旧
+            # 注意是**同分才让位**：相关性明显更高的那张照样优先，
+            # 否则会出现"明明有精确匹配却因为刚发过而选了不相关的"。
+            pool.sort(key=lambda row: (row[0], -row[1], row[2]), reverse=True)
+            best = pool[0]
+            if best[1] and len(pool) > 1 and pool[1][0] == best[0]:
+                best = pool[1]      # 同分且刚用过 → 换下一个
+            return self._public(best[4])
 
     def remember_query(self, query, sticker_id) -> None:
         """记住"这个情绪词对应哪张图"。

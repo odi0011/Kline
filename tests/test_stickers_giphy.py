@@ -18,6 +18,7 @@ import json
 import os
 import pathlib
 import tempfile
+import time
 
 import pytest
 
@@ -855,3 +856,84 @@ def test_list_stickers_note_points_at_single_sticker(tmp_path):
     assert out["count"] == 1
     assert "cand-b" in out["note"], out["note"]
     assert "不要把库存当回答" in out["note"]
+
+
+# ---------------- J. 使用计数：真正发出去才 +1 ----------------
+
+def test_touch_increments_and_orders_catalog(tmp_path):
+    """发过一次的应排在前面，且 uses 递增。"""
+    root = tmp_path / "s"
+    cache = StickerCache(str(root))
+    for sid in ("a", "b", "c"):
+        cache.save(sid, b"GIF89a" + sid.encode(), 10, 10,
+                   url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    assert [r["uses"] for r in cache.catalog()] == [0, 0, 0]
+
+    cache.touch("b")
+    rows = cache.catalog()
+    assert rows[0]["id"] == "b", f"用过的要排最前: {rows}"
+    assert rows[0]["uses"] == 1
+    cache.touch("b")
+    assert cache.catalog()[0]["uses"] == 2
+
+
+def test_touch_persists_locally_without_db(tmp_path):
+    """没连数据库时也要能记住，否则重启后计数归零。"""
+    root = tmp_path / "s"
+    cache = StickerCache(str(root))
+    cache.save("a", b"GIF89a" + b"a" * 8, 10, 10,
+               url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    cache.touch("a")
+    fresh = StickerCache(str(root))
+    assert fresh.catalog()[0]["uses"] == 1
+
+
+def test_sending_marks_sticker_used(tmp_path, monkeypatch):
+    """端到端：回复里真的带上了表情，才记一次使用。"""
+    from tests.test_agent import make_manager, tool_call, tool_result, wait_for
+
+    def provider(*args, **kwargs):
+        if kwargs.get("tool_choice") == "required":
+            return tool_result(tool_call("send_sticker", {"name": "崩溃"}, "s1"))
+        return {"ok": True, "reply": "", "usage": {"total_tokens": 5},
+                "model": "test-model"}
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch, provider=provider)
+        cache = StickerCache(str(tmp_path / "s"))
+        cache.save("saved1", b"GIF89a" + b"z" * 16, 100, 100,
+                   url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+        manager.sticker_cache = cache
+        # 让模型走"按 id 发送"，这样 touch 才有 id 可记
+        manager.sticker_search_fn = None
+        await manager.ask("发个表情包", "test-model")
+        assert await wait_for(lambda: not manager.chat_runners)
+        await manager.stop()
+
+    asyncio.run(scenario())
+
+
+
+
+def test_pick_for_avoid_id_switches_when_tied(tmp_path):
+    """同分时 avoid_id 能让选中的那张让位（避免连发同一张）。
+
+    一个情绪词通常只映射一张图，所以"两张同分"要靠同一句的等价写法
+    （尾部多一个空格，词元和子串判断都一样）构造。
+    """
+    root = tmp_path / "s"
+    cache = StickerCache(str(root))
+    for sid in ("a", "b"):
+        cache.save(sid, b"GIF89a" + sid.encode(), 10, 10,
+                   url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
+    cache._index["queries"] = {
+        "dead inside": {"id": "a", "ts": 1},
+        "dead inside ": {"id": "b", "ts": 1},   # 等价写法，分数相同
+    }
+    cache._save()
+
+    first = cache.pick_for("dead inside")
+    assert first, "应该能选出一张"
+    second = cache.pick_for("dead inside", avoid_id=first["id"])
+    assert second["id"] != first["id"], \
+        f"avoid_id={first['id']} 时应换成另一张，实际仍是 {second['id']}"
