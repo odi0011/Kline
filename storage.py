@@ -101,6 +101,7 @@ class Storage:
         self._lock = threading.Lock()
         self._conn = None
         self.enabled = False
+        self._ddl_failures: list[str] = []   # 建表/迁移失败的流水，供 /health 与日志排查
         # 空白部署时 mysql 段是空的/库不存在 → 不能让整个服务起不来。
         # 降级为"无持久化"模式：行情/形态/量化照常跑，只是不落库。
         if not mysql or not mysql.get("user"):
@@ -125,9 +126,15 @@ class Storage:
             try:
                 self._init()
             except Exception as e:
-                print(f"[storage] 建表失败，降级为无持久化模式: {e}")
+                # _init 内部的建表/迁移都已逐条兜住；能走到这里说明是
+                # 连接级故障（权限、库不存在），确实没法持久化。
+                print(f"[storage] 初始化失败，降级为无持久化模式: {e}")
                 self.enabled = False
                 self._conn = None
+            else:
+                if self._ddl_failures:
+                    print(f"[storage] 已启用，但有 {len(self._ddl_failures)} 条建表/迁移失败；"
+                          f"相关功能不可用，其余照常")
 
     def _q(self, sql: str, args: tuple = ()) -> None:
         if not self.enabled:
@@ -146,6 +153,22 @@ class Storage:
                 cur.execute(sql, args)
                 return cur.fetchall()
 
+    def _ddl(self, sql: str) -> bool:
+        """执行一条建表/迁移语句；失败只告警，不拖垮整个存储层。
+
+        曾经一个列名撞上 MySQL 保留字（`trailing`），这一句抛出就
+        让 _init 中断，整个服务降级成无持久化——K线、权益、决策流水
+        全丢。单条 DDL 失败只应影响它自己那张表。
+        返回值用于统计失败数，全失败才认定存储不可用。
+        """
+        try:
+            self._q(sql)
+            return True
+        except Exception as e:
+            self._ddl_failures.append(f"{e}")
+            print(f"[storage] 建表/迁移失败（其余表继续）: {e}")
+            return False
+
     def _qmany(self, sql: str, rows: list[tuple]) -> None:
         """批量写入。计算流水一次几十行，逐条 execute 太浪费往返。"""
         if not self.enabled or not rows:
@@ -156,19 +179,19 @@ class Storage:
                 cur.executemany(sql, rows)
 
     def _init(self) -> None:
-        self._q("""CREATE TABLE IF NOT EXISTS candles(
+        self._ddl("""CREATE TABLE IF NOT EXISTS candles(
             symbol VARCHAR(16), `interval` VARCHAR(8), open_time BIGINT,
             open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, volume DOUBLE, trades INT,
             PRIMARY KEY(symbol, `interval`, open_time)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         # K线长期归档：candles 只保留最近 N 分钟（滚动窗口，供实时计算），
         # 历史行情在这里按 storage.candle_archive_days 长期保留（0=永久），
         # 供回测/补算与 Agent 回看历史。interval 是保留字，统一反引号。
-        self._q("""CREATE TABLE IF NOT EXISTS candle_archive(
+        self._ddl("""CREATE TABLE IF NOT EXISTS candle_archive(
             symbol VARCHAR(16), `interval` VARCHAR(8), open_time BIGINT,
             open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, volume DOUBLE, trades INT,
             PRIMARY KEY(symbol, `interval`, open_time),
             INDEX idx_ca_time(open_time)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
-        self._q("""CREATE TABLE IF NOT EXISTS hits(
+        self._ddl("""CREATE TABLE IF NOT EXISTS hits(
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             ts BIGINT, symbol VARCHAR(16), `interval` VARCHAR(8), pattern VARCHAR(40),
             name_zh VARCHAR(40), direction VARCHAR(10), mode VARCHAR(10),
@@ -177,11 +200,11 @@ class Storage:
             INDEX idx_hits_bar(symbol, `interval`, bar_open_time),
             INDEX idx_hits_pat(pattern)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         # 账户权益采样：卡片迷你曲线用（服务端持久化，刷新页面/换设备都保留历史）
-        self._q("""CREATE TABLE IF NOT EXISTS equity(
+        self._ddl("""CREATE TABLE IF NOT EXISTS equity(
             acct VARCHAR(64), ts BIGINT, bal DOUBLE, upnl DOUBLE,
             PRIMARY KEY(acct, ts)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         # 永久日档案：day 是 UTC 零点毫秒，完全不依赖数据库会话时区。
-        self._q("""CREATE TABLE IF NOT EXISTS equity_daily(
+        self._ddl("""CREATE TABLE IF NOT EXISTS equity_daily(
             acct VARCHAR(64) NOT NULL, day BIGINT NOT NULL,
             first_ts BIGINT NOT NULL, last_ts BIGINT NOT NULL,
             open DOUBLE NOT NULL, close DOUBLE NOT NULL,
@@ -189,7 +212,7 @@ class Storage:
             PRIMARY KEY(acct, day)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         self._backfill_equity_daily()
         # 仓位历史（已平仓记录）：按账户隔离，保留 7 天
-        self._q("""CREATE TABLE IF NOT EXISTS quant_trades(
+        self._ddl("""CREATE TABLE IF NOT EXISTS quant_trades(
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             ts BIGINT, acct VARCHAR(64), symbol VARCHAR(16), side VARCHAR(8),
             qty DOUBLE, entry DOUBLE, exit_price DOUBLE, pnl DOUBLE, move_pct DOUBLE,
@@ -213,14 +236,14 @@ class Storage:
         #   1) 页面刷新时能立刻显示最近 20 秒，而不是从 0 开始跑
         #   2) Agent 可以查"刚才系统在算什么"
         # 这不是业务数据，丢了随时能重算，所以保留窗口很短。
-        self._q("""CREATE TABLE IF NOT EXISTS calc_trace(
+        self._ddl("""CREATE TABLE IF NOT EXISTS calc_trace(
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             ts BIGINT NOT NULL, symbol VARCHAR(16), kind VARCHAR(12), tag VARCHAR(16),
             expr VARCHAR(120), val DOUBLE, tone VARCHAR(8),
             INDEX idx_ct_ts(ts)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         # 新闻存档：入库即保存正文，前端点开只读库，不再实时爬源站（避免 429）。
         # content 是正文（RSS 全文或后台抓取的正文），summary 是 RSS 摘要。
-        self._q("""CREATE TABLE IF NOT EXISTS news(
+        self._ddl("""CREATE TABLE IF NOT EXISTS news(
             url VARCHAR(512) NOT NULL,
             source VARCHAR(64), cat VARCHAR(32), title VARCHAR(600),
             ts BIGINT, summary TEXT, content MEDIUMTEXT,
@@ -241,7 +264,7 @@ class Storage:
                 self._q(ddl)
             except Exception:
                 pass
-        self._q("""CREATE TABLE IF NOT EXISTS quant_events(
+        self._ddl("""CREATE TABLE IF NOT EXISTS quant_events(
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             ts BIGINT, kind VARCHAR(16), acct VARCHAR(64), symbol VARCHAR(16),
             reason VARCHAR(600), pnl DOUBLE, extra TEXT,
@@ -249,11 +272,11 @@ class Storage:
         # 模拟仓（纸上交易）落库：账本不能只活在内存里，重启归零等于白跑。
         # paper_positions 每币一条未平仓快照（data=完整 PaperPosition JSON），
         # paper_trades 把平仓记录拆成真实列，胜率/分组统计直接在库里算。
-        self._q("""CREATE TABLE IF NOT EXISTS paper_positions(
+        self._ddl("""CREATE TABLE IF NOT EXISTS paper_positions(
             symbol VARCHAR(16) NOT NULL PRIMARY KEY,
             ts BIGINT NOT NULL,
             data MEDIUMTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
-        self._q("""CREATE TABLE IF NOT EXISTS paper_trades(
+        self._ddl("""CREATE TABLE IF NOT EXISTS paper_trades(
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             closed_ts BIGINT NOT NULL,
             entry_ts BIGINT DEFAULT 0,
@@ -264,7 +287,7 @@ class Storage:
             reason VARCHAR(200), score DOUBLE, gap DOUBLE,
             winrate DOUBLE, winrate_parts TEXT,
             grade VARCHAR(16), pattern VARCHAR(40), regime VARCHAR(16),
-            atr_at_entry DOUBLE, held_ms BIGINT, trailing TINYINT DEFAULT 0,
+            atr_at_entry DOUBLE, held_ms BIGINT, `trailing` TINYINT DEFAULT 0,
             recovered TINYINT DEFAULT 0,
             open_seq INT DEFAULT 0, settle_bars INT DEFAULT 0,
             settle_approx TINYINT DEFAULT 0,
@@ -297,7 +320,7 @@ class Storage:
         # 决策 trace / gate 拦截明细：分阶段决策记录与过滤器拦截的结构化原因。
         # 之前只活在引擎内存 deque 里，重启即丢；落库后审计/复盘能看到
         # "当时为什么开/没开"，前端与 Agent 也能回看完整 stages/factors/risk。
-        self._q("""CREATE TABLE IF NOT EXISTS decision_traces(
+        self._ddl("""CREATE TABLE IF NOT EXISTS decision_traces(
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             ts BIGINT NOT NULL,
             kind VARCHAR(12) NOT NULL,
@@ -308,20 +331,20 @@ class Storage:
             INDEX idx_dt_kind(kind, ts)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         # 引擎/风控状态快照（日亏限额、连亏熔断、机制漂移保护…）：重启接着上次状态跑。
-        self._q("""CREATE TABLE IF NOT EXISTS quant_state(
+        self._ddl("""CREATE TABLE IF NOT EXISTS quant_state(
             name VARCHAR(32) NOT NULL PRIMARY KEY,
             ts BIGINT NOT NULL,
             data MEDIUMTEXT NOT NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         # Agent 状态进库：任务列表/记忆/聊天摘要，重启后恢复而不是从零开始。
         # 三行独立覆盖（name=tasks/memory/meta），meta 带版本号与聊天摘要。
-        self._q("""CREATE TABLE IF NOT EXISTS agent_state(
+        self._ddl("""CREATE TABLE IF NOT EXISTS agent_state(
             name VARCHAR(32) NOT NULL PRIMARY KEY,
             ts BIGINT,
             data MEDIUMTEXT
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         # Agent 聊天归档：按 storage.agent_chat_days 保留（0=永久），data 存完整消息 JSON。
-        self._q("""CREATE TABLE IF NOT EXISTS agent_chat(
+        self._ddl("""CREATE TABLE IF NOT EXISTS agent_chat(
             msg_id VARCHAR(64) NOT NULL PRIMARY KEY,
             ts BIGINT, seq INT DEFAULT 0, role VARCHAR(16),
             content MEDIUMTEXT, data MEDIUMTEXT,
@@ -789,7 +812,7 @@ class Storage:
         self._q(
             "INSERT IGNORE INTO paper_trades(closed_ts,entry_ts,symbol,direction,entry,"
             "exit_price,sl,tp,leverage,margin,qty,pnl,pnl_pct,reason,score,gap,"
-            "winrate,winrate_parts,grade,pattern,regime,atr_at_entry,held_ms,trailing,"
+            "winrate,winrate_parts,grade,pattern,regime,atr_at_entry,held_ms,`trailing`,"
             "recovered,open_seq,settle_bars,settle_approx,trade_key) "
             "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
             "%s,%s,%s,%s,%s,%s,%s,%s,%s)",
@@ -829,7 +852,7 @@ class Storage:
         rows = self._qall(
             "SELECT id,symbol,direction,entry,exit_price,sl,tp,leverage,margin,qty,"
             "pnl,pnl_pct,reason,winrate,score,gap,grade,pattern,regime,atr_at_entry,"
-            "held_ms,closed_ts,entry_ts,trailing,recovered,winrate_parts,"
+            "held_ms,closed_ts,entry_ts,`trailing`,recovered,winrate_parts,"
             "open_seq,settle_bars,settle_approx "
             "FROM paper_trades ORDER BY closed_ts DESC, id DESC LIMIT %s", (limit,))
         out = []
