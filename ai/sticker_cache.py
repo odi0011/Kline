@@ -496,7 +496,10 @@ class StickerCache:
                 return None
             record = {"id": sid, "file": filename, "width": int(width),
                       "height": int(height), "title": str(title or "")[:120],
-                      "name": str(name or "")[:80],
+                      # 名字不能留空：库里出现无名表情时，清单里看不出它是干什么的。
+                      # 没给名字就退回 GIPHY 的标题，至少能认。
+                      "name": (str(name or "").strip()
+                               or str(title or "").strip()[:80]),
                       "whenToUse": str(when_to_use or "")[:300],
                       "url": f"/agent-attachments/stickers/{filename}",
                       "bytes": len(data), "ts": int(time.time())}

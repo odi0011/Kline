@@ -937,3 +937,26 @@ def test_pick_for_avoid_id_switches_when_tied(tmp_path):
     second = cache.pick_for("dead inside", avoid_id=first["id"])
     assert second["id"] != first["id"], \
         f"avoid_id={first['id']} 时应换成另一张，实际仍是 {second['id']}"
+
+
+def test_sticker_always_has_a_name(tmp_path):
+    """库里不能出现无名表情：清单里看不出它是干什么的。"""
+    root = tmp_path / "s"
+    cache = StickerCache(str(root))
+    # 完全不给 name，只有 GIPHY 标题
+    saved = cache.save("n1", b"GIF89a" + b"n" * 16, 10, 10,
+                       title="Dead Inside Sticker", url_hint="https://media.giphy.com/a.gif",
+                       content_type="image/gif")
+    assert saved
+    assert cache.catalog()[0]["name"] == "Dead Inside Sticker"
+
+
+def test_auto_store_uses_query_as_name(tmp_path):
+    """send_sticker(query=...) 自动入库时，用查询词兜底当名字。"""
+    manager, cache = _manager_with_stickers(tmp_path)
+    target = {}
+    asyncio.run(manager._send_sticker({"query": "shrug"}, target))
+    rows = cache.catalog()
+    assert rows, "应该自动存了一张"
+    assert rows[0]["name"], f"名字不能为空: {rows[0]}"
+    assert "shrug" in rows[0]["name"].lower()

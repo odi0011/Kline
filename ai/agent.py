@@ -2140,11 +2140,14 @@ class AgentManager:
         except Exception:
             return None
         try:
-            # 自动入库这条路径没有模型起的名字，name 留空、tags 记下查询词，
-            # 之后 Agent 在 list_stickers 里看到它，可以再补名字（save_sticker）。
+            # 走这条"直接给 query 就发"的路径时，模型没给名字；用查询词兜底命名，
+            # 库里才不会出现一堆无名表情（线上出现过 name 为空、清单里看不出
+            # 它是干什么的）。之后模型仍可用 save_sticker 改名。
+            shown_name = str(query or "").strip()[:40] or str(row.get("title") or "")[:40]
             saved = cache.save(sticker_id, data, width, height,
                                title=str(row.get("title") or ""),
-                               url_hint=url, content_type=content_type)
+                               url_hint=url, content_type=content_type,
+                               name=shown_name)
         except Exception:
             return None
         if not saved:
