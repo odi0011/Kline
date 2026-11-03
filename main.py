@@ -32,7 +32,6 @@ from feed.market_data import (
 from feed.derivatives import derivatives_snapshot
 from feed.news import fetch_all as fetch_news, fetch_article
 from feed.news_ai import analyze as analyze_news
-from feed.search import fetch_page, web_search
 from feed.telegram import TelegramBot
 from feed.source import BinanceFuturesStream
 from decision.config import DecisionConfig
@@ -840,28 +839,6 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         # 没连上 MySQL 时退回纯文件，行为与旧版一致。
         state_store=storage if storage.enabled else None,
     )
-    # 联网搜索 / 网页读取：由模型自己决定是否调用 web_search/read_web_page。
-    # 默认无 key 走 DuckDuckGo/Bing HTML；有 KLINE_SERPER_KEY 时优先 Serper。
-    # 代理沿用 feed.proxy（海外服务器可直连；本地开发可配 search.proxy 覆盖）。
-    _search_cfg = cfg.get("search") or {}
-
-    def _search_number(key: str, default, cast=float):
-        """搜索配置容错：写错类型/负数不能让服务启动失败，回退默认值。"""
-        try:
-            value = cast(_search_cfg.get(key, default))
-        except (TypeError, ValueError):
-            return default
-        return value if value > 0 else default
-
-    if _search_cfg.get("enabled", True):
-        _search_timeout = _search_number("timeout", 10.0)
-        _search_count = max(1, min(10, int(_search_number("count", 5, int))))
-        _search_proxy = str(_search_cfg.get("proxy") or proxy_cfg or "").strip()
-        agent.search_default_count = _search_count
-        agent.search_fn = lambda query, count=0: web_search(
-            query, count or agent.search_default_count, _search_proxy, _search_timeout)
-        agent.fetch_fn = lambda url: fetch_page(
-            url, _search_proxy, _search_timeout)
     hub.agent_state_fn = agent.state
     hub.agent_fn = agent.handle
 
