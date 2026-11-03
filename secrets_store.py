@@ -35,6 +35,8 @@ _FIXED_SLOTS: tuple[tuple[tuple, str], ...] = (
     (("ai", "key"), "KLINE_AI_KEY"),
     (("telegram", "token"), "KLINE_TELEGRAM_TOKEN"),
     (("notify", "webhook", "url"), "KLINE_WEBHOOK_URL"),
+    # GIPHY 贴纸 API key：配了就能联网找表情包，没配就只用内置几张。
+    (("stickers", "giphy_key"), "KLINE_GIPHY_KEY"),
 )
 _ACCOUNT_SLOTS: tuple[tuple[str, str], ...] = (
     ("api_key", "KLINE_ACCOUNT_API_KEY"),

@@ -11,6 +11,7 @@ import math
 import re
 import os
 import time
+import urllib.parse
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -101,18 +102,44 @@ def split_reply(text, detailed: bool = True, identity: bool = False) -> list[str
     return _split_by_sentences(raw)
 
 
+def _sticker_marker(sticker) -> str:
+    """把 pendingSticker 转成回复里的标记文本。
+
+    内置图：`[sticker:崩溃]`（前端按名字查本地素材）
+    在线图：`[sticker:url=https://...&w=480&h=270&t=标题]`
+    在线图不能只发名字——名字是 GIPHY 的 id，前端查不到对应文件，
+    所以把地址和尺寸一起带过去，前端才能不经二次请求就渲染并预占尺寸。
+    """
+    if isinstance(sticker, dict):
+        url = sticker.get("url")
+        if url:
+            query = urllib.parse.urlencode({
+                "url": str(url),
+                "w": int(sticker.get("width") or 0),
+                "h": int(sticker.get("height") or 0),
+            })
+            return f"[sticker:{query}]"
+        name = sticker.get("builtin")
+        if name:
+            return f"[sticker:{name}]"
+        return ""
+    return f"[sticker:{sticker}]" if sticker else ""
+
+
 def _attach_sticker(pieces, sticker, reply="") -> list[str]:
     """把 send_sticker 选中的表情包补到回复末尾（模块级，便于单测）。
 
     规则：
       1) 回复正文/分段里已经有 [sticker: 标记 → 不再追加（一条回复最多一个）；
-      2) 否则在最后一条分段末尾换行追加 [sticker:名字]；
+      2) 否则在最后一条分段末尾换行追加标记；
       3) 分段全空（模型只调了工具、没给正文）→ 整条回复就是表情包。
     """
     out = [str(piece) for piece in (pieces or []) if str(piece or "").strip()]
     if not sticker:
         return out
-    marker = f"[sticker:{sticker}]"
+    marker = _sticker_marker(sticker)
+    if not marker:
+        return out
     if "[sticker:" in str(reply or "") or any("[sticker:" in piece for piece in out):
         return out
     if not out:
@@ -235,16 +262,23 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
  · 用户情绪化时先接住情绪再谈数据，别上来就念评分。
 
 【表情包】你可以用表情包代替说话，或者说完一句再补一个。
-优先用 send_sticker 工具，由你自己判断，不要每次都发、不要固定套路：
- · 适合发：用户调侃/骂人/自嘲、行情很离谱、你又没法给建议、气氛轻松
+用 send_sticker 工具，由你自己判断，不要每次都发、不要固定套路：
+ · 适合发：用户调侃/骂人/自嘲、行情很离谱、你又没法给建议、气氛轻松、庆祝
  · 不适合发：用户认真问价位、有持仓风险、在亏钱
- · 用法：调用 send_sticker(name=名字)，它会自动在本条回复末尾写入 `[sticker:名字]`
-   标记（客户端据此换成图），不用你手写。可用的名字（只用这些，不要编）：
-   {{STICKER_NAMES}}
+ · 两种调用方式：
+   ① send_sticker(query="英文情绪描述") —— 首选。从在线贴纸库里找更贴切的，
+      比如 "facepalm"（捂脸）、"shrug"（摊手）、"mind blown"（震撼）、
+      "crying laughing"（笑死）、"dead inside"（麻了）、"thumbs up"（认可）、
+      "clown"（小丑）、"popcorn"（吃瓜）、"pray"（祈祷）、"eye roll"（翻白眼）
+   ② send_sticker(name=内置图) —— 在线库不可用时才会用到，也可以用这两个一起给：
+      name 作为 query 搜索失败时的兜底。可用的内置名（只用这些，不要编）：
+      {{STICKER_NAMES}}
+ · 工具会自己处理标记和落地，你不用手写 `[sticker:...]`。
  · 一条回复最多一个表情包。发了表情包就可以少说话，甚至只发表情包。
-   例：用户「又亏了草」→ 只调 send_sticker(name=崩溃)，不用再说话
-   例：用户「BTC 还能涨吗」→「不知道，别问我。」再调 send_sticker(name=疑问)
-   例：用户「这策略真稳」→「老实赚钱很枯燥吧？」再调 send_sticker(name=嘲讽)
+   例：用户「又亏了草」→ 只调 send_sticker(query="dead inside")，不用再说话
+   例：用户「BTC 还能涨吗」→「不知道，别问我。」再调 send_sticker(query="shrug")
+   例：用户「这策略真稳」→「老实赚钱很枯燥吧？」再调 send_sticker(query="eye roll")
+   例：行情突然暴力拉升 → 「这谁顶得住。」+ send_sticker(query="mind blown")
 
 需要分成多条时说「|||」切分，客户端会逐条发出；但默认就该一条说完，
 不要靠切分来容纳废话。"""
@@ -594,6 +628,11 @@ class AgentManager:
         self.calc_read_fn = None        # (seconds) -> 计算流水，main 注入
         self.search_fn = None           # (query, count) -> dict，main 注入联网搜索
         self.fetch_fn = None            # (url) -> dict，main 注入网页正文读取
+        # 贴纸：search_fn (query,count)->dict、download_fn (url)->(bytes,ctype)、
+        # cache 是 ai.sticker_cache.StickerCache。三者都 None 时只用内置图。
+        self.sticker_search_fn = None
+        self.sticker_download_fn = None
+        self.sticker_cache = None
         # 模型没给 count 时的默认条数，main 从 config.search.count 注入；仍按 1..10 校验
         self.search_default_count = 5
         self.state_path = state_path
@@ -1756,24 +1795,132 @@ class AgentManager:
                 "title": str(data.get("title") or "")[:300],
                 "text": text, "truncated": truncated}
 
-    def _send_sticker(self, arguments: dict, target: dict) -> dict:
-        """表情包工具：只登记名字，真正的 [sticker:名字] 标记在回复组装时统一追加。
+    async def _send_sticker(self, arguments: dict, target: dict) -> dict:
+        """表情包工具：登记"这一条回复要附图"，真正落地在回复组装时统一处理。
+
+        两种来源：
+          · query → 去在线贴纸库搜（更贴切，素材量大）
+          · name  → 内置三张图（永远可用，也是 query 失败时的兜底）
 
         一条回复最多一个：target 上已有 pendingSticker，或回复正文里已经出现
         [sticker: 标记时直接拒绝，返回 sent=False（不抛异常，让模型自己换个说法）。
         """
-        if not isinstance(arguments, dict) or set(arguments) - {"name"}:
-            raise ValueError("send_sticker 参数需为 {name}")
-        name = arguments.get("name")
-        if name not in STICKER_NAMES:
-            raise ValueError("表情包名字不在可选列表里")
+        if not isinstance(arguments, dict) or set(arguments) - {"name", "query"}:
+            raise ValueError("send_sticker 参数需为 {name} 或 {query}")
         target = target if isinstance(target, dict) else {}
         if target.get("pendingSticker"):
             return {"sent": False, "reason": "本条回复已经选过表情包，一条回复最多一个"}
         if "[sticker:" in str(target.get("content") or ""):
             return {"sent": False, "reason": "回复正文里已经有表情包标记，不再追加"}
-        target["pendingSticker"] = name
-        return {"sent": True, "name": name, "note": "会附在本条回复末尾"}
+
+        query = str(arguments.get("query") or "").strip()
+        name = arguments.get("name")
+        if query:
+            found = await self._search_sticker(query)
+            if found:
+                target["pendingSticker"] = found
+                return {"sent": True, "source": "giphy", "title": found.get("title", ""),
+                        "note": "在线贴纸会附在本条回复末尾"}
+            # 搜不到（没配 key / 网络失败 / 无结果）时退回内置图，
+            # 让模型显式给的 name 兜底；连 name 都没有就用"疑问"这张最低风险的。
+            if name not in STICKER_NAMES:
+                name = "疑问"
+            target["pendingSticker"] = {"builtin": name}
+            return {"sent": True, "source": "builtin", "name": name,
+                    "note": "在线贴纸不可用，已改用内置表情"}
+        if name not in STICKER_NAMES:
+            raise ValueError("表情包名字不在可选列表里")
+        target["pendingSticker"] = {"builtin": name}
+        return {"sent": True, "source": "builtin", "name": name,
+                "note": "会附在本条回复末尾"}
+
+    async def _search_sticker(self, query: str) -> dict | None:
+        """按情绪词找一张贴纸；失败返回 None（调用方回退内置图）。
+
+        顺序是「先查本地缓存 → 未命中才联网搜 → 下载落盘 → 记住这个情绪词」：
+          · 缓存命中：不打 API、不下载，直接返回本机地址（配额和墙都绕开）
+          · 未命中：搜一次、下载一次，之后同一个词永远走本地
+
+        全部 HTTP 都丢进线程：同步请求直接跑会冻住事件循环，
+        连带把行情推送和正在流式的回复一起卡住。
+        """
+        cached = self._sticker_cached(query)
+        if cached:
+            return cached
+        fn = self.sticker_search_fn
+        if not fn:
+            return None
+        try:
+            result = await asyncio.to_thread(fn, query, 1)
+        except Exception:
+            return None
+        if not isinstance(result, dict) or not result.get("ok"):
+            return None
+        rows = result.get("results") or []
+        if not rows or not isinstance(rows[0], dict):
+            return None
+        row = rows[0]
+        url = str(row.get("url") or "")
+        # 只接受 https 的 GIPHY CDN 地址：这是要去下载的地址，
+        # 不能让任何第三方地址借这条路被服务器访问。
+        try:
+            host = url.split("/")[2].lower()
+        except IndexError:
+            return None
+        if not url.startswith("https://") or "giphy" not in host:
+            return None
+        try:
+            width = int(row.get("width") or 0)
+            height = int(row.get("height") or 0)
+        except (TypeError, ValueError):
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        saved = await self._store_sticker(row, url, width, height, query)
+        if saved:
+            return saved
+        # 下载失败也把远程地址回给前端：至少还能试着直接加载，
+        # 总比"模型想发表情却什么都没有"强。
+        return {"url": url, "width": width, "height": height,
+                "title": str(row.get("title") or "")[:120]}
+
+    def _sticker_cached(self, query: str) -> dict | None:
+        cache = self.sticker_cache
+        if cache is None:
+            return None
+        try:
+            return cache.lookup(query)
+        except Exception:
+            return None
+
+    async def _store_sticker(self, row: dict, url: str, width: int, height: int,
+                             query: str) -> dict | None:
+        """下载贴纸落到服务器，并把这个情绪词记住。
+
+        落盘失败不是错误：贴纸是附加内容，只能降级不能影响对话。
+        """
+        cache = self.sticker_cache
+        download = self.sticker_download_fn
+        if cache is None or download is None:
+            return None
+        sticker_id = str(row.get("id") or "")
+        try:
+            data, content_type = await asyncio.to_thread(download, url)
+        except Exception:
+            return None
+        try:
+            saved = cache.save(sticker_id, data, width, height,
+                               title=str(row.get("title") or ""),
+                               url_hint=url, content_type=content_type)
+        except Exception:
+            return None
+        if not saved:
+            return None
+        try:
+            cache.remember_query(query, sticker_id)
+        except Exception:
+            pass
+        return saved
 
     def _read_advice(self, arguments: dict) -> dict:
         """读系统给这个币的实时交易建议——和 K 线图右上角胶囊同一份数据。
@@ -2134,7 +2281,7 @@ class AgentManager:
                     elif name == "read_web_page":
                         output = await self._read_web_page(arguments)
                     elif name == "send_sticker":
-                        output = self._send_sticker(arguments, target)
+                        output = await self._send_sticker(arguments, target)
                     elif name == "read_calc_trace":
                         output = self._read_calc_trace(arguments)
                     else:

@@ -148,13 +148,14 @@ def run_cli(*args):
 
 
 def _sample_config():
-    """6 个密钥 slot（4 固定 + 账户第 0 个）都有明文，其余是普通配置。"""
+    """7 个密钥 slot（5 固定 + 账户第 0 个）都有明文，其余是普通配置。"""
     return {
         "mysql": {"host": "127.0.0.1", "user": "kline",
                   "password": "pw-mysql-01", "database": "kline"},
         "ai": {"key": "ai-key-01"},
         "telegram": {"token": "tg-token-01"},
         "notify": {"webhook": {"url": "https://example.invalid/hook-01"}},
+        "stickers": {"giphy_key": "giphy-key-01"},
         "accounts": [{"name": "acc", "api_key": "acct-key-01",
                       "api_secret": "acct-secret-01"}],
         "storage": {"minutes": 30},
@@ -492,7 +493,7 @@ def test_encrypt_config_cli_full_cycle(tmp_path, monkeypatch):
 
     enc_cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     slots = secrets_store.secret_slots(enc_cfg)
-    assert len(slots) == 6
+    assert len(slots) == 7
     for path, _env in slots:
         value = secrets_store.get_path(enc_cfg, path)
         assert secrets_store.is_encrypted(value), "slot 未加密: %s" % (path,)
@@ -559,7 +560,7 @@ def test_secrets_env_override_and_lazy_cryptography(tmp_path, monkeypatch):
 
     monkeypatch.setattr(secrets_store, "_import_fernet", no_crypto)
     assert secrets_store.decrypt_config(cfg, cfg_path) == cfg
-    assert len(secrets_store.audit_plaintext(cfg)) == 6
+    assert len(secrets_store.audit_plaintext(cfg)) == 7
     # 但真正遇到密文时必须显式报错（不能静默返回密文/明文混用）
     with pytest.raises(secrets_store.SecretsError):
         secrets_store.decrypt_config(enc, cfg_path)
@@ -597,7 +598,7 @@ def test_plain_config_startup_path_needs_no_cryptography(tmp_path, monkeypatch):
     _write_yaml(cfg_path, cfg)
     loaded = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert secrets_store.decrypt_config(loaded, cfg_path) == loaded
-    assert secrets_store.audit_plaintext(loaded)      # 启动日志会提示 6 个明文 slot
+    assert secrets_store.audit_plaintext(loaded)      # 启动日志会提示 7 个明文 slot
 
     import main as main_mod
     target = tmp_path / "config2.yaml"

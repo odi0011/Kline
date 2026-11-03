@@ -16,7 +16,7 @@ import ChatComposer from "./chat-composer"
 import ChatStats from "./chat-stats"
 import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import { GlassMenu } from "@/components/arc/glass-menu/glass-menu"
-import { Sticker, splitSticker } from "./stickers"
+import { RemoteSticker, Sticker, StickerCredit, splitSticker } from "./stickers"
 import styles from "./chat-dock.module.css"
 
 const WIDTH = 320
@@ -111,16 +111,17 @@ const groupSignature = (items) => items.map((item) => [
     分段，视觉上必须是一枚气泡里的几段话；只有附件按类型各自独立成泡。 */
 const MessageGroup = memo(function MessageGroup({ items }) {
   const mine = items[0]?.role === "user"
-  // 每段先拆出 [sticker:名字]：表情包要单独成泡，不能混在文字里
+  // 每段先拆出 [sticker:...]：表情包要单独成泡，不能混在文字里
   const parsed = items.map((item) => splitSticker(
     typeof item.content === "string" ? item.content : ""))
   const texts = parsed.map((p) => p.text).filter(Boolean)
   const stickers = parsed.map((p) => p.sticker).filter(Boolean)
+  const remotes = parsed.map((p) => p.remote).filter(Boolean)
   const failed = items.find((item) => item.status === "failed")
   const cancelled = items.some((item) => item.status === "cancelled")
   const busy = items.some((item) => item.status === "running" || item.status === "queued")
   // 还在等回复且没出字：整个气泡不渲染，不要三点也不要"正在处理"
-  if (busy && !texts.length && !stickers.length) return null
+  if (busy && !texts.length && !stickers.length && !remotes.length) return null
   const refs = items
     .flatMap((item) => (Array.isArray(item.attachments) ? item.attachments : []))
     .map(asRef).filter(Boolean)
@@ -154,6 +155,13 @@ const MessageGroup = memo(function MessageGroup({ items }) {
       {stickers.map((name, index) => (
         <div key={`${name}-${index}`} className={styles.stickerRow} data-role={mine ? "user" : "bot"}>
           <Sticker name={name} max={132} />
+        </div>
+      ))}
+      {/* 在线贴纸：服务器已落盘的本地文件，尺寸已知所以加载前就占好位置 */}
+      {remotes.map((remote, index) => (
+        <div key={`${remote.url}-${index}`} className={styles.stickerRow} data-role={mine ? "user" : "bot"}>
+          <RemoteSticker remote={remote} max={132} />
+          <StickerCredit />
         </div>
       ))}
       {/* 图片：单独的宫格气泡 */}

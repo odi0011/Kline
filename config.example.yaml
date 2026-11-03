@@ -45,6 +45,20 @@ search:
   # 默认返回条数（模型也可在 1~10 内自己调）
   count: 5
 
+# Agent 表情包（在线贴纸）
+# 申请地址：https://developers.giphy.com/dashboard/ → Create an App → 复制 API Key
+# 免费 beta key 限 100 次/小时，所以命中过的图会下载到
+# agent-attachments/stickers/ 并记住情绪词，之后同一个词只读本地文件。
+# 没配 key 时只用内置三张图（web/public/stickers/），功能不受影响。
+stickers:
+  enabled: true
+  # 填 GIPHY API Key；也可以用环境变量 KLINE_GIPHY_KEY（优先级更高，推荐）
+  giphy_key: ""
+  # 代理留空则沿用 search.proxy / feed.proxy
+  proxy: ""
+  # 搜索与下载超时（秒）
+  timeout: 8
+
 # 形态识别
 patterns:
   # 启用哪些形态：all 或列 key（见 patterns/builtin.py）

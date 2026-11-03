@@ -32,6 +32,7 @@ SLOT_ENVS = (
     "KLINE_AI_KEY",
     "KLINE_TELEGRAM_TOKEN",
     "KLINE_WEBHOOK_URL",
+    "KLINE_GIPHY_KEY",
     "KLINE_ACCOUNT_API_KEY",
     "KLINE_ACCOUNT_API_SECRET",
 )
@@ -50,11 +51,12 @@ def new_key() -> bytes:
 
 
 def full_cfg() -> dict:
-    """覆盖全部 6 个 slot 的配置样例（全部用假值，不含任何真实密钥）。"""
+    """覆盖全部 7 个 slot 的配置样例（全部用假值，不含任何真实密钥）。"""
     return {
         "web_port": 8000,
         "mysql": {"host": "127.0.0.1", "password": "mysql-pass-1"},
         "ai": {"key": "sk-ai-test"},
+        "stickers": {"giphy_key": "giphy-test-key"},
         "telegram": {"token": "123:telegram-token", "enabled": False},
         "notify": {"webhook": {"enabled": False, "url": "https://example.invalid/hook"}},
         "accounts": [
@@ -208,17 +210,17 @@ def test_harden_permissions(tmp_path):
 def test_secret_slots_boundaries():
     fixed = list(ss._FIXED_SLOTS)
     assert ss.secret_slots({}) == fixed
-    assert len(ss.secret_slots(None)) == 4
-    assert len(ss.secret_slots({"accounts": []})) == 4
-    assert len(ss.secret_slots({"accounts": "oops"})) == 4
+    assert len(ss.secret_slots(None)) == 5
+    assert len(ss.secret_slots({"accounts": []})) == 5
+    assert len(ss.secret_slots({"accounts": "oops"})) == 5
     slots = ss.secret_slots({"accounts": [{"api_key": "a"}, {"api_key": "b"}]})
-    assert len(slots) == 6
-    assert slots[4] == (("accounts", 0, "api_key"), "KLINE_ACCOUNT_API_KEY")
-    assert slots[5] == (("accounts", 0, "api_secret"), "KLINE_ACCOUNT_API_SECRET")
+    assert len(slots) == 7
+    assert slots[5] == (("accounts", 0, "api_key"), "KLINE_ACCOUNT_API_KEY")
+    assert slots[6] == (("accounts", 0, "api_secret"), "KLINE_ACCOUNT_API_SECRET")
     assert all(isinstance(path, tuple) and isinstance(env, str) for path, env in slots)
     assert [env for _path, env in fixed] == [
         "KLINE_MYSQL_PASSWORD", "KLINE_AI_KEY",
-        "KLINE_TELEGRAM_TOKEN", "KLINE_WEBHOOK_URL",
+        "KLINE_TELEGRAM_TOKEN", "KLINE_WEBHOOK_URL", "KLINE_GIPHY_KEY",
     ]
 
 
@@ -243,13 +245,14 @@ def test_get_set_path_tolerant():
 def test_audit_plaintext():
     assert ss.audit_plaintext(full_cfg()) == [
         "mysql.password", "ai.key", "telegram.token", "notify.webhook.url",
-        "accounts[0].api_key", "accounts[0].api_secret",
+        "stickers.giphy_key", "accounts[0].api_key", "accounts[0].api_secret",
     ]
     cfg = full_cfg()
     cfg["mysql"]["password"] = ss.encrypt_value("p", new_key())
     cfg["telegram"]["token"] = "\u2022\u2022\u2022\u2022"
     cfg["notify"]["webhook"]["url"] = ""
     cfg["ai"].pop("key")
+    cfg["stickers"]["giphy_key"] = ""      # 空值不算"仍是明文"
     assert ss.audit_plaintext(cfg) == ["accounts[0].api_key", "accounts[0].api_secret"]
     assert ss.audit_plaintext(None) == []
 
@@ -371,7 +374,7 @@ def test_cli_encrypt_then_decrypt(tmp_path):
 
     info = cli.run(str(config))
     assert info["action"] == "encrypt"
-    assert info["count"] == 6
+    assert info["count"] == 7
     assert os.path.exists(info["backup"])
     assert Path(info["backup"]).name.startswith("config.yaml.bak.")
     key_path = tmp_path / "secrets.key"
@@ -387,7 +390,7 @@ def test_cli_encrypt_then_decrypt(tmp_path):
         assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
 
     dec = cli.run(str(config), decrypt=True)
-    assert dec["action"] == "decrypt" and dec["count"] == 6
+    assert dec["action"] == "decrypt" and dec["count"] == 7
     assert yaml.safe_load(config.read_text(encoding="utf-8")) == cfg
     assert len(list(tmp_path.glob("config.yaml.bak.*"))) == 2
 
@@ -398,7 +401,7 @@ def test_cli_check_does_not_write(tmp_path):
     info = cli.run(str(config), check=True)
     assert info["action"] == "check"
     assert info["key"] is False
-    assert len(info["atRisk"]) == 6
+    assert len(info["atRisk"]) == 7
     assert all(slot["state"] == "plaintext" for slot in info["slots"])
     assert not (tmp_path / "secrets.key").exists()
     assert not list(tmp_path.glob("config.yaml.bak.*"))
@@ -441,7 +444,7 @@ def test_cli_custom_key_file(tmp_path):
     assert custom.exists()
     assert not (tmp_path / "secrets.key").exists()
     dec = cli.run(str(config), decrypt=True, key_file=str(custom))
-    assert dec["count"] == 6
+    assert dec["count"] == 7
     assert yaml.safe_load(config.read_text(encoding="utf-8")) == cfg
 
 
@@ -454,7 +457,7 @@ def test_cli_env_key_avoids_key_file(tmp_path, monkeypatch):
     assert not (tmp_path / "secrets.key").exists()
     assert yaml.safe_load(config.read_text(encoding="utf-8")) != cfg
     dec = cli.run(str(config), decrypt=True)
-    assert dec["count"] == 6
+    assert dec["count"] == 7
     assert yaml.safe_load(config.read_text(encoding="utf-8")) == cfg
 
 
@@ -471,7 +474,7 @@ def test_cli_main_encrypt_output(tmp_path, capsys):
     config = write_yaml(tmp_path / "config.yaml", full_cfg())
     assert cli.main(["--config", str(config)]) == 0
     out = capsys.readouterr().out
-    assert "已加密 6 个配置项" in out
+    assert "已加密 7 个配置项" in out
     assert "备份文件" in out
     assert "secrets.key" in out
 

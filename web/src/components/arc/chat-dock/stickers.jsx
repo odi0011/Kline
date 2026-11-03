@@ -2,7 +2,13 @@
 
    素材放在 web/public/stickers/，按下面 STICKERS 里的名字映射。
    新增一个表情 = 把图丢进 public/stickers/ + 在这里加一行。
-   后端 ai/agent.py 的 STICKER_NAMES 必须同步（有测试强校验）。 */
+   后端 ai/agent.py 的 STICKER_NAMES 必须同步（有测试强校验）。
+
+   另外支持"在线贴纸"：配了 GIPHY key 后，Agent 可以按情绪词去网上找图，
+   第一次命中时服务器会把它下载到 agent-attachments/stickers/，
+   之后同一个词直接读本地文件——浏览器始终只访问我们自己的地址，
+   不受 GIPHY CDN 可达性影响，也几乎不消耗 API 配额。 */
+import { useState } from "react"
 
 export const STICKERS = {
   // 崩溃 / 破防：仰头抓头发、哭喊
@@ -53,12 +59,85 @@ export function Sticker({ name, max = 132 }) {
   )
 }
 
-/** 从一段文字里拆出 [sticker:名字]，返回 { text, sticker } */
+/** 从一段文字里拆出 [sticker:...]，返回 { text, sticker, remote }
+
+    两种标记：
+      [sticker:崩溃]                       → 内置图，sticker 是名字
+      [sticker:url=https%3A%2F%2F...&w=480&h=270]
+                                           → 服务器已落盘的在线贴纸，remote 是
+                                             { url, w, h }（本地地址，不跨境）
+    在线贴纸的地址和尺寸一起带过来，前端不用再发请求就知道该占多大，
+    加载完不会撑开气泡。
+*/
 export function splitSticker(raw) {
   const src = String(raw || "")
-  const match = src.match(/\[sticker[:：]\s*([^\]]{1,12})\]/)
-  if (!match) return { text: src.trim(), sticker: "" }
-  const name = match[1].trim()
+  // 内置名很短；在线标记带 url=/w=/h=，长度远超旧实现的 12 字符上限
+  const match = src.match(/\[sticker[:：]\s*([^\]]{1,600})\]/)
+  if (!match) return { text: src.trim(), sticker: "", remote: null }
+  const payload = match[1].trim()
   const text = (src.slice(0, match.index) + src.slice(match.index + match[0].length)).trim()
-  return { text, sticker: STICKERS[name] ? name : "" }
+  if (payload.includes("url=")) {
+    try {
+      const params = new URLSearchParams(payload)
+      const url = params.get("url") || ""
+      const w = Number(params.get("w")) || 0
+      const h = Number(params.get("h")) || 0
+      // 只接受服务器本地地址或 GIPHY 域名：别让模型能塞任意第三方图片进页面
+      const local = url.startsWith("/agent-attachments/")
+      const giphy = /^https:\/\/[^/]*giphy/i.test(url)
+      if ((local || giphy) && w > 0 && h > 0) {
+        return { text, sticker: "", remote: { url, w, h } }
+      }
+    } catch {
+      // 解析失败就当没有表情包，文字照常显示
+    }
+    return { text, sticker: "", remote: null }
+  }
+  return { text, sticker: STICKERS[payload] ? payload : "", remote: null }
+}
+
+/** 在线贴纸：地址和尺寸都已知，先按比例占位再加载，失败则静默隐藏。 */
+export function RemoteSticker({ remote, max = 132 }) {
+  const [failed, setFailed] = useState(false)
+  if (!remote || failed) return null
+  const scale = Math.min(1, max / remote.w, max / remote.h)
+  const width = Math.round(remote.w * scale)
+  const height = Math.round(remote.h * scale)
+  return (
+    <img
+      src={remote.url}
+      alt="表情"
+      width={width}
+      height={height}
+      loading="eager"
+      decoding="async"
+      onError={() => setFailed(true)}
+      style={{
+        display: "block",
+        width,
+        height,
+        maxWidth: max,
+        maxHeight: max,
+        borderRadius: 10,
+      }}
+    />
+  )
+}
+
+/** GIPHY 的 API 使用条款要求显式署名，别删。 */
+export function StickerCredit() {
+  return (
+    <span
+      style={{
+        display: "block",
+        marginTop: 2,
+        fontSize: 8.5,
+        lineHeight: "10px",
+        color: "rgba(16,24,40,0.35)",
+        letterSpacing: 0.2,
+      }}
+    >
+      Powered by GIPHY
+    </span>
+  )
 }

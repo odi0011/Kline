@@ -30,6 +30,7 @@ from feed.market_data import (
 )
 # 衍生品指标走带回退的入口：币安被地区限制时自动改用欧易
 from feed.derivatives import derivatives_snapshot
+from feed.giphy import download_image as giphy_download, search_stickers as giphy_search
 from feed.news import fetch_all as fetch_news, fetch_article
 from feed.news_ai import analyze as analyze_news
 from feed.search import fetch_page, web_search
@@ -46,6 +47,7 @@ from storage import Storage
 from accounts import fetch_account
 from ai.agent import AgentManager
 from ai.agent_tools import project_paper_positions
+from ai.sticker_cache import StickerCache
 from ai.provider import (
     PROVIDER_PRESETS, CAPABILITIES, mask_cfg, merge_cfg,
     list_models as ai_list_models, test_model as ai_test_model, guess_model_meta,
@@ -840,10 +842,22 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         # 没连上 MySQL 时退回纯文件，行为与旧版一致。
         state_store=storage if storage.enabled else None,
     )
+    # 贴纸落盘缓存：和聊天图片附件放同一棵目录，静态服务已经在对外提供。
+    sticker_cache = StickerCache(os.path.join(
+        os.path.dirname(os.path.abspath(config_path)), "agent-attachments", "stickers"))
     # 联网搜索 / 网页读取：由模型自己决定是否调用 web_search/read_web_page。
     # 默认无 key 走 DuckDuckGo/Bing HTML；有 KLINE_SERPER_KEY 时优先 Serper。
     # 代理沿用 feed.proxy（海外服务器可直连；本地开发可配 search.proxy 覆盖）。
     _search_cfg = cfg.get("search") or {}
+    # 代理在下面两个 if 里都要用：搜索被关掉时也不能是未定义变量。
+    _search_proxy = str(_search_cfg.get("proxy") or proxy_cfg or "").strip()
+    if not _search_proxy:
+        try:
+            import urllib.request as _urlreq
+            _proxies = _urlreq.getproxies() or {}
+            _search_proxy = str(_proxies.get("https") or _proxies.get("http") or "").strip()
+        except Exception:
+            _search_proxy = ""
 
     def _search_number(key: str, default, cast=float):
         """搜索配置容错：写错类型/负数不能让服务启动失败，回退默认值。"""
@@ -856,21 +870,37 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     if _search_cfg.get("enabled", True):
         _search_timeout = _search_number("timeout", 10.0)
         _search_count = max(1, min(10, int(_search_number("count", 5, int))))
-        _search_proxy = str(_search_cfg.get("proxy") or proxy_cfg or "").strip()
-        if not _search_proxy:
-            # 没显式配代理时沿用系统代理（Windows 读 IE/系统设置，Linux 读
-            # HTTP(S)_PROXY）。否则在有系统代理的机器上搜索会直连超时。
-            try:
-                import urllib.request as _urlreq
-                _proxies = _urlreq.getproxies() or {}
-                _search_proxy = str(_proxies.get("https") or _proxies.get("http") or "").strip()
-            except Exception:
-                _search_proxy = ""
         agent.search_default_count = _search_count
         agent.search_fn = lambda query, count=0: web_search(
             query, count or agent.search_default_count, _search_proxy, _search_timeout)
         agent.fetch_fn = lambda url: fetch_page(
             url, _search_proxy, _search_timeout)
+
+    # 在线贴纸（GIPHY）：命中过的图直接落到 agent-attachments/stickers/，
+    # 之后同一个情绪词只读本地文件——不打 API、不跨境拉图。
+    # 没配 key 时这三个都不注入，Agent 只会用内置的三张图。
+    _sticker_cfg = cfg.get("stickers") or {}
+    _giphy_key = str(_sticker_cfg.get("giphy_key") or "").strip()
+    if _giphy_key and _sticker_cfg.get("enabled", True):
+        # 贴纸有自己的 timeout；写错/缺失时退回 8 秒，不能复用搜索的配置对象
+        try:
+            _sticker_timeout = float(_sticker_cfg.get("timeout") or 8.0)
+        except (TypeError, ValueError):
+            _sticker_timeout = 8.0
+        if _sticker_timeout <= 0:
+            _sticker_timeout = 8.0
+        _sticker_proxy = str(_sticker_cfg.get("proxy") or _search_proxy or "").strip()
+
+        def _sticker_search(query, count=1):
+            return giphy_search(query, count, _giphy_key, _sticker_proxy, _sticker_timeout)
+
+        def _sticker_download(url):
+            return giphy_download(url, _sticker_proxy, _sticker_timeout)
+
+        agent.sticker_search_fn = _sticker_search
+        agent.sticker_download_fn = _sticker_download
+        agent.sticker_cache = sticker_cache
+        print(f"[stickers] GIPHY 在线贴纸已启用（缓存目录 {sticker_cache.root}）")
     hub.agent_state_fn = agent.state
     hub.agent_fn = agent.handle
 

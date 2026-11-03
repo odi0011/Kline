@@ -58,10 +58,15 @@ def test_read_web_page_schema_limits():
     assert params["properties"]["url"]["maxLength"] == 500
 
 
-def test_send_sticker_schema_enum_matches_backend():
+def test_send_sticker_schema_accepts_query_or_name():
+    """两种用法：query 查在线贴纸库（首选），name 用内置图（兜底）。
+
+    两个都不是必填——模型可以选择只给 query，只给 name 也合法。
+    """
     params = tool_schema("send_sticker")["parameters"]
-    assert params["required"] == ["name"]
+    assert params["required"] == []
     assert params["properties"]["name"]["enum"] == list(STICKER_NAMES)
+    assert params["properties"]["query"]["type"] == "string"
 
 
 def test_create_watch_schema_exposes_notify():
@@ -229,33 +234,41 @@ def test_read_web_page_truncates_huge_text(tmp_path, monkeypatch):
 # ---------- 3. send_sticker：登记 / 拒绝 / 组装 ----------
 
 def test_send_sticker_records_pending_name():
+    """没有在线贴纸时，name 直接登记成内置图。"""
     target = {}
     from ai.agent import AgentManager
-    out = AgentManager._send_sticker(None, {"name": STICKER_NAMES[0]}, target)
-    assert set(out) == {"sent", "name", "note"}
+    manager = AgentManager(lambda: {}, lambda: None, lambda: {},
+                           lambda _m: None, "unused.json")
+    out = run(manager._send_sticker({"name": STICKER_NAMES[0]}, target))
     assert out["sent"] is True and out["name"] == STICKER_NAMES[0]
-    assert target["pendingSticker"] == STICKER_NAMES[0]
+    assert out["source"] == "builtin"
+    assert target["pendingSticker"] == {"builtin": STICKER_NAMES[0]}
     assert "末尾" in out["note"]
 
 
 def test_send_sticker_rejects_invalid_arguments():
+    """空参数不再算错（只给 query 也是合法用法），但脏参数仍要拒绝。"""
     from ai.agent import AgentManager
-    for payload in (None, {}, {"name": "不存在"}, {"name": 1}, {"name": "崩溃", "x": 1}):
+    manager = AgentManager(lambda: {}, lambda: None, lambda: {},
+                           lambda _m: None, "unused.json")
+    for payload in (None, {"name": "不存在"}, {"name": 1}, {"name": "崩溃", "x": 1}):
         with pytest.raises(ValueError):
-            AgentManager._send_sticker(None, payload, {})
+            run(manager._send_sticker(payload, {}))
 
 
 def test_send_sticker_refuses_second_one():
     from ai.agent import AgentManager
+    manager = AgentManager(lambda: {}, lambda: None, lambda: {},
+                           lambda _m: None, "unused.json")
     target = {}
-    assert AgentManager._send_sticker(None, {"name": "崩溃"}, target)["sent"] is True
-    again = AgentManager._send_sticker(None, {"name": "疑问"}, target)
+    assert run(manager._send_sticker({"name": "崩溃"}, target))["sent"] is True
+    again = run(manager._send_sticker({"name": "疑问"}, target))
     assert again["sent"] is False and "最多一个" in again["reason"]
-    assert target["pendingSticker"] == "崩溃"
+    assert target["pendingSticker"] == {"builtin": "崩溃"}
 
     # 回复正文里已经手写了 [sticker: 标记时也拒绝
     target2 = {"content": "行吧。[sticker:嘲讽]"}
-    out = AgentManager._send_sticker(None, {"name": "崩溃"}, target2)
+    out = run(manager._send_sticker({"name": "崩溃"}, target2))
     assert out["sent"] is False and "已经有" in out["reason"]
     assert "pendingSticker" not in target2
 

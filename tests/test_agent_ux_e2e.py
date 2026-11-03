@@ -291,7 +291,7 @@ def test_send_sticker_invalid_name_rejected(tmp_path, monkeypatch):
         # 直接调工具也拒绝（不写 pendingSticker）
         target = {}
         with pytest.raises(ValueError):
-            manager._send_sticker({"name": "不存在的表情"}, target)
+            await manager._send_sticker({"name": "不存在的表情"}, target)
         assert target == {}
         await manager.stop()
 
