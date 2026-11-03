@@ -265,23 +265,29 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
 用 send_sticker 工具，由你自己判断，不要每次都发、不要固定套路：
  · 适合发：用户调侃/骂人/自嘲、行情很离谱、你又没法给建议、气氛轻松、庆祝
  · 不适合发：用户认真问价位、有持仓风险、在亏钱
- · 服务器上有一份**表情包库**（都是之前按情绪搜到并存下来的图）。
-   想发之前，如果拿不准库里有什么，先调 list_stickers 看一眼：
-   它会返回每张图的 id、tags（这张图对应的情绪）、用过几次。
-   然后直接 send_sticker(sticker_id="那张的 id") —— 这是最准的方式。
- · 也可以直接给情绪让系统去找：
-   send_sticker(query="英文情绪描述")，比如 "facepalm"（捂脸）、"shrug"（摊手）、
-   "mind blown"（震撼）、"crying laughing"（笑死）、"dead inside"（麻了）、
-   "thumbs up"（认可）、"clown"（小丑）、"popcorn"（吃瓜）、"eye roll"（翻白眼）。
-   库里已有匹配的直接用；没有才联网找，并自动存进库。
- · 只有在库和联网都拿不到时，才会用内置图 send_sticker(name=...)，
-   内置名（不要编）：{{STICKER_NAMES}}
+ · 服务器上有一份**表情包库**，是之前收集下来的图，每张都带着
+   你自己写的名字和使用场景。所以先看一眼再说：
+   list_stickers 返回 id、name（你起的名字）、when（什么时候用）、tags。
+
+ · 标准流程（看完再发，别瞎发）：
+   1) 先 list_stickers 看有没有现成合适的 → 有就直接 send_sticker(sticker_id=...)
+   2) 没有合适的 → search_stickers(query="英文情绪词")，返回 3~5 张候选，
+      每张带 id 和英文描述。你按描述挑一张最贴切当前语境的。
+   3) 挑好了 → save_sticker(candidate_id=..., name="中文名",
+      when="什么时候该用它")，给这张图定下名字和用途，它从此就在库里。
+   4) 最后 send_sticker(sticker_id=刚存下的 id) 发出去。
+   5) 都不满意就换个 query 再搜，或者干脆不发 —— 不要为了发而发。
+
+ · 情绪词参考：facepalm（捂脸）、shrug（摊手）、mind blown（震撼）、
+   crying laughing（笑死）、dead inside（麻了）、thumbs up（认可）、
+   clown（小丑）、popcorn（吃瓜）、eye roll（翻白眼）、pray（祈祷）
+ · 内置三张图 send_sticker(name=...) 只是最后手段，优先用库里的：
+   {{STICKER_NAMES}}
  · 工具会自己处理标记和落地，你不用手写 `[sticker:...]`。
  · 一条回复最多一个表情包。发了表情包就可以少说话，甚至只发表情包。
-   例：用户「又亏了草」→ 只调 send_sticker(query="dead inside")，不用再说话
-   例：用户「BTC 还能涨吗」→「不知道，别问我。」再调 send_sticker(query="shrug")
-   例：用户「这策略真稳」→「老实赚钱很枯燥吧？」再调 send_sticker(query="eye roll")
-   例：行情突然暴力拉升 → 「这谁顶得住。」+ send_sticker(query="mind blown")
+   例：用户「又亏了草」→ list 没合适的 → search("dead inside") → save + send
+   例：用户「BTC 还能涨吗」→「不知道，别问我。」+ 一张摊手
+   例：行情突然暴力拉升 → 「这谁顶得住。」+ 一张震撼脸
 
 需要分成多条时说「|||」切分，客户端会逐条发出；但默认就该一条说完，
 不要靠切分来容纳废话。"""
@@ -319,6 +325,8 @@ def _status_line(prompt: str, tool: str = "", round_number: int = 1) -> str:
             return "在发表情包"
         if tool == "list_stickers":
             return "在翻表情包"
+        if tool == "search_stickers":
+            return "在找表情包"
         return "在查数据"
     if round_number > 1:
         return "在想结论"
@@ -1801,10 +1809,10 @@ class AgentManager:
                 "text": text, "truncated": truncated}
 
     def _list_stickers(self, arguments: dict) -> dict:
-        """列出表情包库：让模型看到"库里到底有什么"，再决定发哪张。
+        """列出表情包库：Agent 看库里有什么、各自叫什么、什么时候该用。
 
-        这是把已存表情当**真实数据**交给 Agent 的入口——没有它，模型只能
-        盲猜一个情绪词，猜不中就什么都发不出去。
+        返回的 name / when 都是 Agent 之前自己定下的，所以它能判断
+        "这张已经存过、直接发就行"，而不用重新猜。
         """
         if not isinstance(arguments, dict):
             raise ValueError("list_stickers 参数需为对象")
@@ -1833,22 +1841,136 @@ class AgentManager:
             "count": len(rows),
             "total": total or len(rows),
             "filter": query,
-            "stickers": [{"id": r["id"], "tags": r.get("tags", ""),
-                          "title": r.get("title", ""),
+            "stickers": [{"id": r["id"], "name": r.get("name", ""),
+                          "when": r.get("when", ""), "tags": r.get("tags", ""),
                           "width": r.get("width", 0), "height": r.get("height", 0),
                           "uses": r.get("uses", 0)} for r in rows],
-            "note": "按 id 用 send_sticker(sticker_id=...) 发送；tags 是这个表情对应的情绪。"
-                    "没有完全匹配的可以用 query 让系统联网找新的。",
+            "note": "按 id 用 send_sticker(sticker_id=...) 发送。"
+                    "没有合适的就 search_stickers 找新的。",
         }
 
+    async def _search_sticker_candidates(self, arguments: dict) -> dict:
+        """搜候选表情，**不发送也不入库**。
+
+        这是闭环的前半段：把真实图片摆给模型看（GIPHY 的 title 是它唯一
+        能看到的语义提示），由模型判断哪张合适、叫什么、何时用。
+        没有这一步，模型只能盲传一个情绪词，服务端闷头抓第一条——
+        这就是"瞎做"。
+        """
+        if not isinstance(arguments, dict):
+            raise ValueError("search_stickers 参数需为对象")
+        if set(arguments) - {"query", "count"}:
+            raise ValueError("search_stickers 包含不支持的参数")
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            raise ValueError("query 不能为空")
+        count = arguments.get("count", 5)
+        if type(count) is not int or not 1 <= count <= 8:
+            raise ValueError("count 需为 1–8 的整数")
+        fn = self.sticker_search_fn
+        if not fn:
+            return {"available": False, "reason": "表情包搜索未启用（未配置 GIPHY key）",
+                    "candidates": []}
+        try:
+            result = await asyncio.to_thread(fn, query, count)
+        except Exception as exc:
+            return {"available": False, "reason": f"搜索失败: {str(clean(str(exc)))[:120]}",
+                    "candidates": []}
+        if not isinstance(result, dict) or not result.get("ok"):
+            reason = ""
+            if isinstance(result, dict):
+                reason = str(result.get("error") or "")
+            return {"available": False, "reason": reason or "没有搜到候选", "candidates": []}
+        candidates = []
+        for row in (result.get("results") or [])[:count]:
+            if not isinstance(row, dict):
+                continue
+            url = str(row.get("url") or "")
+            try:
+                host = url.split("/")[2].lower()
+            except IndexError:
+                continue
+            if not url.startswith("https://") or "giphy" not in host:
+                continue
+            try:
+                width = int(row.get("width") or 0)
+                height = int(row.get("height") or 0)
+            except (TypeError, ValueError):
+                continue
+            if width <= 0 or height <= 0:
+                continue
+            candidates.append({
+                "id": str(row.get("id") or "")[:64],
+                "caption": str(row.get("title") or "")[:120] or "(无描述)",
+                "width": width, "height": height, "_url": url,
+            })
+        if not candidates:
+            return {"available": False, "reason": "没有搜到可用候选", "candidates": []}
+        # 候选先放进待定区，等 save_sticker 定下来才落盘。
+        self._sticker_candidates = {
+            c["id"]: c for c in candidates if c["id"]
+        }
+        return {
+            "available": True, "query": query, "count": len(candidates),
+            # 只回给模型看的字段：id + 英文描述（这是它唯一能判断语义的依据）
+            "candidates": [{"id": c["id"], "caption": c["caption"],
+                            "size": f'{c["width"]}x{c["height"]}'}
+                           for c in candidates],
+            "note": "挑一张最贴合语境的，然后 save_sticker(candidate_id=..., "
+                    "name='中文名', when='什么时候用') 把它定下来；"
+                    "都不合适就换个 query 再搜，或者干脆不发。",
+        }
+
+    async def _save_sticker(self, arguments: dict) -> dict:
+        """把模型选中的候选定下来：起名、写用途、下载落盘、入库。
+
+        到这一步"叫什么、怎么用"已经是模型的判断结果，不是服务端拍的。
+        """
+        if not isinstance(arguments, dict):
+            raise ValueError("save_sticker 参数需为对象")
+        if set(arguments) - {"candidate_id", "name", "when"}:
+            raise ValueError("save_sticker 包含不支持的参数")
+        cid = str(arguments.get("candidate_id") or "").strip()[:64]
+        name = str(arguments.get("name") or "").strip()[:40]
+        when = str(arguments.get("when") or "").strip()[:120]
+        if not cid:
+            raise ValueError("candidate_id 不能为空")
+        if not name:
+            raise ValueError("name 不能为空（给它起个中文名）")
+        pending = getattr(self, "_sticker_candidates", None) or {}
+        cand = pending.get(cid)
+        if not cand:
+            return {"saved": False,
+                    "reason": "这个候选不在本轮搜索结果里，先 search_stickers 再选"}
+        cache = self.sticker_cache
+        download = self.sticker_download_fn
+        if cache is None or download is None:
+            return {"saved": False, "reason": "表情包库未启用"}
+        try:
+            data, content_type = await asyncio.to_thread(download, cand["_url"])
+        except Exception as exc:
+            return {"saved": False, "reason": f"下载失败: {str(clean(str(exc)))[:120]}"}
+        try:
+            saved = cache.save(
+                cid, data, cand["width"], cand["height"],
+                title=cand.get("caption") or "", url_hint=cand["_url"],
+                content_type=content_type, name=name, when_to_use=when)
+        except Exception as exc:
+            return {"saved": False, "reason": f"保存失败: {str(clean(str(exc)))[:120]}"}
+        if not saved:
+            return {"saved": False, "reason": "保存失败（格式不支持或尺寸异常）"}
+        pending.pop(cid, None)
+        return {"saved": True, "id": saved["id"], "name": name, "when": when,
+                "note": "已入库，接下来用 send_sticker(sticker_id=...) 发送"}
+
     async def _send_sticker(self, arguments: dict, target: dict) -> dict:
-        """表情包工具：登记"这一条回复要附图"，真正落地在回复组装时统一处理。
+        """发表情包：登记"这一条回复要附图"，真正落地在回复组装时统一处理。
 
         取图顺序（能发出去比"精确但不发"重要）：
-          0. sticker_id → 直接用库里指定的那张（模型先看过清单后的选择）
+          0. sticker_id → 库里指定的那张（模型看过清单后的选择）
           1. query → 先查库里已存的贴纸（命中直接复用，不打 API）
-          2. 库里没有 → 去在线库搜，搜到就下载入库
-          3. 搜不到（配额用完/断网/无结果）→ 从**已存贴纸里挑**最贴近的
+          2. 库里没有 → 联网搜一张（自动入库，名字用 GIPHY 的 title）
+          3. 搜不到 → 从已存贴纸里挑最贴近的
           4. 库里一张都没有 → 内置三张图（最后手段）
 
         一条回复最多一个：target 上已有 pendingSticker，或回复正文里已经出现
@@ -1997,6 +2119,8 @@ class AgentManager:
         except Exception:
             return None
         try:
+            # 自动入库这条路径没有模型起的名字，name 留空、tags 记下查询词，
+            # 之后 Agent 在 list_stickers 里看到它，可以再补名字（save_sticker）。
             saved = cache.save(sticker_id, data, width, height,
                                title=str(row.get("title") or ""),
                                url_hint=url, content_type=content_type)
@@ -2296,7 +2420,7 @@ class AgentManager:
                                     "create_watch", "list_watches", "stop_watch", "read_calc_trace",
                                     "sandbox_write", "sandbox_read", "sandbox_list", "sandbox_run",
                                     "web_search", "read_web_page", "send_sticker",
-                                    "list_stickers"}
+                                    "list_stickers", "search_stickers", "save_sticker"}
                    for call in normalized):
                 try:
                     # 先投影/脱敏再复制；绝不把整个上下文或配置拼到 prompt。
@@ -2371,6 +2495,10 @@ class AgentManager:
                         output = await self._read_web_page(arguments)
                     elif name == "list_stickers":
                         output = self._list_stickers(arguments)
+                    elif name == "search_stickers":
+                        output = await self._search_sticker_candidates(arguments)
+                    elif name == "save_sticker":
+                        output = await self._save_sticker(arguments)
                     elif name == "send_sticker":
                         output = await self._send_sticker(arguments, target)
                     elif name == "read_calc_trace":

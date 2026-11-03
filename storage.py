@@ -361,10 +361,18 @@ class Storage:
         # 这是 Agent 挑选表情时的**真实数据源**——它能列出库里有什么、按 id 直接发，
         # 而不是只能猜一个查不到的名字。图片本体在 agent-attachments/stickers/，
         # 表里只存文件名和尺寸（浏览器据此预占空间，不会加载后撑开气泡）。
+        #
+        # name / when_to_use / tags 都是**Agent 自己定的**，不是抄 GIPHY 的英文标题：
+        #   name        —— 它给这张图起的中文名（"麻了"、"摊手"）
+        #   when_to_use —— 它写下的使用场景（"用户抱怨行情、自嘲时用"）
+        #   tags        —— 触发它的情绪词
+        # 下次 list_stickers 原样返回这几个字段，Agent 据此直接挑图，闭环。
         self._ddl("""CREATE TABLE IF NOT EXISTS stickers(
             id VARCHAR(64) NOT NULL PRIMARY KEY,
             file VARCHAR(128) NOT NULL,
             title VARCHAR(200) DEFAULT '',
+            name VARCHAR(80) DEFAULT '',
+            when_to_use VARCHAR(300) DEFAULT '',
             tags VARCHAR(600) DEFAULT '',
             width INT DEFAULT 0, height INT DEFAULT 0,
             bytes INT DEFAULT 0,
@@ -373,6 +381,16 @@ class Storage:
             use_count INT DEFAULT 0,
             INDEX idx_stickers_used(last_used_ts)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # 老库迁移：name/when_to_use 是后加的列（表可能已按旧结构建过）
+        for _col, _ddl in (
+            ("name", "ALTER TABLE stickers ADD COLUMN name VARCHAR(80) DEFAULT ''"),
+            ("when_to_use", "ALTER TABLE stickers ADD COLUMN when_to_use VARCHAR(300) DEFAULT ''"),
+        ):
+            try:
+                if not self._qall(f"SHOW COLUMNS FROM stickers LIKE '{_col}'"):
+                    self._q(_ddl)
+            except Exception:
+                pass
         # hits 保留期从 7 天拉长到 90 天后，pattern_stats 的 "WHERE ts>=..." 查询
         # 不能再依赖全表扫：老库补一条 ts 索引。SQLite 等方言不支持 SHOW INDEX /
         # ADD INDEX 语法，探测失败或迁移失败都静默跳过，不影响服务启动。
@@ -1397,7 +1415,11 @@ class Storage:
     # ---- 表情包库（Agent 挑选用的真实数据） ----
 
     def save_sticker(self, record: dict) -> bool:
-        """登记/更新一张已落盘的贴纸。tags 是它对应的情绪词（空格分隔）。"""
+        """登记/更新一张贴纸。
+
+        name / when_to_use / tags 由 Agent 决策后传入，不是抄 GIPHY 的标题——
+        这张图"叫什么、什么时候用"是模型判断的结果，存下来供下次直接复用。
+        """
         if not self.enabled:
             return False
         sid = str(record.get("id") or "")[:64]
@@ -1406,9 +1428,12 @@ class Storage:
             return False
         now = int(record.get("ts") or time.time() * 1000)
         self._q(
-            "REPLACE INTO stickers(id,file,title,tags,width,height,bytes,"
-            "created_ts,last_used_ts,use_count) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "REPLACE INTO stickers(id,file,title,name,when_to_use,tags,width,height,bytes,"
+            "created_ts,last_used_ts,use_count) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (sid, file, str(record.get("title") or "")[:200],
+             str(record.get("name") or "")[:80],
+             str(record.get("whenToUse") or "")[:300],
              str(record.get("tags") or "")[:600],
              _safe_int(record.get("width"), 0), _safe_int(record.get("height"), 0),
              _safe_int(record.get("bytes"), 0), now, 0, 0))
@@ -1417,25 +1442,28 @@ class Storage:
     def stickers(self, query: str = "", limit: int = 200) -> list[dict]:
         """表情包清单（最近用过的排前面）。
 
-        query 为空时返回全部；否则按 tags 里的词做包含匹配。
-        Agent 就是靠这个看到"库里到底有什么"，再按 id 指定发送。
+        query 为空时返回全部；否则在 tags / name / when_to_use 里做包含匹配。
+        Agent 就是靠这个看到"库里到底有什么、各自该什么时候用"，再按 id 指定发送。
         """
         limit = max(1, min(1000, _safe_int(limit, 200)))
         like = f"%{str(query or '').strip().lower()[:60]}%" if str(query or "").strip() else ""
+        cols = ("id,file,title,name,when_to_use,tags,width,height,bytes,"
+                "created_ts,last_used_ts,use_count")
         if like:
             rows = self._qall(
-                "SELECT id,file,title,tags,width,height,bytes,created_ts,"
-                "last_used_ts,use_count FROM stickers WHERE LOWER(tags) LIKE %s "
-                "ORDER BY last_used_ts DESC, created_ts DESC LIMIT %s", (like, limit))
+                f"SELECT {cols} FROM stickers WHERE LOWER(tags) LIKE %s "
+                "OR LOWER(name) LIKE %s OR LOWER(when_to_use) LIKE %s "
+                "ORDER BY last_used_ts DESC, created_ts DESC LIMIT %s",
+                (like, like, like, limit))
         else:
             rows = self._qall(
-                "SELECT id,file,title,tags,width,height,bytes,created_ts,"
-                "last_used_ts,use_count FROM stickers "
+                f"SELECT {cols} FROM stickers "
                 "ORDER BY last_used_ts DESC, created_ts DESC LIMIT %s", (limit,))
-        return [{"id": r[0], "file": r[1], "title": r[2] or "", "tags": r[3] or "",
-                 "width": int(r[4] or 0), "height": int(r[5] or 0),
-                 "bytes": int(r[6] or 0), "createdTs": int(r[7] or 0),
-                 "lastUsedTs": int(r[8] or 0), "useCount": int(r[9] or 0)}
+        return [{"id": r[0], "file": r[1], "title": r[2] or "",
+                 "name": r[3] or "", "whenToUse": r[4] or "", "tags": r[5] or "",
+                 "width": int(r[6] or 0), "height": int(r[7] or 0),
+                 "bytes": int(r[8] or 0), "createdTs": int(r[9] or 0),
+                 "lastUsedTs": int(r[10] or 0), "useCount": int(r[11] or 0)}
                 for r in rows]
 
     def touch_sticker(self, sticker_id: str) -> None:

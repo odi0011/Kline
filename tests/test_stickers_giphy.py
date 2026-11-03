@@ -480,3 +480,107 @@ def test_unknown_sticker_id_falls_back_gracefully(tmp_path):
 def test_list_stickers_is_a_real_tool():
     from ai.agent_tools import TOOL_NAMES
     assert "list_stickers" in TOOL_NAMES
+
+
+# ---------------- F. 闭环：看候选 → 命名/定用途 → 入库 → 发送 ----------------
+
+def _manager_with_stickers(tmp_path, search_results=None, download_ok=True):
+    from ai.agent import AgentManager
+
+    cache = StickerCache(str(tmp_path / "s"))
+    manager = AgentManager(lambda: {}, lambda: "", lambda: {}, lambda m: None,
+                           str(tmp_path / "state.json"))
+    manager.sticker_cache = cache
+    rows = search_results if search_results is not None else [
+        {"id": "cand-a", "title": "person facepalming", "url": "https://media.giphy.com/a.gif",
+         "width": 300, "height": 200, "pageUrl": ""},
+        {"id": "cand-b", "title": "shrugging man", "url": "https://media.giphy.com/b.gif",
+         "width": 260, "height": 300, "pageUrl": ""},
+    ]
+    manager.sticker_search_fn = lambda q, c: {"ok": True, "results": rows}
+    if download_ok:
+        manager.sticker_download_fn = lambda url: (b"GIF89a" + b"d" * 32, "image/gif")
+    return manager, cache
+
+
+def test_search_returns_candidates_without_saving(tmp_path):
+    """搜候选：只给模型看，不落盘、不入库。"""
+    manager, cache = _manager_with_stickers(tmp_path)
+    out = asyncio.run(manager._search_sticker_candidates({"query": "facepalm"}))
+    assert out["available"] is True
+    assert [c["id"] for c in out["candidates"]] == ["cand-a", "cand-b"]
+    # 描述要回给模型，这是它判断语义的唯一依据
+    assert out["candidates"][0]["caption"] == "person facepalming"
+    assert cache.catalog() == [], "搜候选阶段不该入库"
+    assert not (tmp_path / "s").exists() or cache.stats()["stickers"] == 0
+
+
+def test_save_sticker_records_agent_chosen_name_and_when(tmp_path):
+    """闭环核心：模型定名字和用途，落盘入库后能原样读回。"""
+    manager, cache = _manager_with_stickers(tmp_path)
+    asyncio.run(manager._search_sticker_candidates({"query": "facepalm"}))
+    saved = asyncio.run(manager._save_sticker({
+        "candidate_id": "cand-a", "name": "捂脸",
+        "when": "用户吐槽自己操作失误、或者再说也没用的时候"}))
+    assert saved["saved"] is True and saved["id"] == "cand-a"
+
+    rows = cache.catalog()
+    assert len(rows) == 1
+    assert rows[0]["name"] == "捂脸"
+    assert rows[0]["when"] == "用户吐槽自己操作失误、或者再说也没用的时候"
+    # 不是抄 GIPHY 的英文标题
+    assert rows[0]["name"] != "person facepalming"
+
+
+def test_save_rejects_unknown_candidate(tmp_path):
+    """没搜过的候选不能存——防止模型凭空编一个 id。"""
+    manager, cache = _manager_with_stickers(tmp_path)
+    out = asyncio.run(manager._save_sticker(
+        {"candidate_id": "made-up-id", "name": "编的"}))
+    assert out["saved"] is False and "search_stickers" in out["reason"]
+    assert cache.catalog() == []
+
+
+def test_save_requires_name(tmp_path):
+    manager, _ = _manager_with_stickers(tmp_path)
+    asyncio.run(manager._search_sticker_candidates({"query": "facepalm"}))
+    with pytest.raises(ValueError):
+        asyncio.run(manager._save_sticker({"candidate_id": "cand-a"}))
+
+
+def test_saved_sticker_can_be_sent_by_id(tmp_path):
+    """存完之后按 id 发送：不再联网。"""
+    manager, cache = _manager_with_stickers(tmp_path)
+    asyncio.run(manager._search_sticker_candidates({"query": "facepalm"}))
+    asyncio.run(manager._save_sticker({"candidate_id": "cand-a", "name": "捂脸",
+                                      "when": "自嘲"}))
+    searches = []
+    manager.sticker_search_fn = lambda q, c: searches.append(q) or {"ok": False}
+    target = {}
+    out = asyncio.run(manager._send_sticker({"sticker_id": "cand-a"}, target))
+    assert out["sent"] is True and out["source"] == "stored"
+    assert target["pendingSticker"]["id"] == "cand-a"
+    assert searches == []
+
+
+def test_full_loop_list_then_send(tmp_path):
+    """完整闭环：存过之后 list_stickers 能看到名字/用途，直接挑出来发。"""
+    manager, cache = _manager_with_stickers(tmp_path)
+    asyncio.run(manager._search_sticker_candidates({"query": "shrug"}))
+    asyncio.run(manager._save_sticker({"candidate_id": "cand-b", "name": "摊手",
+                                      "when": "被问不确定的事"}))
+    listed = manager._list_stickers({})
+    assert listed["stickers"][0]["name"] == "摊手"
+    assert listed["stickers"][0]["when"] == "被问不确定的事"
+    target = {}
+    out = asyncio.run(manager._send_sticker(
+        {"sticker_id": listed["stickers"][0]["id"]}, target))
+    assert out["sent"] is True
+    # 标记里带的是本地地址
+    assert _sticker_marker(target["pendingSticker"]).startswith("[sticker:url=")
+
+
+def test_search_and_save_tools_registered():
+    from ai.agent_tools import TOOL_NAMES
+    for name in ("search_stickers", "save_sticker", "list_stickers", "send_sticker"):
+        assert name in TOOL_NAMES

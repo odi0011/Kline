@@ -225,7 +225,8 @@ class StickerCache:
                     continue
                 out.append({
                     "id": sid,
-                    "title": str(row.get("title") or "")[:120],
+                    "name": str(row.get("name") or "")[:80],
+                    "when": str(row.get("whenToUse") or "")[:200],
                     "tags": str(row.get("tags") or "")[:200],
                     "width": int(row.get("width") or 0),
                     "height": int(row.get("height") or 0),
@@ -246,10 +247,11 @@ class StickerCache:
                 if not os.path.exists(os.path.join(self.root, str(record.get("file") or ""))):
                     continue
                 tags = " ".join(sorted(words.get(sid, [])))[:200]
-                if want and want not in tags.lower():
+                name = str(record.get("name") or "")[:80]
+                when = str(record.get("whenToUse") or "")[:200]
+                if want and want not in f"{tags} {name} {when}".lower():
                     continue
-                out.append({"id": sid, "title": str(record.get("title") or "")[:120],
-                            "tags": tags,
+                out.append({"id": sid, "name": name, "when": when, "tags": tags,
                             "width": int(record.get("width") or 0),
                             "height": int(record.get("height") or 0),
                             "uses": 0})
@@ -359,8 +361,13 @@ class StickerCache:
     # ---------- 写入 ----------
 
     def save(self, sticker_id, data: bytes, width: int, height: int,
-             title: str = "", url_hint: str = "", content_type: str = "") -> dict | None:
+             title: str = "", url_hint: str = "", content_type: str = "",
+             name: str = "", when_to_use: str = "") -> dict | None:
         """把下载好的图片存进缓存目录，返回可对外提供的本地记录。
+
+        name / when_to_use 是 **Agent 决策出来的**（这张图叫什么、什么时候用），
+        不是 GIPHY 的英文标题。存下来之后 list_stickers 会原样返回，
+        下次 Agent 就能按"名字 + 使用场景"直接挑，不用再猜情绪词。
 
         扩展名认不出来（比如 GIPHY 返回 mp4）就放弃——`<img>` 放不了视频。
         """
@@ -389,18 +396,21 @@ class StickerCache:
                 return None
             record = {"id": sid, "file": filename, "width": int(width),
                       "height": int(height), "title": str(title or "")[:120],
+                      "name": str(name or "")[:80],
+                      "whenToUse": str(when_to_use or "")[:300],
                       "url": f"/agent-attachments/stickers/{filename}",
                       "bytes": len(data), "ts": int(time.time())}
             self._index["stickers"][sid] = record
             self._prune_locked()
             self._save()
-        # 立刻同步进表：Agent 的清单要能看到"存了但还没被用过"的图，
-        # tags 留空，等某个情绪词命中它时再由 remember_query 补上。
+        # 同步进表：Agent 的清单要能看到这张图，以及它自己定的名字和使用场景。
         store = self.store
         if store is not None and getattr(store, "enabled", False):
             try:
                 store.save_sticker({
                     "id": sid, "file": filename, "title": record["title"],
+                    "name": record.get("name") or "",
+                    "whenToUse": record.get("whenToUse") or "",
                     "tags": "", "width": record["width"], "height": record["height"],
                     "bytes": record["bytes"], "ts": record["ts"] * 1000,
                 })
