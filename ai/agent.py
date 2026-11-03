@@ -221,7 +221,7 @@ def _attach_sticker(pieces, sticker, reply="") -> list[str]:
     """把 send_sticker 选中的表情包补到回复末尾（模块级，便于单测）。
 
     规则：
-      1) 分段里已经有 [sticker: 标记 → 不再追加（一条回复最多一个）；
+      1) 分段里已经有**有效**表情标记 → 不再追加（一条回复最多一个）；
       2) 否则在最后一条分段末尾换行追加标记；
       3) 分段全空（模型只调了工具、没给正文）→ 整条回复就是表情包。
 
@@ -229,6 +229,10 @@ def _attach_sticker(pieces, sticker, reply="") -> list[str]:
     模型常把标记写在第二行（"摊手。\\n[sticker:摊手]"），而 split_reply
     按短答规则只保留第一句，标记已经被截掉了。如果这时再因为"reply 里
     含有 [sticker:" 而跳过追加，就等于标记被删了又没补回来——图直接丢。
+
+    **"有效"的判断很重要**：模型经常手写 `[sticker:笑死]`（拿库里的中文名），
+    但前端只认内置名（崩溃/疑问/嘲讽）或 `url=` 形式的地址。这种无效标记
+    必须被替换成真标记，否则用户看到的是一串认不出来的文本（线上出现过）。
     """
     out = [str(piece) for piece in (pieces or []) if str(piece or "").strip()]
     if not sticker:
@@ -236,11 +240,37 @@ def _attach_sticker(pieces, sticker, reply="") -> list[str]:
     marker = _sticker_marker(sticker)
     if not marker:
         return out
-    if any("[sticker:" in piece for piece in out):
-        return out
+    # 先把模型可能手写的无效标记清掉，统一由这里生成
+    cleaned = []
+    for piece in out:
+        if _STICKER_TOKEN.search(piece):
+            if _has_valid_sticker_marker(piece):
+                return out          # 已有有效标记，保持原样
+            piece = _STICKER_TOKEN.sub("", piece).strip()
+        if piece:
+            cleaned.append(piece)
+    out = cleaned
     if not out:
         return [marker]
     return out[:-1] + [f"{out[-1]}\n{marker}"]
+
+
+def _has_valid_sticker_marker(text: str) -> bool:
+    """这段文字里有没有**前端能渲染**的表情标记。
+
+    有效形式只有两种：
+      [sticker:崩溃]                    —— 内置图（名字必须在 STICKER_NAMES 里）
+      [sticker:url=...&w=&h=]           —— 在线/本地贴纸
+    模型手写的中文名（如 [sticker:笑死]）不算。
+    """
+    for token in _STICKER_TOKEN.findall(str(text or "")):
+        inner = token[len("[sticker:"):-1].strip() if token.startswith("[sticker:") \
+            else token[len("[sticker："):-1].strip()
+        if inner.startswith("url="):
+            return True
+        if inner in STICKER_NAMES:
+            return True
+    return False
 
 
 SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依据、可追踪的分析。

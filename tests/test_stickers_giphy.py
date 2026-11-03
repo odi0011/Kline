@@ -983,10 +983,14 @@ def test_marker_written_by_model_survives_split():
 
 
 def test_attach_does_not_duplicate_when_marker_kept():
-    """分段里已经有标记时不能重复追加。"""
+    """分段里已经有**有效**标记时不能重复追加。
+
+    注意要用内置名（崩溃/疑问/嘲讽）或 url= 形式；
+    "[sticker:摊手]" 这种库里中文名不算有效——见 test_invalid_handwritten_marker_is_replaced。
+    """
     sticker = {"url": "/agent-attachments/stickers/a.gif", "width": 10, "height": 10}
-    out = _attach_sticker(["[sticker:摊手]"], sticker, "[sticker:摊手]")
-    assert out == ["[sticker:摊手]"]
+    out = _attach_sticker(["[sticker:崩溃]"], sticker, "[sticker:崩溃]")
+    assert out == ["[sticker:崩溃]"]
 
 
 # ---------------- K. 服务端兜底：该发时必须真的发 ----------------
@@ -1237,3 +1241,37 @@ def test_marker_is_never_truncated():
     out2 = _trim_bubble(long)
     assert marker in out2
     assert len(out2) < len(long)
+
+
+def test_invalid_handwritten_marker_is_replaced():
+    """模型手写 [sticker:笑死]（库里的中文名）时，要换成真标记。
+
+    前端只认内置名或 url= 形式。手写的中文名渲染不出来，
+    用户看到的就是一串认不出的文本（线上截图里的 `[sticker:笑死]`）。
+    """
+    from ai.agent import split_reply
+    sticker = {"url": "/agent-attachments/stickers/x1.gif",
+               "width": 480, "height": 311, "id": "x1"}
+    reply = "[sticker:笑死]"
+    out = _attach_sticker(split_reply(reply, detailed=False), sticker, reply)
+    assert len(out) == 1
+    assert "url=" in out[0], out
+    assert "笑死" not in out[0]
+
+
+def test_valid_handwritten_marker_is_kept():
+    """模型写的是有效标记（内置名）→ 不重复追加。"""
+    from ai.agent import split_reply
+    sticker = {"url": "/agent-attachments/stickers/x1.gif",
+               "width": 480, "height": 311, "id": "x1"}
+    reply = "[sticker:崩溃]"
+    out = _attach_sticker(split_reply(reply, detailed=False), sticker, reply)
+    assert out == ["[sticker:崩溃]"]
+
+
+def test_marker_validity_check():
+    from ai.agent import _has_valid_sticker_marker
+    assert _has_valid_sticker_marker("[sticker:崩溃]")
+    assert _has_valid_sticker_marker("[sticker:url=%2Fa.gif&w=1&h=1]")
+    assert not _has_valid_sticker_marker("[sticker:笑死]")
+    assert not _has_valid_sticker_marker("普通文字")
