@@ -6,7 +6,8 @@ import math
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-PREFERENCE_KEYS = ("language", "response_style", "watch_symbols", "timezone")
+PREFERENCE_KEYS = ("language", "response_style", "watch_symbols", "timezone",
+                  "order_confirm")
 _SECRET = re.compile(r"key|secret|token|password|passwd|credential|authorization|cookie|私钥|密钥|密码", re.I)
 
 # 可用表情包的名字。素材在 web/public/stickers/，
@@ -209,6 +210,9 @@ def validate_preference(key, value):
             ZoneInfo(value)
         except (ValueError, ZoneInfoNotFoundError):
             raise ValueError("timezone 需为有效 IANA 时区") from None
+    # 下单前要不要先问：ask=每次都问（默认）/ auto=直接干，不再确认
+    if key == "order_confirm" and value not in ("ask", "auto"):
+        raise ValueError("order_confirm 仅支持 ask / auto")
     return value
 
 
@@ -221,6 +225,28 @@ def preference_update(arguments, prompt):
         raise ValueError("需要本条用户指令明确要求保存偏好的原文证据")
     # 检查用户完整命令，不允许从“不要记住…”裁掉否定词，或从引用的新闻中摘取指令。
     commands = re.split(r"[。！？!?\n;；]", prompt)
+    if key == "order_confirm":
+        # 这一项天然带否定词（"以后别问我"），套用下面"不许出现 别/不要"的规则
+        # 会把用户最常见的说法直接判死。改成识别"以后…别问/直接干"这类明确指令。
+        # 但整句如果是转述/引用（"新闻里说…""他说…"），不能当授权。
+        if re.search(r"新闻|报道|文章|他说|她说|据说|听说|消息说|公告|"
+                     r"said|report|news", prompt, re.I):
+            raise ValueError("转述或引用外部内容不算授权，需要用户本人直接要求")
+        if value == "auto":
+            ok = any(evidence in cmd and re.search(
+                r"别问|不用问|别再问|不必问|不用确认|别再确认|"
+                r"直接(干|下|开|做|执行|发)|以后(都)?不用问|"
+                r"don'?t ask|just do it|no need to ask", cmd, re.I)
+                for cmd in commands)
+        else:
+            ok = any(evidence in cmd and re.search(
+                r"每次(都)?(问|确认)|先问(我)?|要(我)?确认|必须确认|"
+                r"ask me first", cmd, re.I)
+                for cmd in commands)
+        if not ok:
+            raise ValueError("需要用户明确说'以后别问、直接干'或'每次先问'；"
+                             "引用或推测不算授权")
+        return key, value
     directive = r"^\s*(?:(?:请你|请帮我|请|帮我)?(?:记住|保存)|(?:please\s+)?(?:remember|save)\b)"
     if not any(evidence in command and re.search(directive, command, re.I)
                and not re.search(r"不要|别|不许|do not|don't|never", command, re.I)

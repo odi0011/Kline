@@ -17,8 +17,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from ai import pricing, sandbox
-from ai.agent_tools import (TOOLS, TOOL_NAMES, STICKER_NAMES, bounded, clean,
-                            preference_update, read_snapshot, validate_preference)
+from ai.agent_tools import (TOOLS, TOOL_NAMES, PREFERENCE_KEYS, STICKER_NAMES,
+                            bounded, clean, preference_update, read_snapshot,
+                            validate_preference)
 from ai.provider import chat_completion
 
 # 回复长度硬限制：默认一句话说完，只有用户明确要求分析才允许多句。
@@ -343,6 +344,22 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
  · 下单成功后要说清楚成交价、数量和挂上的止损止盈；没成交/被交易所拒绝要原样报错
  · 你依然不能执行任意 shell、读任意文件、改风控或系统参数，不得声称做过这些操作。
 
+【确认方式：用说话问，不用卡片】
+你不是一个点按钮的工具，是个人助手——所以下单前的确认就用**一句话问**。
+ · **问什么由你自己决定**，按这笔单的风险来：
+   小单、跟前面聊过的判断一致 → 一句话带过：「100U 空 BTC 10 倍，下？」
+   大单、高杠杆、逆着当前信号 → 把关键点挑出来问：
+     「5 万全仓 100 倍，止损就在 0.4% 外，插针就没了。确定？」
+   数据本身有问题 → 先问清楚意图，别猜：「5000U 是保证金还是名义？」
+ · 复述的参数别照抄所有字段，挑用户关心那几个（方向、数量、杠杆、止损）。
+ · 用户回「确认 / 下 / 干 / 可以 / 嗯」都算确认；回「等等 / 算了 / 改一下」就别下。
+ · **用户授权免确认时要记住**：他说过「以后别问我，直接干」「不用确认了」之后，
+   立刻用 save_preference(key="order_confirm", value="auto", evidence=原话)
+   存下来，之后直接执行、不再问。反过来说「还是问一下」就存 value="ask"。
+ · 存过 auto 之后，只在**两种情况**仍要开口：金额/杠杆明显异常（小数点丢了一位）、
+   或者数据/参数算不出来。其余直接做，做完一句话报结果。
+ · 这条偏好跨会话有效，不要每次重新问。
+
 【沙盒】你有一个受限沙盒，可以写脚本、跑命令、处理数据：
  · sandbox_write / sandbox_read / sandbox_list：在工作目录里读写文件
  · sandbox_run：执行 python/node/bash/grep/jq 等白名单命令
@@ -554,7 +571,46 @@ def _concat_user_content(first, second):
     return list(left) + list(right)
 
 
-def _system_content(custom) -> str:
+def _memory_block(memory) -> str:
+    """把已保存的偏好渲染成一段 system 文本。
+
+    偏好原来只能靠 read_memory 工具主动读，模型默认看不见——
+    于是"以后别问我"存进去了，下一句它还是问。这里直接注入，
+    存过的东西每一轮都在眼前。
+
+    只渲染白名单键（save_preference 的 enum 决定），不放任意文本。
+    """
+    if not isinstance(memory, dict) or not memory:
+        return ""
+    lines = []
+    labels = {
+        "language": "回答语言",
+        "response_style": "回答风格",
+        "watch_symbols": "常看的币种",
+        "timezone": "时区",
+        "order_confirm": "下单确认方式",
+    }
+    for key in PREFERENCE_KEYS:
+        value = memory.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        if key == "order_confirm":
+            desc = ("auto = 用户已授权**免确认**，算完直接下单，不要再问"
+                    if value == "auto" else "ask = 下单前要先问一句")
+            lines.append(f" · {labels[key]}：{desc}")
+        else:
+            lines.append(f" · {labels[key]}：{value}")
+    if not lines:
+        return ""
+    order_line = ""
+    if memory.get("order_confirm") == "auto":
+        order_line = ("\n**用户已授权下单免确认**：算完直接执行，只在金额/杠杆"
+                      "明显异常或参数算不出来时才开口。别再问「要下吗」。")
+    return ("\n\n【用户已保存的偏好（必须遵守）】\n"
+            + "\n".join(lines) + order_line)
+
+
+def _system_content(custom, memory=None) -> str:
     """把部署者配置的身份设定并进系统提示词，作为同一条 system 消息。
 
     以前它被塞成一条 user 消息，开头还标着"仅为低优先级自定义风格"，
@@ -568,6 +624,8 @@ def _system_content(custom) -> str:
     # 表情包名字列表是运行时填进模板的：新增表情只要改 STICKER_NAMES，
     # 提示词自动同步，不用两处手抄。
     base = SYSTEM_PROMPT.replace("{{STICKER_NAMES}}", " / ".join(STICKER_NAMES))
+    # 偏好放在身份设定之前：它比"语气"重要，也不会被身份文本挤掉。
+    base += _memory_block(memory)
     if not text:
         return base
     return (base
@@ -907,7 +965,9 @@ class AgentManager:
         summary = state.get("chatSummary", "")
         if not isinstance(summary, str) or len(summary) > CONTEXT_SUMMARY_CHARS:
             raise ValueError("chatSummary 格式无效")
-        if len(tasks) > MAX_TASKS or len(chat) > 40 or not isinstance(memory, dict) or len(memory) > 4:
+        # 记忆上限跟白名单键数走，改 PREFERENCE_KEYS 时不用再回来改这个数字
+        if (len(tasks) > MAX_TASKS or len(chat) > 40 or not isinstance(memory, dict)
+                or len(memory) > len(PREFERENCE_KEYS)):
             raise ValueError("状态容量或 memory 格式无效")
         seen = set()
         for task in tasks:
@@ -2560,7 +2620,8 @@ class AgentManager:
     async def _agent_loop(self, target, prompt, model, history=None, attachments=None):
         config, selected = self._model(model)  # 配置、proxy、context 均不在线程中读取。
         proxy = self.proxy_fn() or None
-        messages = [{"role": "system", "content": _system_content(selected.get("system"))}]
+        messages = [{"role": "system",
+                     "content": _system_content(selected.get("system"), self.memory)}]
         for item in history or []:
             messages.append({"role": item["role"], "content": item["content"][:8000]})
         messages.append({"role": "user", "content": _user_content(prompt, attachments or [])})
