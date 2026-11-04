@@ -463,8 +463,9 @@ def _fetch_bytes(request: urllib.request.Request, proxy: str, timeout: float,
                  limit: int, retries: int = 0) -> tuple[bytes, object]:
     """发请求并读取最多 limit 字节，返回 (bytes, headers)。失败抛 _ProviderError。
 
-    retries：5xx 是搜索站点的瞬时限流，隔一下重试一次通常就过。
-    线上实测：Yahoo 连续请求几次后开始 500，几秒后同一请求恢复 200。
+    retries：5xx 是搜索站点的瞬时限流，退避后重试。
+    线上实测：Yahoo 连续请求几次后开始 500，隔几秒同一请求恢复 200；
+    1.2 秒的退避还在限流窗口里，所以按 1.5s → 3s 递增。
     """
     try:
         response = _open(request, proxy, timeout)
@@ -475,7 +476,7 @@ def _fetch_bytes(request: urllib.request.Request, proxy: str, timeout: float,
         if status >= 300:
             if 500 <= status < 600 and retries > 0:
                 _close_response(response)
-                time.sleep(1.2)
+                time.sleep(1.5 * (3 - retries))
                 return _fetch_bytes(request, proxy, timeout, limit, retries - 1)
             raise _ProviderError(f"服务返回 HTTP {status}")
         raw = response.read(limit + 1)
@@ -537,6 +538,47 @@ def _dedupe_results(results: list[dict]) -> list[dict]:
         seen.add(url)
         out.append(item)
     return out
+
+
+def _query_tokens(text) -> set[str]:
+    """把查询拆成可比较的词：拉丁词取 ≥3 字母，中文取 2 字切片。
+
+    中文没有空格，直接按整串比会永远不匹配；2 字切片能覆盖"恐慌贪婪"
+    这类词组，又不会像单字那样到处误命中。
+    """
+    text = str(text or "")
+    tokens = set()
+    for word in re.findall(r"[a-z0-9]{3,}", text.lower()):
+        tokens.add(word)
+    for run in re.findall(r"[\u4e00-\u9fff]{2,}", text):
+        for i in range(len(run) - 1):
+            tokens.add(run[i:i + 2])
+    return tokens
+
+
+def _relevant(results: list[dict], query: str) -> list[dict]:
+    """过滤掉与查询毫无实质交集的条目。
+
+    线上实测：Bing 对"比特币 恐慌贪婪指数"返回 bitbrowser（比特指纹浏览器）
+    和百度百科的"比特"词条——它有结果，所以会当成成功截停回退链。
+
+    判据要防止**中文二元组误命中**："比特"是"比特币"的切片，但也会命中
+    "比特指纹浏览器"。所以中文只算弱证据，必须凑够两个不同切片；
+    命中一个拉丁词（≥3 字母）才算强证据——那通常是真的主题词。
+    只要有一条沾边就整体保留（宁可多留，不要误杀），全不沾边才判无结果。
+    """
+    tokens = _query_tokens(query)
+    if not tokens or not results:
+        return results
+    latin = {t for t in tokens if t.isascii()}
+    kept = []
+    for item in results:
+        blob = f"{item.get('title') or ''} {item.get('snippet') or ''} " \
+               f"{item.get('url') or ''}".lower()
+        matched = {tok for tok in tokens if tok in blob}
+        if matched & latin or len(matched) >= 2:
+            kept.append(item)
+    return kept
 
 
 def _ddg_real_url(href) -> str:
@@ -816,8 +858,8 @@ def _search_bing(query: str, count: int, proxy: str, timeout: float) -> list[dic
 def _search_yahoo(query: str, count: int, proxy: str, timeout: float) -> list[dict]:
     url = YAHOO_URL + "?" + urllib.parse.urlencode({"p": query})
     request = urllib.request.Request(url, headers=dict(HEADERS))
-    # 搜索站点会瞬时限流 5xx；重试一次基本就过
-    text = _fetch_text(request, proxy, timeout, MAX_SEARCH_BYTES, retries=1)
+    # 搜索站点会瞬时限流 5xx；退避重试两次基本就过
+    text = _fetch_text(request, proxy, timeout, MAX_SEARCH_BYTES, retries=2)
     parser = _YahooParser()
     _feed_parser(parser, text)
     results = [_new_result(item.get("title"), _yahoo_real_url(item.get("href")),
@@ -869,9 +911,14 @@ def _web_search_impl(query, count, proxy, timeout) -> dict:
         except Exception as exc:
             errors.append(f"{provider}: {_short_error(exc)}")
             continue
-        if results:
-            return _search_ok(out, provider, results)
-        errors.append(f"{provider}: 无结果")
+        # 只对 Bing 做相关性过滤：它常把"比特"匹配到指纹浏览器、
+        # 把"current"匹配到 current.com，那种结果比没有更糟。
+        # DDG/Yahoo 的结果质量可靠，过滤反而会误杀——英文页面答中文
+        # 查询时本来就可能一个词都不重合。
+        kept = _relevant(results, cleaned) if (results and provider == "bing") else results
+        if kept:
+            return _search_ok(out, provider, kept)
+        errors.append(f"{provider}: 无相关结果" if results else f"{provider}: 无结果")
 
     out["error"] = _short_error("搜索失败：" + "；".join(errors) if errors else "搜索失败")
     return out
@@ -886,8 +933,9 @@ def web_search(query: str, count: int = 5, proxy: str = "",
        "query": str, "results": [{"title","url","snippet"}],
        "count": int, "error": str}
 
-    provider 顺序：Serper（配置 KLINE_SERPER_KEY 时）→ DuckDuckGo HTML → Bing。
-    任一 provider 成功且结果非空即返回；全部失败时 ok=False 并在 error 汇总原因。
+    provider 顺序：Serper（配置 KLINE_SERPER_KEY 时）→ DuckDuckGo HTML
+    → Yahoo → Bing。任一 provider 有**相关**结果即返回；全部失败时
+    ok=False 并在 error 汇总原因。
     """
     try:
         return _web_search_impl(query, count, proxy, timeout)

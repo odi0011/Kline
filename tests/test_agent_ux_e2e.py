@@ -665,12 +665,16 @@ def test_fetch_page_redirect_loop_limit(monkeypatch):
 
 def test_web_search_provider_fallback_and_never_raises(monkeypatch):
     def fail(*_a, **_k):
-        raise RuntimeError("ddg down")
+        raise RuntimeError("provider down")
 
     monkeypatch.setattr(search, "_search_duckduckgo", fail)
+    monkeypatch.setattr(search, "_search_yahoo", fail)
+    # Bing 的结果必须和查询沾边：不沾边的会被相关性过滤掉
+    # （线上实测 Bing 会把"比特"匹配到指纹浏览器）。
     monkeypatch.setattr(search, "_search_bing",
-                        lambda *_: [{"title": "B", "url": "https://example.com/b",
-                                     "snippet": "s"}])
+                        lambda *_: [{"title": "hello world",
+                                     "url": "https://example.com/b",
+                                     "snippet": "hello there"}])
     monkeypatch.delenv(search.SERPER_KEY_ENV, raising=False)
     out = search.web_search("hello", count=1)
     assert out["ok"] is True and out["provider"] == "bing" and out["count"] == 1

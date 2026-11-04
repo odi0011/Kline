@@ -365,9 +365,8 @@ def test_yahoo_real_url_passthrough_and_double_encoding():
 
 
 def test_fetch_bytes_retries_once_on_5xx(monkeypatch):
-    """搜索站点会瞬时限流 5xx，隔一下重试一次就该过。"""
+    """搜索站点会瞬时限流 5xx，退避后重试就该过。"""
     calls = []
-
     class _Resp:
         def __init__(self, status, body):
             self.status = status
@@ -975,3 +974,47 @@ def test_search_provider_private_dns_blocked_without_connection(monkeypatch):
     assert out["ok"] is False and out["provider"] == ""
     assert connections == [], "DNS 解析到内网时不得建立任何连接"
     assert "内网" in out["error"] or "保留" in out["error"]
+
+
+# ---------- Bing 垃圾结果过滤 ----------
+
+def test_bing_irrelevant_results_are_rejected(monkeypatch):
+    """Bing 把"比特"匹配到指纹浏览器时必须判为无结果。
+
+    线上实测：查"比特币 恐慌贪婪指数"返回 bitbrowser（比特指纹浏览器）
+    和百度百科"比特"词条——有结果就会截停回退链，等于拿垃圾当答案。
+    """
+    junk = """<html><body><ol id="b_results">
+    <li class="b_algo"><h2><a href="https://www.bitbrowser.cn/">比特指纹浏览器</a></h2>
+      <p>防关联指纹浏览器，跨境电商多开</p></li>
+    <li class="b_algo"><h2><a href="https://baike.baidu.com/item/%E6%AF%94%E7%89%B9">比特</a></h2>
+      <p>比特（BIT，Binary digit），计算机术语，信息量单位</p></li>
+    </ol></body></html>"""
+    fake, _ = _routes_open({
+        "duckduckgo": urllib.error.URLError("ddg down"),
+        "yahoo": urllib.error.URLError("yahoo down"),
+        "bing": junk,
+    })
+    monkeypatch.setattr(search, "_open", fake)
+    out = search.web_search("比特币 恐慌贪婪指数")
+    assert out["ok"] is False, out
+    assert "无相关结果" in out["error"]
+
+
+def test_bing_relevant_results_pass_through(monkeypatch):
+    """沾边的结果要保留，别把能用的也一起毙了。"""
+    fake, _ = _routes_open({
+        "duckduckgo": urllib.error.URLError("ddg down"),
+        "yahoo": urllib.error.URLError("yahoo down"),
+        "bing": BING_HTML,
+    })
+    monkeypatch.setattr(search, "_open", fake)
+    out = search.web_search("bing title")
+    assert out["ok"] is True and out["provider"] == "bing"
+    assert out["count"] == 2
+
+
+def test_relevance_tokens_cover_chinese_bigrams():
+    tokens = search._query_tokens("比特币 恐慌贪婪指数")
+    assert "恐慌" in tokens and "贪婪" in tokens
+    assert search._query_tokens("FOMC meeting") == {"fomc", "meeting"}
