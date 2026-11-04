@@ -159,6 +159,20 @@ DDG_HTML = """<html><body>
 </div>
 </body></html>"""
 
+YAHOO_HTML = """<html><body>
+<div class="dd fst algo algo-sr relsrch Sr">
+  <div class="compTitle"><a href="https://r.search.yahoo.com/_ylt=A2/RV=2/RU=https%3a%2f%2fnews.example.com%2Fa/RK=2/RS=x">
+    <div class="thmb"><img src="x"/></div>
+    <h3 class="title"><span>Yahoo Title One</span></h3></a></div>
+  <div class="compText"><p class="fc-dustygray">Yahoo snippet &amp; one</p></div>
+</div>
+<div class="dd algo algo-sr relsrch Sr">
+  <div><a href="https://r.search.yahoo.com/_ylt=A3/RV=2/RU=https%3a%2f%2fnews.example.com%2fb/RK=2">
+    <h3><span>Yahoo Title Two</span></h3></a></div>
+  <div><p>Yahoo snippet two</p></div>
+</div>
+</body></html>"""
+
 BING_HTML = """<html><body><ol id="b_results">
 <li class="b_algo">
   <h2><a href="https://news.example.com/a">Bing Title One</a></h2>
@@ -265,37 +279,57 @@ def test_count_is_clamped(monkeypatch):
 
 # ---------- web_search：回退链 ----------
 
-def test_ddg_failure_falls_back_to_bing(monkeypatch):
+def test_ddg_failure_falls_back_to_yahoo(monkeypatch):
+    """DDG 挂了要落到 Yahoo，**不是** Bing。
+
+    线上实测：Bing 对中文查询会返回与主题无关的结果（查 FOMC 给
+    current.com / 剑桥词典），有结果就会截停回退链，等于拿垃圾当答案。
+    所以顺序是 DDG → Yahoo → Bing。
+    """
     fake, calls = _routes_open({
         "duckduckgo": urllib.error.URLError("ddg down"),
-        "bing": BING_HTML,
+        "yahoo": YAHOO_HTML,
     })
     monkeypatch.setattr(search, "_open", fake)
 
     out = search.web_search("q", count=5)
-    assert out["ok"] is True and out["provider"] == "bing"
+    assert out["ok"] is True and out["provider"] == "yahoo"
     assert out["count"] == 2
     assert out["results"][0]["url"] == "https://news.example.com/a"
-    assert out["results"][0]["title"] == "Bing Title One"
-    assert out["results"][0]["snippet"] == "Bing snippet one & more"
+    assert out["results"][0]["title"] == "Yahoo Title One"
+    assert out["results"][0]["snippet"] == "Yahoo snippet & one"
     assert "duckduckgo.com" in calls[0]["url"]
-    assert "bing.com" in calls[1]["url"] and "setlang=zh-CN" in calls[1]["url"]
+    assert "search.yahoo.com" in calls[1]["url"] and "p=q" in calls[1]["url"]
 
 
-def test_empty_ddg_results_fall_back_to_bing(monkeypatch):
+def test_empty_ddg_results_fall_back_to_yahoo(monkeypatch):
     fake, calls = _routes_open({
         "duckduckgo": "<html><body>没有结果</body></html>",
+        "yahoo": YAHOO_HTML,
+    })
+    monkeypatch.setattr(search, "_open", fake)
+    out = search.web_search("q")
+    assert out["ok"] is True and out["provider"] == "yahoo"
+    assert len(calls) == 2
+
+
+def test_yahoo_failure_falls_back_to_bing(monkeypatch):
+    fake, calls = _routes_open({
+        "duckduckgo": urllib.error.URLError("ddg down"),
+        "yahoo": urllib.error.URLError("yahoo down"),
         "bing": BING_HTML,
     })
     monkeypatch.setattr(search, "_open", fake)
     out = search.web_search("q")
     assert out["ok"] is True and out["provider"] == "bing"
-    assert len(calls) == 2
+    assert out["count"] == 2
+    assert len(calls) == 3
 
 
 def test_all_providers_fail_returns_error_without_raising(monkeypatch):
     fake, calls = _routes_open({
         "duckduckgo": urllib.error.URLError("ddg down"),
+        "yahoo": urllib.error.URLError("yahoo down"),
         "bing": TimeoutError("slow"),
     })
     monkeypatch.setattr(search, "_open", fake)
@@ -305,7 +339,57 @@ def test_all_providers_fail_returns_error_without_raising(monkeypatch):
     assert out["results"] == [] and out["count"] == 0
     assert out["error"] and len(out["error"]) <= 200
     assert "duckduckgo" in out["error"] and "bing" in out["error"]
-    assert len(calls) == 2
+    assert len(calls) == 3
+
+
+# ---------- Yahoo 解析 ----------
+
+def test_yahoo_parser_extracts_wrapped_links():
+    """Yahoo 的链接是 r.search.yahoo.com/.../RU=<encoded>/，必须还原。"""
+    parser = search._YahooParser()
+    search._feed_parser(parser, YAHOO_HTML)
+    assert len(parser.results) == 2
+    assert search._yahoo_real_url(parser.results[0]["href"]) == \
+        "https://news.example.com/a"
+    assert parser.results[0]["snippet"] == "Yahoo snippet & one"
+
+
+def test_yahoo_real_url_passthrough_and_double_encoding():
+    assert search._yahoo_real_url("https://plain.example.com/x") == \
+        "https://plain.example.com/x"
+    # RU 段被二次转义时再解一层
+    wrapped = ("https://r.search.yahoo.com/x/RU=https%253A%252F%252Fexample.com"
+               "%252Fa/RK=2")
+    assert search._yahoo_real_url(wrapped) == "https://example.com/a"
+    assert search._yahoo_real_url("") == ""
+
+
+def test_fetch_bytes_retries_once_on_5xx(monkeypatch):
+    """搜索站点会瞬时限流 5xx，隔一下重试一次就该过。"""
+    calls = []
+
+    class _Resp:
+        def __init__(self, status, body):
+            self.status = status
+            self._body = body
+            self.headers = {"Content-Type": "text/html; charset=utf-8"}
+
+        def read(self, n=-1):
+            return self._body
+
+        def close(self):
+            pass
+
+    def fake_open(request, proxy="", timeout=10):
+        calls.append(request.get_full_url())
+        return _Resp(500, b"") if len(calls) == 1 else _Resp(200, b"<html>ok</html>")
+
+    monkeypatch.setattr(search, "_open", fake_open)
+    monkeypatch.setattr(search.time, "sleep", lambda _s: None)
+    text = search._fetch_text(
+        __import__("urllib.request", fromlist=["Request"]).Request("https://x.test/"),
+        "", 5, 1000, retries=1)
+    assert "ok" in text and len(calls) == 2
 
 
 # ---------- web_search：Serper 优先 ----------

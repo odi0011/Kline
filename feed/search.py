@@ -44,6 +44,7 @@ import os
 import re
 import socket
 import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -60,6 +61,9 @@ HEADERS = {
 SERPER_URL = "https://google.serper.dev/search"
 DDG_URL = "https://html.duckduckgo.com/html/"
 BING_URL = "https://www.bing.com/search"
+# Yahoo 作为最后一档：线上实测（2026-11）DDG 返回 202 空页、Bing 对中文
+# 查询经常 0 个 b_algo 块，两个都挂时搜索整块不可用，而 Yahoo 仍返回完整结果。
+YAHOO_URL = "https://search.yahoo.com/search"
 SERPER_KEY_ENV = "KLINE_SERPER_KEY"
 
 MAX_QUERY_CHARS = 200
@@ -456,8 +460,12 @@ def _open(request: urllib.request.Request, proxy: str = "",
 
 
 def _fetch_bytes(request: urllib.request.Request, proxy: str, timeout: float,
-                 limit: int) -> tuple[bytes, object]:
-    """发请求并读取最多 limit 字节，返回 (bytes, headers)。失败抛 _ProviderError。"""
+                 limit: int, retries: int = 0) -> tuple[bytes, object]:
+    """发请求并读取最多 limit 字节，返回 (bytes, headers)。失败抛 _ProviderError。
+
+    retries：5xx 是搜索站点的瞬时限流，隔一下重试一次通常就过。
+    线上实测：Yahoo 连续请求几次后开始 500，几秒后同一请求恢复 200。
+    """
     try:
         response = _open(request, proxy, timeout)
     except Exception as exc:
@@ -465,6 +473,10 @@ def _fetch_bytes(request: urllib.request.Request, proxy: str, timeout: float,
     try:
         status = int(getattr(response, "status", 0) or 0)
         if status >= 300:
+            if 500 <= status < 600 and retries > 0:
+                _close_response(response)
+                time.sleep(1.2)
+                return _fetch_bytes(request, proxy, timeout, limit, retries - 1)
             raise _ProviderError(f"服务返回 HTTP {status}")
         raw = response.read(limit + 1)
         headers = getattr(response, "headers", None)
@@ -482,8 +494,8 @@ def _fetch_bytes(request: urllib.request.Request, proxy: str, timeout: float,
 
 
 def _fetch_text(request: urllib.request.Request, proxy: str, timeout: float,
-                limit: int = MAX_SEARCH_BYTES) -> str:
-    raw, headers = _fetch_bytes(request, proxy, timeout, limit)
+                limit: int = MAX_SEARCH_BYTES, retries: int = 0) -> str:
+    raw, headers = _fetch_bytes(request, proxy, timeout, limit, retries)
     return _decode_body(raw, headers)
 
 
@@ -667,6 +679,93 @@ class _BingParser(HTMLParser):
             block["captures"][-1]["text"].append(data)
 
 
+class _YahooParser(HTMLParser):
+    """提取 Yahoo 结果块（div.dd.algo）里 h3 里的链接 + p 摘要。
+
+    Yahoo 的链接是 r.search.yahoo.com 包装的跳转，真实地址在
+    `/RU=<urlencoded>/`，由 _yahoo_real_url 还原。
+
+    块边界按**同层 div 数**算：块内还有好几层 div（compTitle/compText），
+    用总标签深度会在第一个内层 div 闭合时就误判块结束，摘要就丢了。
+    """
+
+    _BLOCK_CLASS = re.compile(r"(?:^|\s)algo(?:\s|$)")
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.results: list[dict] = []
+        self._block: dict | None = None
+        self._divs = 0
+        self._in_title = False
+        self._in_snippet = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = {str(n).lower(): (v or "") for n, v in attrs}
+        classes = attrs.get("class") or ""
+        if self._block is None:
+            if (tag == "div" and "relsrch" in classes
+                    and self._BLOCK_CLASS.search(classes)):
+                self._block = {"href": "", "title": [], "snippet": []}
+                self._divs = 1
+            return
+        if tag == "div":
+            self._divs += 1
+        elif tag == "a" and not self._block["href"]:
+            href = attrs.get("href") or ""
+            if "/RU=" in href or href.startswith("http"):
+                self._block["href"] = href
+                self._in_title = True
+        elif tag == "p" and not self._block["snippet"]:
+            self._in_snippet = True
+
+    def handle_startendtag(self, tag, attrs):
+        if tag not in _VOID_TAGS:
+            self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag):
+        if self._block is None:
+            return
+        if tag == "h3":
+            self._in_title = False
+        elif tag == "p":
+            self._in_snippet = False
+        elif tag == "div":
+            self._divs -= 1
+            if self._divs <= 0:
+                block = self._block
+                self._block = None
+                self._in_title = self._in_snippet = False
+                href = _collapse_ws(block["href"])
+                if href:
+                    self.results.append({
+                        "href": href,
+                        "title": _collapse_ws("".join(block["title"])),
+                        "snippet": _collapse_ws("".join(block["snippet"]))})
+
+    def handle_data(self, data):
+        if self._block is None or not data:
+            return
+        if self._in_title:
+            self._block["title"].append(data)
+        elif self._in_snippet:
+            self._block["snippet"].append(data)
+
+
+def _yahoo_real_url(href) -> str:
+    """Yahoo 结果链接是 r.search.yahoo.com/.../RU=<encoded>/...，还原真实 URL。"""
+    raw = html.unescape(str(href or "")).strip()
+    if not raw:
+        return ""
+    match = re.search(r"/RU=([^/]+)/", raw)
+    if not match:
+        return raw if raw.startswith("http") else ""
+    decoded = urllib.parse.unquote(match.group(1))
+    # Yahoo 的 RU 段有时把 % 再转义一次（%253A），再解一层
+    if "%" in decoded:
+        decoded = urllib.parse.unquote(decoded)
+    return decoded
+
+
 # ---------- 搜索 provider ----------
 
 def _search_serper(query: str, count: int, proxy: str, timeout: float,
@@ -714,6 +813,18 @@ def _search_bing(query: str, count: int, proxy: str, timeout: float) -> list[dic
     return _dedupe_results(results)[:count]
 
 
+def _search_yahoo(query: str, count: int, proxy: str, timeout: float) -> list[dict]:
+    url = YAHOO_URL + "?" + urllib.parse.urlencode({"p": query})
+    request = urllib.request.Request(url, headers=dict(HEADERS))
+    # 搜索站点会瞬时限流 5xx；重试一次基本就过
+    text = _fetch_text(request, proxy, timeout, MAX_SEARCH_BYTES, retries=1)
+    parser = _YahooParser()
+    _feed_parser(parser, text)
+    results = [_new_result(item.get("title"), _yahoo_real_url(item.get("href")),
+                           item.get("snippet")) for item in parser.results]
+    return _dedupe_results(results)[:count]
+
+
 def _search_ok(out: dict, provider: str, results: list[dict]) -> dict:
     out.update({"ok": True, "provider": provider, "results": results,
                 "count": len(results), "error": ""})
@@ -747,7 +858,11 @@ def _web_search_impl(query, count, proxy, timeout) -> dict:
         if not errors:
             errors.append("serper: 无结果")
 
+    # Yahoo 放在 Bing 前面：线上实测 Bing 对中文查询会返回与主题无关的
+    # 结果（查 FOMC 给 current.com / 剑桥词典），有结果就会截停回退链，
+    # 等于用垃圾结果冒充搜索成功。DDG 被限流(202)时 Yahoo 才是可靠的。
     for provider, search_fn in (("duckduckgo", _search_duckduckgo),
+                                ("yahoo", _search_yahoo),
                                 ("bing", _search_bing)):
         try:
             results = search_fn(cleaned, limit, proxy_value, timeout_value)
