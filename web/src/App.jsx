@@ -159,12 +159,6 @@ export default function App() {
     document.documentElement.style.setProperty('--accent', ui.themeColor)
     document.documentElement.style.setProperty('--accent-hue', String(hexHue(ui.themeColor).toFixed(1)))
   }, [ui.themeColor])
-  // 涨跌色同步成 CSS 变量：徽标/文字要用 var(--up)/var(--down) 着色，
-  // 用户切了"红涨绿跌"或自定义颜色时这里不写的话，CSS 里还是默认的绿涨。
-  useEffect(() => {
-    document.documentElement.style.setProperty('--up', chartColors.up)
-    document.documentElement.style.setProperty('--down', chartColors.down)
-  }, [chartColors])
   useEffect(() => {
     const fonts = {
       douyin: '"Douyin Sans", "Microsoft YaHei", system-ui, sans-serif',
@@ -180,6 +174,15 @@ export default function App() {
     if (ui.upDown === 'custom') return { up: ui.upColor, down: ui.downColor }
     return { up: '#16a34a', down: '#dc2626' }
   }, [ui.upDown, ui.upColor, ui.downColor])
+
+  // 涨跌色同步成 CSS 变量：徽标/文字要用 var(--up)/var(--down) 着色。
+  // 必须写在 chartColors 的 useMemo **之后**——REF 之前放在上面，
+  // 运行时直接抛 "Cannot access 'chartColors' before initialization"，
+  // 整个页面白屏（线上实测）。
+  useEffect(() => {
+    document.documentElement.style.setProperty('--up', chartColors.up)
+    document.documentElement.style.setProperty('--down', chartColors.down)
+  }, [chartColors])
 
   const connected = stats.status === 'connected'
   const mode = stats.mode || meta?.mode || ''
