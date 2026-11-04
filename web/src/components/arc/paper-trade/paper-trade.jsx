@@ -115,7 +115,7 @@ function MiniCandles({ candles, pos }) {
   )
 }
 
-const PaperCard = memo(function PaperCard({ pos, onRefresh, busy, price }) {
+const PaperCard = memo(function PaperCard({ pos, onRefresh, busy, price, total }) {
   if (!pos) return null
   const long = pos.direction === "long"
   // 实时价：订单簿中间价每 200ms 一推，比 5 秒一轮的 quant 快照新得多。
@@ -135,10 +135,19 @@ const PaperCard = memo(function PaperCard({ pos, onRefresh, busy, price }) {
   // 目标盈 / 止损亏：按名义价值算的绝对值
   const target = pos.notional * (Number(pos.tp_pct) || 0) / 100
   const risk = pos.notional * (Number(pos.sl_pct) || 0) / 100
-  // 胜率徽标档位：与 K 线形态卡片的「胜XX%」同一套分档（>=50 hi / >=10 mid / 其余 low），
-  // 颜色也从 --accent 派生，两边一眼能对上。
+  // 两个胜率是不同口径，必须分开显示：
+  //   winPct   = 这一仓的**估算**胜率（按 SL/TP 距离 + 信号分算的前瞻概率）
+  //   totalPct = 这个币**累计**已平仓的**实际**胜率（后验，来自 paper_trades）
+  // 摆在一起才能看出"信号说 65%、实际只赢 40%"这种偏差。
   const winPct = Number.isFinite(Number(pos.winrate)) ? Number(pos.winrate) : null
-  const winTier = winPct == null ? "" : winPct >= 50 ? "hi" : winPct >= 10 ? "mid" : "low"
+  // 分档与 K 线形态卡片的「胜XX%」完全一致（>=50 hi / >=10 mid / 其余 low）
+  const tierOf = (pct) => (pct == null ? "" : pct >= 50 ? "hi" : pct >= 10 ? "mid" : "low")
+  const winTier = tierOf(winPct)
+  const hist = total?.[pos.symbol] || null
+  const totalPct = hist && Number(hist.closed) > 0 && Number.isFinite(Number(hist.winrate))
+    ? Math.round(Number(hist.winrate))
+    : null
+  const totalTier = tierOf(totalPct)
 
   return (
     <article className={styles.card} data-tone={long ? "long" : "short"}>
@@ -152,13 +161,21 @@ const PaperCard = memo(function PaperCard({ pos, onRefresh, busy, price }) {
           onClick={() => onRefresh?.(pos.symbol)}>
           <RefreshCw size={11} strokeWidth={2.4} data-spin={busy || undefined} />
         </button>
-        {/* 右上角：这张仓位（该币全部模拟仓）的总预估胜率。
-            样式对齐 K 线形态卡片的「胜XX%」徽标——按档位取色，
-            不是自己画一块玻璃。 */}
-        <span className={`${styles.winrate} ${styles[winTier] || ""}`}
-          data-hi={winTier === "hi" || undefined}
-          title={`这张模拟仓的估算胜率 ${pos.winrate ?? "--"}%（含 SL/TP 距离、信号分、形态历史），不是已平仓的历史胜率`}>
-          胜{pos.winrate == null ? "--" : Math.round(pos.winrate)}%
+        {/* 右上角两枚胶囊徽标，样式对齐 K 线形态卡片：
+            左边「估XX%」= 这一仓的估算胜率（前瞻）
+            右边「胜XX%」= 这个币累计已平仓的实际胜率（后验） */}
+        <span className={styles.badges}>
+          <span className={`${styles.winrate} ${styles[winTier] || ""}`}
+            title={`这一仓的估算胜率 ${pos.winrate ?? "--"}%（按 SL/TP 距离、信号分、形态历史推算，是前瞻概率）`}>
+            估{winPct == null ? "--" : winPct}%
+          </span>
+          <span className={`${styles.winrate} ${styles[totalTier] || ""}`}
+            data-muted={totalPct == null || undefined}
+            title={totalPct == null
+              ? "这个币还没有平过仓，暂时没有实际胜率"
+              : `这个币累计 ${hist.closed} 笔已平仓：赢 ${hist.wins}、输 ${hist.losses} = ${totalPct}%`}>
+            胜{totalPct == null ? "--" : totalPct}%
+          </span>
         </span>
       </div>
 
@@ -201,7 +218,7 @@ const PaperCard = memo(function PaperCard({ pos, onRefresh, busy, price }) {
   )
 })
 
-export default function PaperTrade({ rows, depths, onRefresh, busySymbol }) {
+export default function PaperTrade({ rows, depths, onRefresh, busySymbol, bySymbol }) {
   const list = Array.isArray(rows) ? rows : []
   // 订单簿中间价：bids/asks 都是真实挂单，取最优买一卖一的中点
   const midOf = (sym) => {
@@ -224,7 +241,7 @@ export default function PaperTrade({ rows, depths, onRefresh, busySymbol }) {
           ? <p className={styles.empty}>等待评估数据…</p>
           : list.map((pos) => (
             <PaperCard key={pos.symbol} pos={pos} price={midOf(pos.symbol)}
-              onRefresh={onRefresh} busy={busySymbol === pos.symbol} />
+              total={bySymbol} onRefresh={onRefresh} busy={busySymbol === pos.symbol} />
           ))}
       </ScrollArea>
     </section>

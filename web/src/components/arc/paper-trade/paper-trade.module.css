@@ -52,13 +52,18 @@
 .chart { display: block; width: 100%; height: 100%; }
 .chartEmpty { height: 100%; background: rgba(28, 35, 51, 0.03); border-radius: 6px; }
 
-/* 胜率徽标：右上角，这张仓位的总预估胜率，是卡片里最先该看到的数字。
-   配色与 K 线形态卡片的「胜XX%」一致：同一个 --accent 声明的三档，
-   不自己做一块玻璃底。 */
-.winrate {
+/* 胜率徽标：右上角两枚并排，版式对齐 K 线形态卡片（.badges / .win-badge）：
+   「估XX%」= 这一仓的估算胜率（前瞻），「胜XX%」= 这个币累计实际胜率（后验）。
+   配色复用形态卡片那套 --accent 三档，不自己做玻璃底。 */
+.badges {
   position: absolute;
   top: 3px;
   right: 3px;
+  z-index: 2;
+  display: flex;
+  gap: 3px;
+}
+.winrate {
   padding: 0 6px;
   height: 14px;
   line-height: 14px;
@@ -66,12 +71,15 @@
   font-size: 9px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   background: rgba(28, 35, 51, 0.08);
   color: rgba(28, 35, 51, 0.55);
 }
 .winrate.low { background: color-mix(in srgb, var(--accent) 25%, transparent); color: #6a4a00; }
 .winrate.mid { background: color-mix(in srgb, var(--accent) 65%, transparent); color: #332600; }
 .winrate.hi { background: color-mix(in srgb, var(--accent) 55%, #201200); color: #ffedb0; }
+/* 没有历史数据的那枚压暗，避免和真实 0% 混淆 */
+.winrate[data-muted] { background: rgba(28, 35, 51, 0.05); color: rgba(28, 35, 51, 0.32); }
 
 /* 刷新钮：左上角，压在 K 线左上。图表区只有 62px 高，
    所以做成 16px 的小圆钮，hover 才明显，不挡K线。 */

@@ -2257,6 +2257,38 @@ class QuantEngine:
             self._event("error", f"模拟仓监控范围清理失败: {e}")
             return []
 
+    def _paper_by_symbol(self) -> dict:
+        """按币种的累计已平仓战绩：{symbol: {closed,wins,losses,winrate,netPnl}}。
+
+        和卡片上的"估算胜率"是两回事：
+          · 估算胜率 = 这一仓按 SL/TP 距离 + 信号分算的概率（前瞻）
+          · 累计胜率 = 这个币历史上平掉的单子赢了多少（后验）
+        两个都给前端，用户才能看出"信号说 65%，实际只赢 40%"这种偏差。
+
+        查询失败或没接数据库时退回内存窗口口径，不影响页面渲染。
+        """
+        try:
+            summary = self.paper.summary()
+        except Exception:
+            return {}
+        rows = summary.get("bySymbol") or []
+        out = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sym = str(row.get("symbol") or "")
+            if not sym:
+                continue
+            out[sym] = {
+                "closed": int(row.get("closed") or 0),
+                "wins": int(row.get("wins") or 0),
+                "losses": int(row.get("losses") or 0),
+                "winrate": row.get("winrate"),
+                "netPnl": row.get("netPnl"),
+                "source": summary.get("source") or "db",
+            }
+        return out
+
     def paper_refresh(self, symbol: str) -> dict | None:
         """手动刷新某个币的模拟仓：平掉当前、立刻按现状重开。
 
@@ -2375,6 +2407,10 @@ class QuantEngine:
                     lambda s: self.bars_fn(s) if self.bars_fn else []),
                 "paperStats": dict(self.paper.stats),
                 "paperHistory": self.paper.history_list()[-30:],
+                # 按币种的累计战绩（closed/wins/losses/winrate/netPnl）。
+                # 前端模拟仓卡片的第二个徽标要显示"这个币历史上赢了多少"，
+                # 与卡片上那个"当前仓的估算胜率"是两个口径，必须分开给。
+                "paperBySymbol": self._paper_by_symbol(),
                 # 当前持仓的开仓依据（供"为什么开了这个仓"回看）
                 "positionPlans": [
                     {k: p.get(k) for k in ("symbol", "side", "entry", "sl", "tp", "slPct",

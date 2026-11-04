@@ -34,12 +34,22 @@ def test_refresh_is_top_left():
     assert "onRefresh" in chart, "刷新钮应在图表区（左上）"
 
 
-def test_winrate_badge_top_right_and_labelled_sheng():
-    """右上角徽标写「胜XX%」，不是「估XX%」。"""
-    assert "胜{pos.winrate" in JSX, "徽标文案应为 胜XX%"
-    assert "估 {pos.winrate" not in JSX
-    block = re.search(r"\.winrate \{([^}]*)\}", CSS, re.S)
-    assert block and "right:" in block.group(1) and "top:" in block.group(1)
+def test_two_badges_estimated_and_total():
+    """右上角两枚徽标：这一仓的估算胜率 + 这个币累计实际胜率。
+
+    两者是不同口径，必须分开、并各自标注清楚：
+      估XX% = 前瞻概率（SL/TP 距离 + 信号分算出来的）
+      胜XX% = 后验实际值（这个币历史上平掉的单子里赢了多少）
+    """
+    assert "估{winPct" in JSX, "第一枚应为 估XX%"
+    assert "胜{totalPct" in JSX, "第二枚应为 胜XX%"
+    # 数据源不同：估算来自 pos.winrate，累计来自 paperBySymbol
+    assert "pos.winrate" in JSX
+    assert "total?.[pos.symbol]" in JSX
+    block = re.search(r"\.badges \{([^}]*)\}", CSS, re.S)
+    assert block, "缺少 .badges 容器样式"
+    assert "right:" in block.group(1) and "top:" in block.group(1)
+    assert "display: flex" in block.group(1)
 
 
 def test_winrate_colours_match_pattern_badge():
@@ -57,8 +67,11 @@ def test_winrate_colours_match_pattern_badge():
 
 def test_winrate_tier_thresholds_match_pattern_cards():
     """分档阈值与形态卡片一致：>=50 hi、>=10 mid、其余 low。"""
-    assert "winPct >= 50 ? \"hi\"" in JSX
-    assert "winPct >= 10 ? \"mid\"" in JSX
+    # 模拟仓用 tierOf() 统一分档（两枚徽标都走它）
+    assert "pct >= 50 ? \"hi\"" in JSX
+    assert "pct >= 10 ? \"mid\"" in JSX
+    assert "const tierOf" in JSX
+    # 形态卡片那边是同样的阈值
     app = (REPO / "web/src/App.jsx").read_text(encoding="utf-8")
     assert "winPct >= 50 ? 'hi'" in app
     assert "winPct >= 10 ? 'mid'" in app

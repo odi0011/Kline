@@ -121,7 +121,7 @@ class BroadcastHub:
     # 它们是调试与回溯用的，前端没有任何地方读，每 5 秒全量推纯属浪费。
     # 注意 calcStream（68KB）必须保留：计算流水面板靠它实时滚动。
     _WIRE_ANALYSIS = ("symbols", "liveFeatures", "liveEvaluations", "liveScoreHistory",
-                      "calcStream", "advice", "paper", "paperStats", "positionPlans",
+                      "calcStream", "advice", "paper", "paperStats", "paperBySymbol", "positionPlans",
                       "params", "drawdown", "drift")
     _WIRE_TOP = ("enabled", "ts", "stats", "events", "positions", "trades", "accounts",
                  "unsupported")

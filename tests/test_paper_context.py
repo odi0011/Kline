@@ -64,3 +64,37 @@ def test_engine_snapshot_paper_is_projectable(tmp_path):
     assert data["openPositions"][0]["symbol"] == "btcusdt"
     assert data["realized"]["bySymbol"][0]["symbol"] == "btcusdt"
     assert data["realized"]["bySymbol"][0]["closed"] == 1
+
+
+def test_snapshot_exposes_paper_by_symbol(tmp_path):
+    """快照要带按币种的累计战绩，前端第二枚徽标靠它。
+
+    卡片上有两个胜率：当前仓的估算值（前瞻）和这个币累计的实际值（后验）。
+    后者必须由后端算好，前端不该自己从 history 里凑。
+    """
+    eng = _engine(tmp_path)
+    eng.bars_fn = lambda sym: []
+    eng.paper = PaperBook()
+    # 制造两胜一负
+    for _ in range(2):
+        eng.paper.tick("btcusdt", _ctx())
+        eng.paper.tick("btcusdt", _ctx(price=eng.paper.positions["btcusdt"].tp + 1))
+    eng.paper.tick("ethusdt", _ctx(price=50.0))
+    eng.paper.tick("ethusdt", {"price": 40.0, "atr": 2.0, "score": 70, "gap": 20,
+                               "grade": "medium", "direction": "bullish",
+                               "reason": "t", "regime": "trend", "pattern": "",
+                               "patternStats": {}, "maxLeverage": 20})
+    eng.symbol_filter = {"btcusdt", "ethusdt"}
+
+    snap = eng.snapshot()
+    by = snap["analysis"]["paperBySymbol"]
+    assert by, "应该按币种给出累计战绩"
+    row = by["btcusdt"]
+    # 结构完整：前端要 closed/wins/losses/winrate 才能画徽标
+    for key in ("closed", "wins", "losses", "winrate", "netPnl", "source"):
+        assert key in row, f"缺少 {key}"
+    assert row["closed"] > 0
+    assert 0 <= row["winrate"] <= 100
+    assert row["wins"] + row["losses"] <= row["closed"]
+    # 累计口径（纸面已平仓）和当前仓的估算口径是两个字段，不能互相覆盖
+    assert "winrate" in snap["analysis"]["paper"][0]

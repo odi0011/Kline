@@ -885,6 +885,7 @@ export default function App() {
           onToggle={(v) => liveRef.current && liveRef.current.sendSettings({ quant: { enabled: v } })} />
         <div className="row3-stack">
           <PaperTrade rows={quantSnap?.analysis?.paper} depths={depths}
+            bySymbol={quantSnap?.analysis?.paperBySymbol}
             onRefresh={refreshPaper} busySymbol={paperBusy} />
           <PositionHistory trades={quantTrades} chartColors={chartColors} />
         </div>
