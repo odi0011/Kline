@@ -132,6 +132,65 @@ function SqueezeBar({ v, label, value, status, metricKey }) {
   )
 }
 
+/* 账户级风险条：一行里同时看到"回撤"和"尾部风险"。
+
+   为什么放这里而不是 K 线卡浮层：
+     · 回撤和 CVaR 都是**账户级**指标，与具体某个币无关；
+       之前把它们画进每张 K 线卡的浮层，4 个币就画了 4 份一模一样的数据。
+     · 这是"能不能扛住"的第一眼答案，应该固定可见，而不是要悬停才看得到。
+   样本不足时明确写"样本不足"——几笔样本算出的尾部数字比没有更危险。 */
+function RiskStrip({ analysis, chartColors }) {
+  const dd = analysis?.drawdown
+  const risk = analysis?.risk
+  const up = chartColors?.up || "#16a34a"
+  const down = chartColors?.down || "#dc2626"
+  if (!dd && !risk) return null
+
+  const pct = (v, d = 2) => (Number.isFinite(Number(v)) ? `${(Number(v) * 100).toFixed(d)}%` : "--")
+  const ddCur = Number.isFinite(Number(dd?.current)) ? Number(dd.current) : null
+  const ddMax = Number.isFinite(Number(dd?.max)) ? Number(dd.max) : null
+  const paused = dd?.paused === true
+  const samples = Number(risk?.samples) || 0
+  const cvar95 = risk?.enoughSamples ? risk?.cvar95 : null
+  const vol = Number.isFinite(Number(risk?.volatility)) ? Number(risk.volatility) : null
+  // 回撤持续了多少个采样点：权益采样约 5 秒一次，可直接换算成分钟
+  const bars = Number(dd?.currentBars) || 0
+  const heldMin = bars > 0 ? Math.round((bars * 5) / 60) : 0
+
+  return (
+    <div className={styles.riskStrip} data-paused={paused || undefined}
+      role="group" aria-label="账户风险">
+      <span className={styles.riskCell}
+        title="当前回撤 / 历史最大回撤（从峰值往下，账户级）">
+        <u>回撤</u>
+        <b style={{ color: ddCur != null && ddCur < -0.01 ? down : "inherit" }}>
+          {ddCur == null ? "--" : `${ddCur.toFixed(2)}%`}
+        </b>
+        <i>最大 {ddMax == null ? "--" : `${ddMax.toFixed(2)}%`}</i>
+      </span>
+      <span className={styles.riskCell}
+        title="当前回撤已经持续多久（按权益采样间隔估算）">
+        <u>持续</u>
+        <b>{heldMin >= 60 ? `${Math.floor(heldMin / 60)}h${heldMin % 60}m` : `${heldMin}m`}</b>
+      </span>
+      <span className={styles.riskCell}
+        title="CVaR95：最差 5% 平仓样本的平均收益率（历史样本口径，不是拟合分布）">
+        <u>CVaR95</u>
+        <b style={{ color: cvar95 != null && cvar95 < 0 ? down : "inherit" }}>
+          {cvar95 == null ? "样本不足" : pct(cvar95)}
+        </b>
+        <i>{samples} 笔</i>
+      </span>
+      <span className={styles.riskCell} title="已实现波动率：收益率样本标准差（不年化）">
+        <u>波动率</u>
+        <b>{vol == null ? "--" : pct(vol)}</b>
+      </span>
+      {paused && <span className={styles.riskPaused}>熔断中</span>}
+    </div>
+  )
+}
+
+
 export default function StrategyPanel({ analysis, symbols, chartColors }) {
   const syms = analysis?.symbols || {}
   const params = analysis?.params
@@ -175,6 +234,10 @@ export default function StrategyPanel({ analysis, symbols, chartColors }) {
 
   return (
     <section className={styles.wrap} aria-label="决策依据">
+      {/* 账户级风险条：回撤 + 尾部风险。
+          这两样之前只散落在每张 K 线卡的浮层里（同一份账户数据画了 4 遍），
+          而"账户能不能扛住"是**全局**问题，放在币种宫格外面才对。 */}
+      <RiskStrip analysis={analysis} chartColors={chartColors} />
       {cards.length === 0 ? (
         <div className={styles.empty}>等待指标计算（需至少 30 根K线）…</div>
       ) : (

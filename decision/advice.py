@@ -185,21 +185,27 @@ def build_advice(symbol: str, state: dict, evaluation: dict,
     direction = evaluation.get("direction")
     grade = evaluation.get("grade")
     vetoes = evaluation.get("vetoes") or []
+    # 评分口径跟着结论一起走：basis=closedBar 表示"上一根已收盘K线"算出的
+    # （同一根内不变），basis=liveBar 表示还在用盘中K线。不带出去，
+    # 用户会拿跳动的K线图去对不变的分数，以为数据坏了。
+    extra = {"basis": evaluation.get("basis") or ""}
+    if evaluation.get("smoothing"):
+        extra["smoothing"] = evaluation["smoothing"]
 
     # 中性/看空方向、或评分不够：明确说不动，别让用户自己猜
     if direction not in ("bullish", "bearish"):
-        return {**advice, "action": "wait", "reason": "方向不明"}
+        return {**advice, **extra, "action": "wait", "reason": "方向不明"}
     if grade in ("none", None):
-        return {**advice, "action": "wait", "reason": "信号弱", "score": score}
+        return {**advice, **extra, "action": "wait", "reason": "信号弱", "score": score}
     if vetoes:
-        return {**advice, "action": "wait", "reason": str(vetoes[0])[:40], "score": score}
+        return {**advice, **extra, "action": "wait", "reason": str(vetoes[0])[:40], "score": score}
     if score is None or gap is None or score < 52 or gap < 6:
-        return {**advice, "action": "wait", "reason": "优势不足", "score": score}
+        return {**advice, **extra, "action": "wait", "reason": "优势不足", "score": score}
 
     bullish = direction == "bullish"
     plan = _stop_plan(price, atr, bullish)
     if not plan:
-        return {**advice, "action": "wait", "reason": "等待价格"}
+        return {**advice, **extra, "action": "wait", "reason": "等待价格"}
     lev = _suggest_leverage(max_leverage, score, plan["slPct"], atr_pct)
     return {
         **advice,
@@ -219,4 +225,5 @@ def build_advice(symbol: str, state: dict, evaluation: dict,
         **_entry_hint(price, bullish, atr, plan),
         # 方向锁定状态：上一轮是什么方向、这轮有没有被"绑住"
         "directionLatched": bool(evaluation.get("latched")),
+        **extra,
     }

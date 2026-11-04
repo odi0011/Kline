@@ -22,7 +22,7 @@ const fmtCross = (t) => {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
 }
 
-export default function CoinCard({ symbol, intervals, settings, live, chartColors, activeHit, onHoverHits, account, accountSeries, registerAnchor, advice }) {
+export default function CoinCard({ symbol, intervals, settings, live, chartColors, activeHit, onHoverHits, account, accountSeries, registerAnchor, advice, risk }) {
   const hitActive = !!activeHit
   const boxRef = useRef(null)
   const chgRef = useRef(null)
@@ -363,7 +363,8 @@ export default function CoinCard({ symbol, intervals, settings, live, chartColor
       <div ref={boxRef} className="chart-box">
         <TradeAdvice advice={advice} chartColors={chartColors} />
         <ChartOverlay symbol={symbol} bars={bars} depth={depth}
-          account={account} series={accountSeries} chartColors={chartColors} />
+          account={account} series={accountSeries} chartColors={chartColors}
+          risk={risk} />
         <StructureOverlay chartRef={chartRef} seriesRef={candleRef} structure={structure}
           interval={intervalRef.current} visibleBars={settings.visibleBars} />
         {hover && (

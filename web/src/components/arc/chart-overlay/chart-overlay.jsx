@@ -2,8 +2,10 @@
    三个真实数据图同屏纵向排列，不再用 tab 切换：
      1. 买卖力量：每根K线的主动买量 vs 主动卖量（aggTrade 的 isBuyerMaker）
      2. 订单簿深度：真实挂单累积量（/public depth 流，20 档）
-     3. 权益与回撤：账户权益采样 + 从峰值回撤（MySQL equity 表）
-   全部数据来自服务端，没有随机数。风险敞口移至别处。 */
+     3. 风险画像：CVaR / 已实现波动率 / 平仓样本数
+   全部数据来自服务端，没有随机数。
+   **账户权益不在这里**：那是账户级数据，权威位置是账户卡（那里有曲线和日热力图）。
+   之前把它画进每张 K 线卡，4 个币就出现 4 份一模一样的图。 */
 import { useEffect, useMemo, useRef, useState } from "react"
 import { LiquidGlass } from "@/components/ui/liquid-glass"
 import styles from "./chart-overlay.module.css"
@@ -123,53 +125,38 @@ function DepthView({ depth, chartColors }) {
   )
 }
 
-/* ---------- 3. 资金曲线 + 回撤 ---------- */
-function EquityView({ series, chartColors }) {
-  const geo = useMemo(() => {
-    const ss = (series || []).slice(-160)
-    if (ss.length < 2) return null
-    const vals = ss.map(s => s.bal)
-    const min = Math.min(...vals), max = Math.max(...vals)
-    const span = max - min || 1
-    // 回撤：从历史峰值往下的百分比
-    let peak = -Infinity
-    const dd = ss.map((s) => {
-      if (s.bal > peak) peak = s.bal
-      return peak > 0 ? ((s.bal - peak) / peak) * 100 : 0
-    })
-    const maxDD = Math.min(...dd)
-    const curDD = dd[dd.length - 1]
-    const W = 100, H = 100
-    const pts = ss.map((s, i) => [
-      (i / (ss.length - 1)) * W,
-      H - ((s.bal - min) / span) * (H - 8) - 4,
-    ])
-    const line = pts.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(2)},${y.toFixed(2)}`).join("")
-    return {
-      line, area: `${line}L${W},${H}L0,${H}Z`,
-      min, max, cur: vals[vals.length - 1],
-      maxDD, curDD, n: ss.length,
-    }
-  }, [series])
+/* ---------- 3. 风险：尾部画像 + 回撤 ----------
+   原来这一格画的是"权益与回撤"，也就是把同一个账户权益在**每张K线卡**
+   里各画一遍（4 个币 = 4 份完全相同的图），而且第三个数字标错了：
+   渲染的是 maxDD（最大回撤）却写成了"峰值"，跟账户卡里真正的
+   最高权益 7366.08 对不上——同一个账户两个"峰值"，一个 0.00%、
+   一个 7366.08 USDT。
 
-  if (!geo) return <div className={styles.hint}>权益采样中…</div>
+   权益曲线已经由账户卡负责（那一处才是权威），这里改画**这张卡自己的
+   风险画像**：CVaR / 波动率 / 样本数。这是每张 K 线卡唯一的、不重复的信息。 */
+function RiskView({ risk, chartColors }) {
+  const r = risk || {}
+  const samples = Number(r.samples) || 0
+  const cvar95 = Number.isFinite(Number(r.cvar95)) ? Number(r.cvar95) : null
+  const vol = Number.isFinite(Number(r.volatility)) ? Number(r.volatility) : null
+  const worst = Number.isFinite(Number(r.worst)) ? Number(r.worst) : null
+  // 样本不足时明确说"样本不足"，绝不拿几笔样本算一个看起来像风险的数
+  if (!samples) return <div className={styles.hint}>还没有平仓样本</div>
+  const pct = (v, d = 2) => (v == null ? "--" : `${(v * 100).toFixed(d)}%`)
   return (
     <div className={styles.view}>
       <div className={styles.metricRow}>
-        <span>{geo.cur.toFixed(1)}</span>
-        <span style={{ color: geo.curDD < -0.01 ? chartColors.down : "inherit" }}>
-          回撤 {geo.curDD.toFixed(2)}%
+        <span style={{ color: cvar95 != null && cvar95 < 0 ? chartColors.down : "inherit" }}
+          title="CVaR95：最差 5% 样本的平均收益率（历史样本口径，不是拟合）">
+          CVaR {r.enoughSamples ? pct(cvar95) : "样本不足"}
         </span>
-        <span className={styles.metricHint}>峰值 {geo.maxDD.toFixed(2)}%</span>
+        <span title="已实现波动率：收益率样本标准差，不年化">波动 {pct(vol)}</span>
+        <span className={styles.metricHint}>{samples} 笔样本</span>
       </div>
-      <div className={styles.chartEnv}>
-      <svg className={styles.depthSvg} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden>
-        <path d={geo.area} fill={chartColors.up} opacity="0.18" />
-        <path d={geo.line} fill="none" stroke={chartColors.up} strokeWidth="1.1"
-          vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
-      </svg>
-      </div>
-    </div>
+      <div className={styles.kvRow}>
+        <span>最差一笔 {pct(worst)}</span>
+        <span>均值 {pct(Number.isFinite(Number(r.mean)) ? Number(r.mean) : null, 3)}</span>
+      </div>    </div>
   )
 }
 
@@ -178,7 +165,7 @@ function EquityView({ series, chartColors }) {
    面板在做垂直居中时要把这部分排除。 */
 const TIME_AXIS_H = 26
 
-export default function ChartOverlay({ symbol, bars, depth, account, series, chartColors }) {
+export default function ChartOverlay({ symbol, bars, depth, account, series, chartColors, risk }) {
   const boxRef = useRef(null)
   const [geo, setGeo] = useState({ h: 0, top: 0 })
   // 面板在"蜡烛区"（不含时间轴）内垂直居中：等分上下留白
@@ -224,8 +211,8 @@ export default function ChartOverlay({ symbol, bars, depth, account, series, cha
       </div>
       <div className={styles.hsep} />
       <div className={styles.pane}>
-        <span className={styles.paneTitle}>权益与回撤</span>
-        <EquityView series={series} chartColors={chartColors} />
+        <span className={styles.paneTitle}>风险画像</span>
+        <RiskView risk={risk} chartColors={chartColors} />
       </div>
     </LiquidGlass>
     </div>

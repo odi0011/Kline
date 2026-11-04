@@ -35,6 +35,20 @@ def _integer(value: Any, default: int) -> int:
         return default
 
 
+def _clamp_alpha(value: Any, default: float = 0.25) -> float:
+    """EMA 系数只接受 0~1；0 表示关闭平滑，1 表示完全采用新值（等于不平滑）。
+
+    写错类型/超范围时回退默认值，绝不让一条配置把整条决策链搞崩。
+    """
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not (out == out):        # NaN
+        return default
+    return min(1.0, max(0.0, out))
+
+
 def _parse_utc_ms(value: Any) -> int:
     if isinstance(value, (int, float)):
         return int(value)
@@ -97,6 +111,10 @@ class DecisionConfig:
     minimum_score_gap: float = 15.0
     strong_score: float = 75.0
     strong_score_gap: float = 20.0
+    # 评分平滑系数（EMA）。0 = 不平滑：每 5 秒按**含未收盘**的K线重算，
+    # 线上实测同一根 3m K线内评分从 54 跳到 77（开仓线 55），反复越线，
+    # 等于靠运气。0.25 = 新值只占 1/4，抖动压掉大半，跨根趋势仍保留。
+    score_smooth_alpha: float = 0.25
     pattern_min_samples: int = 5
     pattern_min_winrate: float = 0.35
     pattern_winrate_alpha: float = 0.94
@@ -201,6 +219,7 @@ class DecisionConfig:
             minimum_score_gap=_number(d.get("minimum_score_gap"), 15.0),
             strong_score=_number(d.get("strong_score"), 75.0),
             strong_score_gap=_number(d.get("strong_score_gap"), 20.0),
+            score_smooth_alpha=_clamp_alpha(d.get("score_smooth_alpha")),
             pattern_min_samples=_integer(d.get("pattern_min_samples"), 5),
             pattern_min_winrate=_fraction(d.get("pattern_min_winrate"), 0.35),
             pattern_winrate_alpha=_number(d.get("pattern_winrate_alpha"), 0.94),

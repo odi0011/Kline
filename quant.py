@@ -29,6 +29,7 @@ from accounts import (
     place_protective_order, cancel_algo_orders,
 )
 from analysis import indicators as IND
+from analysis import risk_metrics as RISK
 from decision.advice import build_advice
 from decision.config import DecisionConfig
 from decision.drift import ADWIN
@@ -800,8 +801,25 @@ class QuantEngine:
                         "liquidation": features.get("liquidation"),
                     }
                     if self.decision_cfg.scoring_enabled:
-                        bull = score_signal("bullish", state, features, self.decision_cfg)
-                        bear = score_signal("bearish", state, features, self.decision_cfg)
+                        # ---- 评分口径：每根K线只算一次 ----
+                        # cs 含未收盘的当前K线，盘中价一抖 RSI/Z/ADX 就跟着变，
+                        # 同一根 3m 里评分会被重算 36 次（线上实测 54→77 来回跳，
+                        # 开仓线 55，越线纯看运气）。平滑只能压低高频抖动，
+                        # 压不住"这根K线本身还没走完"这件事。
+                        # 所以评分改用**上一根已收盘K线**的指标：同一根K线内
+                        # 分数完全不动，跨根才更新。页面上的指标条仍用盘中值
+                        # （那是"现在"），但"结论"必须基于已完成的事实。
+                        closed = [bar for bar in cs if getattr(bar, "closed", False)]
+                        if len(closed) >= 30:
+                            score_state = IND.market_state(closed)
+                            score_features = self._build_features(sym, closed, score_state, "bullish")
+                        else:
+                            # 还没攒够收盘K线（刚启动）：只能用盘中值，但要标明
+                            score_state, score_features = state, features
+                        bull = score_signal("bullish", score_state, score_features,
+                                            self.decision_cfg)
+                        bear = score_signal("bearish", score_state, score_features,
+                                            self.decision_cfg)
                         # 方向要**带滞后**，不能每 5 秒按分数大小硬翻：
                         # bull 50.1 / bear 50.0 就翻成做多，下一秒反过来——
                         # 用户按这个开仓，手续费就能把本金磨光。
@@ -819,26 +837,74 @@ class QuantEngine:
                         else:
                             direction = raw_dir
                         side_score = bull if direction == "bullish" else bear
+                        # ---- 评分平滑 ----
+                        # 指标用的是**未收盘**K线（盘中价在动），同一根 3m 里
+                        # 评分会被重算 36 次。线上实测：TSLA 60 秒内从 54 到 77
+                        # 来回跳，而开仓线是 55——越线完全看这一秒有没有插针。
+                        # 这里对**分数和分离度**各自做 EMA：新值占 alpha，
+                        # 剩下保留上一轮。方向另有一套滞后（HYSTERESIS_GAP），
+                        # 两者叠加后不会出现"分数偶尔冒一下就直接开仓"。
+                        raw_score = float(side_score.score)
+                        raw_opposite = float(side_score.opposite_score)
+                        raw_gap = float(side_score.gap)
+                        alpha = float(getattr(self.decision_cfg, "score_smooth_alpha", 0.0) or 0.0)
+                        prev_eval = self.live_evaluations.get(sym) or {}
+                        smooth = {"alpha": round(alpha, 3), "rawScore": round(raw_score, 2)}
+                        if (0.0 < alpha < 1.0
+                                and prev_eval.get("direction") == direction
+                                and isinstance(prev_eval.get("score"), (int, float))):
+                            score_s = prev_eval["score"] + (raw_score - prev_eval["score"]) * alpha
+                            gap_s = (prev_eval.get("gap", raw_gap)
+                                     + (raw_gap - prev_eval.get("gap", raw_gap)) * alpha)
+                            opposite_s = (prev_eval.get("oppositeScore", raw_opposite)
+                                          + (raw_opposite
+                                             - prev_eval.get("oppositeScore", raw_opposite)) * alpha)
+                            smooth["smoothed"] = True
+                        else:
+                            # 方向刚变 / 第一轮 / 关闭平滑：直接用原值，
+                            # 不能拿另一个方向的分数跟本方向做平均
+                            score_s, gap_s, opposite_s = raw_score, raw_gap, raw_opposite
+                            smooth["smoothed"] = False
+                        score_s = round(score_s, 2)
+                        gap_s = round(gap_s, 2)
+                        opposite_s = round(opposite_s, 2)
+                        # 档位/否决要按**平滑后**的分数重判，否则会出现
+                        # "分数是平滑值、但 grade 还是原始值算的"这种自相矛盾
+                        grade_s = side_score.grade
+                        if not side_score.vetoes or len(side_score.vetoes) <= 0:
+                            if score_s >= self.decision_cfg.strong_score and gap_s >= self.decision_cfg.strong_score_gap:
+                                grade_s = "strong"
+                            elif score_s >= self.decision_cfg.minimum_score and gap_s >= self.decision_cfg.minimum_score_gap:
+                                grade_s = "medium"
+                            elif score_s >= 40:
+                                grade_s = "weak"
+                            else:
+                                grade_s = "none"
                         self.live_evaluations[sym] = {
                             "ts": _now_ms(),
                             "direction": direction,
                             # 本轮是否因为"分差不够"而维持了上一轮方向
                             "latched": direction != raw_dir,
                             "rawDirection": raw_dir,
-                            "score": side_score.score,
-                            "oppositeScore": side_score.opposite_score,
-                            "gap": side_score.gap,
-                            "grade": side_score.grade,
-                            "confidence": side_score.confidence,
+                            "score": score_s,
+                            "oppositeScore": opposite_s,
+                            "gap": gap_s,
+                            "grade": grade_s,
+                            "confidence": round(min(1.0, max(0.0, score_s / 100.0)), 4),
                             "breakdown": side_score.breakdown,
                             "reasons": side_score.reasons,
                             "vetoes": side_score.vetoes,
                             "bull": bull.score,
                             "bear": bear.score,
+                            # 平滑前的原始分，让人能看出"差多少"而不是被抹平
+                            "smoothing": smooth,
+                            # 评分基于哪根K线：同一根内不重算，"结论"才有意义
+                            "basis": "closedBar" if (len(closed) >= 30) else "liveBar",
+                            "basisBarTime": int(getattr((closed or cs)[-1], "open_time", 0) or 0),
                         }
                         history = self.live_score_history.setdefault(
                             sym, deque(maxlen=24))
-                        history.append({"ts": _now_ms(), "score": side_score.score})
+                        history.append({"ts": _now_ms(), "score": score_s})
                         # 把这一轮的每条算式推进流水（内存环形缓冲，不落库）
                         self._push_calc_rows(sym, state, side_score, direction, history)
                         # 模拟仓：每轮推进一次（开仓 / 更新盈亏 / 判离场）
@@ -956,12 +1022,18 @@ class QuantEngine:
             vals = self.equity_fn()
             if not vals or len(vals) < 2:
                 return
-            dd = IND.drawdown(vals)
+            # 用 risk_metrics 的版本：除了 current/max/peak，还给出回撤持续
+            # 多少个采样点——"回撤 1% 已经持续三小时"和"刚回撤 1%"是两件事。
+            dd = RISK.drawdown(vals) or IND.drawdown(vals)
             if not dd:
                 return
             self.dd_state["current"] = round(dd["current"], 3)
             self.dd_state["max"] = round(dd["max"], 3)
             self.dd_state["peak"] = round(dd["peak"], 2)
+            if "currentBars" in dd:
+                self.dd_state["currentBars"] = int(dd["currentBars"])
+                self.dd_state["maxBars"] = int(dd["maxBars"])
+                self.dd_state["samples"] = int(dd["samples"])
             now = _now_ms()
             # 触发熔断：当前回撤超过阈值，且之前没在暂停期
             limit = self.decision_cfg.drawdown_limit_pct
@@ -973,6 +1045,36 @@ class QuantEngine:
                             f"{-limit * 100:.0f}%，暂停开仓 {pause_min} 分钟")
         except Exception:
             pass
+
+    def _tail_profile(self) -> dict:
+        """已平仓成交的尾部风险画像（CVaR / 波动率 / 最差笔）。
+
+        数据源用 paper_trades + quant_trades 的收益率，**只看真实产生过的
+        收益样本**——用估计值算 CVaR 是自欺欺人。样本不足 20 笔时各指标
+        为 None，只报 samples，让人知道"还不足以下结论"。
+        """
+        returns: list[float] = []
+        try:
+            for record in self.paper.history_list():
+                if not isinstance(record, dict):
+                    continue
+                pct = record.get("pnlPct")
+                if pct is None:
+                    continue
+                returns.append(float(pct) / 100.0)
+        except Exception:
+            pass
+        if not returns:
+            for record in (self.trades or [])[-200:]:
+                if not isinstance(record, dict):
+                    continue
+                pct = record.get("movePct")
+                if pct is None:
+                    continue
+                returns.append(float(pct) / 100.0)
+        profile = RISK.tail_profile(returns)
+        profile["source"] = "paper" if returns else "none"
+        return profile
 
     def _dd_paused(self) -> bool:
         return _now_ms() < self.dd_state.get("paused_until", 0)
@@ -2649,6 +2751,10 @@ class QuantEngine:
                     "current": self.dd_state.get("current", 0),
                     "max": self.dd_state.get("max", 0),
                     "peak": self.dd_state.get("peak", 0),
+                    # 回撤已经持续多少个采样点（"刚回撤"vs"回撤三小时"是两件事）
+                    "currentBars": self.dd_state.get("currentBars", 0),
+                    "maxBars": self.dd_state.get("maxBars", 0),
+                    "samples": self.dd_state.get("samples", 0),
                     "paused": self._dd_paused(),
                     "pausedUntil": self.dd_state.get("paused_until", 0),
                     "limit": -self.decision_cfg.drawdown_limit_pct * 100,
@@ -2663,6 +2769,9 @@ class QuantEngine:
                 "gateLog": list(self.gate_log)[-20:],
                 "decisionTraces": list(self.decision_traces)[-16:],
                 "latestTraces": dict(self.latest_traces),
+                # 尾部风险画像：CVaR / 已实现波动率 / 最差笔。
+                # 之前看板上只有一个"回撤"，看不出"一次尾部亏损能吃多少"。
+                "risk": self._tail_profile(),
                 # 当前策略参数（前端展示"系统在用哪些规则"）
                 "params": {
                     "calcIntervalSec": 5,

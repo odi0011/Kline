@@ -799,6 +799,7 @@ export default function App() {
                 account={account}
                 accountSeries={accountSeries}
                 advice={quantSnap?.analysis?.advice?.[s]}
+                risk={quantSnap?.analysis?.risk}
                 registerAnchor={registerAnchor}
                 activeHit={hits.find((h) => h.symbol === s)}
                 onHoverHits={(hs, sym) => {

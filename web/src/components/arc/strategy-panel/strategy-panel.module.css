@@ -429,3 +429,35 @@
 
 /* 面板窄于 210px 时压缩标签列，保住微图表宽度 */
 
+
+/* ---- 账户级风险条 ----
+   一行四格：回撤 / 持续 / CVaR95 / 波动率。
+   放在币种宫格上方固定可见——这是"能不能扛住"的第一眼答案。 */
+.riskStrip {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 8px 5px;
+  margin-bottom: 4px;
+  border-radius: 8px;
+  background: rgba(28, 35, 51, 0.035);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+}
+.riskStrip[data-paused] {
+  background: color-mix(in srgb, var(--down) 12%, transparent);
+}
+.riskCell {
+  display: flex; align-items: baseline; gap: 3px;
+  font-size: 8.5px; color: var(--text-muted, #8b949e);
+  white-space: nowrap;
+}
+.riskCell u { text-decoration: none; opacity: 0.85; }
+.riskCell b { font-size: 10.5px; font-weight: 700; color: #1c2333; }
+.riskCell i { font-style: normal; font-size: 8px; opacity: 0.72; }
+.riskPaused {
+  margin-left: auto;
+  font-size: 9px; font-weight: 700;
+  color: var(--down); white-space: nowrap;
+}

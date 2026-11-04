@@ -144,3 +144,10 @@
   background: rgba(28, 35, 51, 0.08); flex: none;
 }
 .meter span { display: block; height: 100%; transition: width 300ms ease; }
+
+/* 风险画像：第二行两个次要数字（CVaR/波动率那行之外的均值、最差笔） */
+.kvRow {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+  font-size: 8.5px; color: var(--text-muted, #8b949e); margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
