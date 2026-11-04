@@ -124,6 +124,9 @@ export default function MarketOverview({ overview, positions = [] }) {
       <div className={styles.windows}>
         <WindowBlock title="30 分钟" stats={ov.m30} />
         <WindowBlock title="今日" stats={ov.today} />
+        {/* 短窗口没成交时前两格是空的，累计列保证这一块永远有真实数字可看。
+            它也是"策略长期到底行不行"的唯一参照。 */}
+        <WindowBlock title="累计" stats={ov.all} />
       </div>
     </div>
   )
