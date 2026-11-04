@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 
 BASE = "https://testnet.binancefuture.com"
 
@@ -175,8 +176,123 @@ def account_max_leverage(api_key: str, api_secret: str, symbol: str) -> int:
     return best
 
 
+# ---- 价格/数量精度：必须按交易所的 tickSize / stepSize 格式化 ----
+#
+# 为什么必须这么干：`f"{77998.3:.12f}"` 会输出 "77998.300000000003"
+# （浮点误差），交易所直接 -1111 Precision is over the maximum。
+# 而 `f"{78784.5:.12f}"` 恰好是 "78784.500000000000" → 去零后干净。
+# 也就是说**同一段代码对不同的价格有时成功、有时失败**——线上就是这么
+# 随机裸奔的：挂止损成了靠运气。
+_FILTER_CACHE: dict[str, dict] = {}
+_FILTER_CACHE_TS = {"ts": 0}
+_FILTER_TTL_MS = 3600_000
+
+
+def symbol_filters(symbol: str, proxy: str | None = None,
+                   timeout: int = 8) -> dict:
+    """某个合约的精度约束（tickSize / stepSize / minQty / minNotional）。
+
+    取不到时返回空 dict，调用方按"不额外限制"处理，绝不因此让下单失败。
+    """
+    from feed.market_data import _get_json      # 延迟导入，避免循环依赖
+    global _FILTER_CACHE, _FILTER_CACHE_TS
+    now = int(time.time() * 1000)
+    if now - _FILTER_CACHE_TS.get("ts", 0) > _FILTER_TTL_MS or not _FILTER_CACHE:
+        try:
+            data = _get_json("/fapi/v1/exchangeInfo", {}, proxy)
+        except TypeError:
+            data = _get_json("/fapi/v1/exchangeInfo", {})
+        except Exception:
+            data = None
+        table: dict[str, dict] = {}
+        for row in (data or {}).get("symbols") or []:
+            name = str(row.get("symbol") or "").upper()
+            if not name:
+                continue
+            out = {"quantityPrecision": int(row.get("quantityPrecision") or 8),
+                   "pricePrecision": int(row.get("pricePrecision") or 8)}
+            for filt in row.get("filters") or []:
+                kind = filt.get("filterType")
+                if kind == "PRICE_FILTER":
+                    out["tickSize"] = filt.get("tickSize")
+                elif kind in ("LOT_SIZE", "MARKET_LOT_SIZE"):
+                    out.setdefault("stepSize", filt.get("stepSize"))
+                    out.setdefault("minQty", filt.get("minQty"))
+                elif kind == "MIN_NOTIONAL":
+                    out["minNotional"] = filt.get("notional") or filt.get("minNotional")
+            table[name] = out
+        if table:
+            _FILTER_CACHE = table
+            _FILTER_CACHE_TS["ts"] = now
+    return dict(_FILTER_CACHE.get(str(symbol or "").upper()) or {})
+
+
+def _decimals_of(step: str | None) -> int:
+    """把 "0.00010" 这种步长换算成小数位数（4）。"""
+    text = str(step or "").strip()
+    if not text or "." not in text:
+        return 0
+    return len(text.split(".")[1].rstrip("0"))
+
+
+def format_qty(qty: float, symbol: str = "", proxy: str | None = None) -> str:
+    """按 stepSize 把数量格式化成交易所接受的字符串。
+
+    关键点：**用 Decimal 从四舍五入后的十进制值构造**，不要走 f-string——
+    f"{0.1+0.2:.12f}" 这类浮点表示会在末尾拖出 000000000004 这样的垃圾，
+    交易所一律按精度超限拒绝。
+
+    优先 stepSize；拿不到时退回 quantityPrecision（也是交易所给的真实约束）；
+    两样都没有才按 8 位小数——**绝不要因为取不到约束就原样传 float**，
+    那等于把浮点垃圾直接发给交易所。
+    """
+    filters = symbol_filters(symbol, proxy) if symbol else {}
+    step = filters.get("stepSize")
+    precision = filters.get("quantityPrecision")
+    if step:
+        digits = _decimals_of(step)
+        try:
+            quantum = Decimal(str(step))
+            steps = (Decimal(str(qty)) / quantum).to_integral_value(rounding=ROUND_DOWN)
+            value = steps * quantum
+        except (InvalidOperation, ValueError, ZeroDivisionError, TypeError):
+            value = Decimal(str(qty)).quantize(Decimal(1).scaleb(-digits),
+                                               rounding=ROUND_DOWN)
+    else:
+        digits = int(precision) if isinstance(precision, int) else 8
+        value = Decimal(str(qty)).quantize(Decimal(1).scaleb(-digits),
+                                           rounding=ROUND_DOWN)
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def format_price(price: float, symbol: str = "", proxy: str | None = None) -> str:
+    """按 tickSize 把价格格式化成交易所接受的字符串（同上，禁用 f-string）。"""
+    filters = symbol_filters(symbol, proxy) if symbol else {}
+    tick = filters.get("tickSize")
+    precision = filters.get("pricePrecision")
+    if tick:
+        digits = _decimals_of(tick)
+        try:
+            quantum = Decimal(str(tick))
+            value = (Decimal(str(price)) / quantum).to_integral_value(
+                rounding=ROUND_HALF_UP) * quantum
+        except (InvalidOperation, ValueError, ZeroDivisionError, TypeError):
+            value = Decimal(str(price)).quantize(Decimal(1).scaleb(-digits),
+                                                 rounding=ROUND_HALF_UP)
+    else:
+        digits = int(precision) if isinstance(precision, int) else 8
+        value = Decimal(str(price)).quantize(Decimal(1).scaleb(-digits),
+                                             rounding=ROUND_HALF_UP)
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
 def open_orders(api_key: str, api_secret: str, symbol: str) -> list:
-    """Read-only protection-order audit."""
     return signed_request(api_key, api_secret, "/fapi/v1/openOrders",
                           {"symbol": symbol.upper()})
 
@@ -268,13 +384,18 @@ def place_protective_order(api_key: str, api_secret: str, symbol: str,
     """
     if order_type not in ("STOP_MARKET", "TAKE_PROFIT_MARKET"):
         raise ValueError(f"unsupported protective order type: {order_type}")
+    # **必须按 tickSize / stepSize 格式化**，不能直接 f"{x:.12f}"。
+    # 浮点误差会让 77998.3 变成 "77998.300000000003"，交易所回
+    # -1111 Precision is over the maximum；而 78784.5 恰好干净就成功。
+    # 同一段代码成败取决于价格的小数位——止损单成了靠运气挂上，
+    # 线上就是这么随机裸奔的。
     body = {
         "algoType": "CONDITIONAL",
         "symbol": symbol.upper(),
         "side": side.upper(),
         "type": order_type,
-        "quantity": f"{qty:.12f}".rstrip("0").rstrip("."),
-        "triggerPrice": f"{stop_price:.12f}".rstrip("0").rstrip("."),
+        "quantity": format_qty(qty, symbol),
+        "triggerPrice": format_price(stop_price, symbol),
         "workingType": "MARK_PRICE",
         "reduceOnly": "true",
     }

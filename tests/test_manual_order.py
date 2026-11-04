@@ -519,3 +519,64 @@ def test_plan_takes_min_of_account_and_public_leverage(tmp_path):
         accounts.signed_request = orig
     assert plan["ready"] is True
     assert plan["leverage"] == 125, plan
+
+
+# ---------- 浮点精度：止损单靠运气挂上的根因 ----------
+
+def test_format_price_avoids_float_noise():
+    """f"{x:.12f}" 会把 77998.3 写成 77998.300000000003，交易所 -1111。
+
+    线上实测（同一段代码、同一个币、同样是 0.001 张）：
+      78784.5 → "78784.5"                  → OK
+      77998.3 → "77998.300000000003"        → Precision 超限
+    也就是说止损单能不能挂上，取决于价格的小数位碰巧干不干净。
+    """
+    import accounts
+    assert accounts.format_price(77998.3, "btcusdt") == "77998.3"
+    assert accounts.format_price(78784.5, "btcusdt") == "78784.5"
+    assert accounts.format_price(78100.0 * 0.996, "btcusdt") == "77787.6"
+    # 原始写法确实会产出脏字符串（证明这条测试不是空转）
+    assert f"{77998.3:.12f}".rstrip("0").rstrip(".") == "77998.300000000003"
+
+
+def test_format_qty_respects_step_size(monkeypatch):
+    import accounts
+    # 离线测试不能依赖网络：显式给交易所约束
+    monkeypatch.setattr(accounts, "symbol_filters",
+                        lambda *a, **k: {"stepSize": "0.00010",
+                                         "quantityPrecision": 4})
+    assert accounts.format_qty(0.001, "btcusdt") == "0.001"
+    assert accounts.format_qty(0.0127, "btcusdt") == "0.0127"
+    # 向下取整到步长，不能向上（会超出可用数量）
+    assert accounts.format_qty(0.00129, "btcusdt") == "0.0012"
+
+
+def test_format_qty_falls_back_to_quantity_precision(monkeypatch):
+    """拿不到 stepSize 时用 quantityPrecision，绝不要原样传 float。"""
+    import accounts
+    monkeypatch.setattr(accounts, "symbol_filters",
+                        lambda *a, **k: {"quantityPrecision": 3})
+    assert accounts.format_qty(0.00129, "btcusdt") == "0.001"
+
+
+def test_protective_order_sends_formatted_values(monkeypatch):
+    """place_protective_order 必须用格式化后的字符串，不能走 f-string。"""
+    import accounts
+    sent = {}
+    monkeypatch.setattr(accounts, "signed_request",
+                        lambda *a, **k: sent.update(k.get("params") or a[3] or {}) or {})
+    monkeypatch.setattr(accounts, "symbol_filters",
+                        lambda *a, **k: {"tickSize": "0.10", "stepSize": "0.0010"})
+    accounts.place_protective_order("k", "s", "BTCUSDT", "SELL", "STOP_MARKET",
+                                    0.001, 77998.3)
+    assert sent["quantity"] == "0.001"
+    assert sent["triggerPrice"] == "77998.3"
+    assert "000000000" not in sent["triggerPrice"]
+
+
+def test_decimals_of_step():
+    import accounts
+    assert accounts._decimals_of("0.00010") == 4
+    assert accounts._decimals_of("0.10") == 1
+    assert accounts._decimals_of("1") == 0
+    assert accounts._decimals_of(None) == 0

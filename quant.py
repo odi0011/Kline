@@ -27,6 +27,7 @@ from collections import deque
 from accounts import (
     signed_request, open_orders, cancel_order, query_order, cancel_all_open_orders,
     place_protective_order, cancel_algo_orders, account_max_leverage,
+    format_qty, format_price,
 )
 from analysis import indicators as IND
 from analysis import risk_metrics as RISK
@@ -719,12 +720,16 @@ class QuantEngine:
     def _place_order(self, api_key, api_secret, symbol, side, qty, reduce_only=False,
                      order_type: str = "MARKET", price: float | None = None,
                      time_in_force: str | None = None) -> dict:
+        # 数量/价格一律按交易所的 stepSize / tickSize 格式化成字符串。
+        # 直接把 float 交给 urlencode，会写出 0.0012000000000000001 这种尾巴，
+        # 交易所按 -1111 精度超限拒掉（线上止损单就是这么随机失败的）。
         params = {"symbol": symbol.upper(), "side": side, "type": order_type,
-                  "quantity": qty, "newOrderRespType": "RESULT"}
+                  "quantity": format_qty(qty, symbol),
+                  "newOrderRespType": "RESULT"}
         if order_type != "MARKET":
             if price is None:
                 raise ValueError("价格单必须提供 price")
-            params["price"] = price
+            params["price"] = format_price(price, symbol)
             params["timeInForce"] = time_in_force or "GTC"
         if reduce_only:
             params["reduceOnly"] = "true"
