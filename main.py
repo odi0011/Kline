@@ -44,7 +44,7 @@ from analysis.structure import analyze as analyze_structure
 from quant import QuantEngine
 from server.hub import BroadcastHub
 from storage import Storage
-from accounts import fetch_account
+from accounts import fetch_account, protection_snapshot
 from ai.agent import AgentManager
 from ai.agent_tools import project_paper_positions
 from ai.sticker_cache import StickerCache
@@ -790,6 +790,11 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             "symbols": symbols,
             "stats": snapshot.get("stats") or {},
             "market": analysis.get("symbols") or {},
+            # 系统这一轮评分的真实特征输入（MACD/挤压/CVD/VSA/OBI/HTF/HMM/
+            # 清算/新闻情绪）。页面上有、之前没给 Agent，它只能自己拿 K 线手算。
+            "liveFeatures": analysis.get("liveFeatures") or {},
+            # 衍生品指标（资金费率/OI/多空比/taker/大户持仓），来自交易所公开接口。
+            "derivatives": dict(getattr(hub, "derivatives", {}) or {}),
             "positions": snapshot.get("positions") or [],
             "accounts": accounts,
             "trades": list(getattr(quant, "trades", [])[-20:]),
@@ -802,6 +807,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             "positionPlans": analysis.get("positionPlans") or [],
             "drawdown": analysis.get("drawdown") or {},
             "drift": analysis.get("drift") or {},
+            # 过滤器拦截记录与决策轨迹：用户问"刚才为什么没开单"要靠它，
+            # 之前只有 drawdown/params，Agent 只能靠 events 猜。
+            "gateLog": analysis.get("gateLog") or [],
+            "decisionTraces": analysis.get("decisionTraces") or [],
             "evaluations": analysis.get("liveEvaluations") or {},
             "params": analysis.get("params") or {},
             # 形态胜率：前端形态卡片上显示的就是这份数据。
@@ -912,6 +921,67 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     # 模拟仓平仓明细现查：快照里那份是全市场最近 12 条，问"BTC 最近 5 笔"
     # 会被别的币挤掉（线上实测 121 笔只读出 3 笔）。这里按币查库。
     agent.paper_history_fn = quant.paper.recent_trades
+
+    # ---- Agent 的现查入口：交易所挂单 / 权益历史 / 全历史成交 ----
+    # 这三个都不在 context 快照里（一个要打交易所、两个要查库），
+    # 之前 Agent 完全没有，只能拿 20 条内存成交硬答，还会编"没有数据源"。
+    def _agent_orders(symbol: str = "") -> dict:
+        """交易所真实挂单（普通 + 算法条件单）与"有仓没保护"的裸奔清单。"""
+        out = {"symbols": {}, "gaps": [], "errors": [], "ts": KlineAggregator.now_ms()}
+        accts = [a for a in accts_box["list"] if a.get("api_key") and a.get("api_secret")]
+        if not accts:
+            raise RuntimeError("没有可交易的账户（未配置 API Key）")
+        for acct in accts:
+            try:
+                positions = (next((r for r in (hub.last_accounts or [])
+                                   if r.get("name") == acct["name"]), {})
+                             or {}).get("positions") or []
+                snap = protection_snapshot(acct["api_key"], acct["api_secret"], positions)
+            except Exception as exc:
+                out["errors"].append(f"{acct['name']}: {str(exc)[:100]}")
+                continue
+            for sym, rows in (snap.get("symbols") or {}).items():
+                out["symbols"].setdefault(sym, []).extend(rows)
+            out["gaps"].extend(snap.get("gaps") or [])
+            out["errors"].extend(snap.get("errors") or [])
+        out["gaps"] = sorted(set(out["gaps"]))
+        return out
+
+    def _agent_equity(days: int = 30, hours: int = 24) -> dict:
+        """权益日档 + 最近 hours 小时采样。日档永久，采样只留 2 天。"""
+        if not storage.enabled:
+            raise RuntimeError("权益历史需要 MySQL，当前未连接")
+        for acct in accts_box["list"]:
+            key = acct.get("id") or acct["name"]
+            daily = storage.equity_heatmap(key)
+            series = storage.equity_series(key, minutes=max(1, hours) * 60,
+                                          limit=max(120, hours * 12))
+            if daily or series:
+                return {"account": acct["name"], "daily": daily, "series": series}
+        return {"account": None, "daily": [], "series": [],
+                "reason": "还没有任何权益采样（服务刚启动或账户取数一直失败）"}
+
+    def _agent_trades(days: int = 30, symbol: str = "", limit: int = 50) -> dict:
+        """全历史成交 + 区间统计。days=0 表示全部历史。"""
+        if not storage.enabled:
+            raise RuntimeError("成交历史需要 MySQL，当前未连接")
+        accts = accts_box["list"]
+        acct = accts[0]["name"] if accts else ""
+        all_time = storage.trade_stats(acct, days=3650)
+        stats = storage.trade_stats(acct, days=days) if days > 0 else all_time
+        rows = storage.quant_trades(acct, limit=2000 if days == 0 else max(limit, 200))
+        cutoff = 0
+        if days > 0:
+            cutoff = KlineAggregator.now_ms() - days * 86400_000
+        wanted = str(symbol or "").lower()
+        kept = [r for r in rows
+                if (not cutoff or int(r.get("ts") or 0) >= cutoff)
+                and (not wanted or str(r.get("symbol") or "").lower() == wanted)]
+        return {"account": acct, "trades": kept[:limit], "total": len(kept),
+                "stats": stats, "allTime": all_time, "source": "mysql"}
+
+    agent.data_fns = {"orders": _agent_orders, "equity": _agent_equity,
+                      "trades": _agent_trades}
     hub.agent_state_fn = agent.state
     hub.agent_fn = agent.handle
 

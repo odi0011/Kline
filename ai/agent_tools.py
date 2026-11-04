@@ -77,6 +77,31 @@ TOOLS = [
     _tool("read_accounts", "只读**交易账户**的快照：权益、真实持仓、已平仓成交，不含认证数据。"
           "账户就是系统真正下单的那一个——问'我持仓怎么样''赚了多少'用它。"
           "模拟仓（纸上交易）是另一套数据，用 read_paper，不要把两者混为一谈。"),
+    _tool("read_orders", "读取交易所里**真实挂着的委托**：普通挂单 + 算法条件单"
+          "（止损/止盈就是条件单，不在 openOrders 里）。"
+          "gaps 列出'有仓位却没挂任何只减仓保护单'的合约——那就是裸奔。"
+          "用户问'止损挂上了没''有没有孤儿单''挂单还在不在'时**必须**用它，"
+          "绝不能靠 positions 里的 sl 字段或聊天历史猜。",
+          {"symbol": {"type": "string", "maxLength": 24}}),
+    _tool("read_derivatives", "读取交易所真实衍生品指标（本页面右侧'衍生品'那块）："
+          "资金费率与下次结算时间、持仓量 OI 与变化、全局多空账户比、大户持仓比、"
+          "taker 主动买卖比、大户多头占比近 24 小时走势、24h 涨跌与成交额、数据源。"
+          "用户问'资金费率''多空比''大户在做多还是做空''OI 在增还是减'"
+          "'taker 谁占优'时用它；不要回答'没有这个数据源'。",
+          {"symbol": {"type": "string", "maxLength": 24}}),
+    _tool("read_equity", "读取账户**权益历史**：每日 OHLC 日档（equity_daily，永久保留）、"
+          "最近 N 小时的权益采样曲线、以及按日盈亏。"
+          "用户问'昨天权益多少''这周权益曲线''最近几天赚了还是亏了'"
+          "'最大回撤'时用它。days 默认 30、最多 365。",
+          {"days": {"type": "integer", "minimum": 1, "maximum": 365},
+           "hours": {"type": "integer", "minimum": 1, "maximum": 720}}),
+    _tool("read_trades", "读取**实盘已平仓成交的全历史**（MySQL quant_trades），"
+          "可按账户/币种/天数筛选，并附区间统计（笔数、胜负、净盈亏、滑点）。"
+          "用户问'历史上开过多少单''总共赚了多少''某币的战绩'时用它——"
+          "read_accounts 只给最近 20 笔，不能拿它当全历史。",
+          {"days": {"type": "integer", "minimum": 0, "maximum": 3650},
+           "symbol": {"type": "string", "maxLength": 24},
+           "limit": {"type": "integer", "minimum": 1, "maximum": 200}}),
     _tool("read_paper", "读取**模拟仓**（15 分钟纸上交易，只记录不下单）："
           "当前未平仓的模拟仓位、按币种汇总的**已实现**胜率与盈亏、最近的平仓明细。"
           "用户问'模拟仓''纸上交易''哪个模拟仓胜率最高''最近平仓'时必须用它；"
@@ -539,22 +564,195 @@ def _paper_view(snapshot, symbol: str = "", history=None) -> dict:
     }
 
 
-def read_snapshot(name, arguments, snapshot, history_fn=None):
+def _read_orders(arguments, fns) -> dict:
+    """交易所真实挂单（含算法条件单）。查不到就明说，不能猜。"""
+    fn = fns.get("orders")
+    wanted = str(arguments.get("symbol") or "").strip().lower()
+    if wanted and not wanted.endswith("usdt"):
+        wanted += "usdt"
+    if fn is None:
+        return {"untrusted": True, "available": False,
+                "reason": "未接入交易所挂单查询（没有可交易账户或服务未启动）"}
+    try:
+        raw = fn(wanted)
+    except Exception as exc:
+        return {"untrusted": True, "available": False,
+                "reason": f"查询挂单失败: {str(clean(str(exc)))[:160]}"}
+    rows = (raw or {}).get("symbols") or {}
+    gaps = list((raw or {}).get("gaps") or [])
+    errors = list((raw or {}).get("errors") or [])
+    if wanted:
+        rows = {k: v for k, v in rows.items() if k == wanted}
+        gaps = [g for g in gaps if g == wanted]
+    notes = ("普通挂单来自 /fapi/v1/openOrders，止损/止盈是算法条件单"
+             "（/fapi/v1/openAlgoOrders，带 algo=true），两者必须一起看。"
+             "gaps 里的合约=有仓位但没有任何只减仓保护单，属于裸奔，要明确告警。")
+    if not rows and not errors:
+        notes += " 当前该范围没有任何未平仓合约，也就没有需要查的挂单。"
+    return {"untrusted": True, "available": True,
+            "ts": (raw or {}).get("ts"),
+            "symbol": wanted or None,
+            "orders": rows,
+            "gaps": gaps,
+            "errors": errors,
+            "count": sum(len(v) for v in rows.values()),
+            "note": notes}
+
+
+# 衍生品字段的含义，模型不需要自己猜（页面上每个指标也都有这套解释）
+_DERIV_NOTES = {
+    "fundingRate": "资金费率（小数，0.0001=0.01%）；正=多头付空头",
+    "nextFundingMs": "下次结算时间（毫秒时间戳）",
+    "openInterest": "未平仓合约量（张/币，交易所口径）",
+    "oiChangePct": "持仓量近 12 个周期的变化百分比",
+    "accountLongShort": "全局多空账户比（户数），极端值常作反向指标",
+    "topPositionLongShort": "大户持仓比（名义前 20% 账户按持仓量算）",
+    "topLongChange24h": "大户多头占比近 24 小时变化（百分点）",
+    "takerBuySellRatio": "taker 主动买卖量比；>1 买盘占优",
+    "takerBuyPct": "主动买入占总量百分比",
+    "changePct": "24 小时涨跌幅",
+    "quoteVolume": "24 小时成交额（USDT）",
+    "venue": "数据源交易所（binance 被墙时回退 okx）",
+}
+
+
+def _read_derivatives(snapshot, symbol: str) -> dict:
+    raw = snapshot.get("derivatives")
+    if not isinstance(raw, dict) or not raw:
+        return {"untrusted": True, "available": False,
+                "reason": "衍生品指标还没采集到（服务刚启动或该轮取数全部失败）"}
+    wanted = symbol.lower()
+    if wanted and not wanted.endswith("usdt"):
+        wanted += "usdt"
+    rows = {sym: row for sym, row in raw.items()
+            if isinstance(row, dict) and (not wanted or sym == wanted)}
+    if not rows:
+        return {"untrusted": True, "available": False, "symbol": symbol or None,
+                "available_symbols": sorted(raw)[:30],
+                "reason": "这个币没有衍生品快照（只采集当前监控币种）"}
+    return {"untrusted": True, "available": True, "symbol": symbol or None,
+            "rows": rows, "fieldMeaning": _DERIV_NOTES,
+            "note": "全部逐项来自交易所公开接口，不含推算。多空账户比是户数口径、"
+                    "大户持仓比是持仓量口径，两者经常反向，引用时要说明是哪个。"}
+
+
+def _read_equity(arguments, fns) -> dict:
+    fn = fns.get("equity")
+    if fn is None:
+        return {"untrusted": True, "available": False,
+                "reason": "权益历史存储未接入（没有 MySQL 或服务未启动）"}
+    days = arguments.get("days", 30)
+    hours = arguments.get("hours", 24)
+    try:
+        raw = fn(days, hours)
+    except Exception as exc:
+        return {"untrusted": True, "available": False,
+                "reason": f"读取权益历史失败: {str(clean(str(exc)))[:160]}"}
+    raw = raw or {}
+    daily = list(raw.get("daily") or [])
+    series = list(raw.get("series") or [])
+    # 每日盈亏：当天 close − 前一天 close，最后一天用当前权益补
+    pnl = []
+    for i, row in enumerate(daily):
+        if i == 0:
+            continue
+        prev = float(daily[i - 1].get("close") or 0)
+        cur = float(row.get("close") or 0)
+        pnl.append({"date": row.get("date"), "close": cur,
+                    "pnl": round(cur - prev, 2),
+                    "pct": round((cur - prev) / prev * 100, 3) if prev else None})
+    # 日档最多给 90 天：再多一条就上万字符，会挤掉后面所有内容。
+    cap = max(1, min(days, 90))
+    daily_out, pnl_out = daily[-cap:], pnl[-cap:]
+    omitted = max(0, len(daily) - len(daily_out))
+    return {"untrusted": True, "available": bool(daily or series),
+            "account": raw.get("account"),
+            "days": days, "hours": hours,
+            # 日档在前：问"昨天/这周赚了多少"要的是它，曲线只是细节
+            "daily": daily_out,
+            "dailyPnl": pnl_out,
+            "dailyOmitted": omitted,
+            "series": series[-240:],
+            "seriesPoints": len(series),
+            "note": "daily 是永久 UTC 日档（open/close/high/low，close 已含未实现盈亏）；"
+                    "dailyPnl 是按相邻两日 close 算的当日盈亏"
+                    "（中间缺日时那一笔是跨日累计，不是单日）；"
+                    "series 是最近 hours 小时的采样曲线（采样只保留 2 天）。"
+                    "dailyOmitted>0 表示更早的日档没有列出，但 allTime 统计不受影响。"
+                    "如果 daily 为空但账户有权益，说明该账户还没有跨日采样。"}
+
+
+def _read_trades(arguments, symbol: str, fns) -> dict:
+    fn = fns.get("trades")
+    if fn is None:
+        return {"untrusted": True, "available": False,
+                "reason": "成交历史存储未接入"}
+    days = arguments.get("days", 30)
+    limit = arguments.get("limit", 50)
+    wanted = symbol.lower()
+    if wanted and not wanted.endswith("usdt"):
+        wanted += "usdt"
+    try:
+        raw = fn(days, wanted, limit)
+    except Exception as exc:
+        return {"untrusted": True, "available": False,
+                "reason": f"读取成交历史失败: {str(clean(str(exc)))[:160]}"}
+    raw = raw or {}
+    rows = list(raw.get("trades") or [])
+    return {"untrusted": True, "available": bool(rows or raw.get("stats")),
+            "days": days, "symbol": wanted or None,
+            "stats": raw.get("stats") or {},
+            "allTime": raw.get("allTime") or {},
+            "trades": rows,
+            "total": raw.get("total"),
+            "source": raw.get("source"),
+            "note": "stats 是 days 区间内的统计（大于 0 天才有），allTime 是全部历史；"
+                    "trades 最新在前，已按 limit 截断。"
+                    "read_accounts 只带最近 20 笔内存记录，不能当全历史用。"}
+
+
+def read_snapshot(name, arguments, snapshot, history_fn=None, fns=None):
     if not isinstance(snapshot, dict):
         raise ValueError("context 快照必须为对象")
-    allowed = ({"symbol", "limit"} if name == "read_paper"
-               else {"symbol"} if name == "read_market" else set())
+    fns = fns if isinstance(fns, dict) else {}
+    # 需要现查外部数据（交易所 / 数据库）的工具，参数各不相同
+    allowed = {"read_paper": {"symbol", "limit"},
+               "read_orders": {"symbol"},
+               "read_derivatives": {"symbol"},
+               "read_equity": {"days", "hours"},
+               "read_trades": {"days", "symbol", "limit"},
+               "read_market": {"symbol"}}.get(name, set())
     if set(arguments) - allowed:
         raise ValueError("工具包含不支持的参数")
     symbol = arguments.get("symbol")
     if symbol is not None and (not isinstance(symbol, str) or not re.fullmatch(r"[a-zA-Z0-9]{2,24}", symbol)):
         raise ValueError("symbol 需为 2–24 位字母或数字")
+
+    def _int_arg(key, lo, hi, default):
+        value = arguments.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+            raise ValueError(f"{key} 需为 {lo}–{hi} 的整数")
+        return value
+
     if name == "read_paper" and "limit" in arguments:
-        limit = arguments.get("limit")
-        # 上限 100 与 clean() 的列表裁剪一致：再大也会被悄悄砍到 100 条，
-        # 不如直接说清上限，模型就不会以为拿到了 200 条。
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
-            raise ValueError("limit 需为 1–100 的整数")
+        _int_arg("limit", 1, 100, 10)
+    if name in ("read_equity", "read_trades"):
+        _int_arg("days", 0 if name == "read_trades" else 1,
+                 3650 if name == "read_trades" else 365,
+                 30 if name == "read_trades" else 30)
+    if name == "read_equity" and "hours" in arguments:
+        _int_arg("hours", 1, 720, 24)
+    if name == "read_trades" and "limit" in arguments:
+        _int_arg("limit", 1, 200, 50)
+    if name == "read_orders":
+        return _read_orders(arguments, fns)
+    if name == "read_derivatives":
+        return _read_derivatives(snapshot, symbol or "")
+    if name == "read_equity":
+        return _read_equity(arguments, fns)
+    if name == "read_trades":
+        return _read_trades(arguments, symbol or "", fns)
+
     if name == "read_situation":
         if arguments:
             raise ValueError("read_situation 不接受参数")
@@ -596,12 +794,37 @@ def read_snapshot(name, arguments, snapshot, history_fn=None):
     fields = {
         "read_market": ("market", "symbols", "stats", "evaluations", "positionPlans"),
         "read_accounts": ("accounts", "positions", "trades"),
-        "read_risk": ("risk", "drawdown", "drift", "params", "health", "enabled"),
+        "read_risk": ("risk", "drawdown", "drift", "params", "health", "enabled",
+                      "gateLog", "decisionTraces"),
         "read_events": ("recentEvents", "events"),
         "read_news": ("news",),
         "read_pattern_stats": ("patternStats",),
     }[name]
     data = {key: snapshot[key] for key in fields if key in snapshot}
+    if name == "read_market":
+        # 只有 read_market 带特征：MACD/挤压/CVD/VSA/OBI/HTF/HMM/清算/新闻情绪。
+        # 这些都是页面上"衍生品/策略"面板背后的真实输入，之前压根没接给 Agent，
+        # 它只能自己拿 K 线手算 MACD（线上实测：写脚本算了两轮）。
+        feats = snapshot.get("liveFeatures")
+        if isinstance(feats, dict) and feats:
+            data["features"] = feats
+            data["featureNote"] = (
+                "features 是系统这一轮评分的真实输入：macd(hist 由负转正=金叉在即)、"
+                "squeeze(挤压 on/release)、cvd(主动买卖累计差)、vsaBull/vsaBear(量价)、"
+                "obi(盘口买卖挂单不平衡)、htf(高周期方向)、hmm(状态机)、"
+                "liquidation(强平级联)、sentiment(新闻情绪)、oi/funding。"
+                "不要自己重算指标，直接用这里的值。")
+    if name == "read_risk":
+        gates = snapshot.get("gateLog")
+        if isinstance(gates, list) and gates:
+            data["gateLog"] = gates[-20:]
+        traces = snapshot.get("decisionTraces")
+        if isinstance(traces, list) and traces:
+            data["decisionTraces"] = traces[-16:]
+        data["note"] = ("drawdown 是账户级回撤与熔断（paused=true 已暂停开仓）；"
+                        "drift 是策略漂移观察期；params 是当前生效的开仓阈值与止损口径；"
+                        "gateLog 是最近被过滤器拦掉的信号及原因；"
+                        "decisionTraces 是最近几次完整决策过程。只读，改参数要改配置。")
     if name == "read_accounts":
         # trades 是 20 条全字段的真实成交，撑爆 12000 预算后 bounded()
         # 会把整段压成 excerpt，而截断点在**最后**——最新那笔正好被切掉，
@@ -643,7 +866,8 @@ def read_snapshot(name, arguments, snapshot, history_fn=None):
                 return False
             return text == symbol or text == symbol + "USDT" or text.rstrip("USDT") + "USDT" == symbol
 
-        for key in ("market", "symbols", "evaluations", "positionPlans", "positions", "trades"):
+        for key in ("market", "symbols", "evaluations", "positionPlans", "positions",
+                    "trades", "features"):
             value = data.get(key)
             if isinstance(value, dict):
                 if "symbol" in value:

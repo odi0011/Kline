@@ -372,6 +372,43 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
    问 5 分钟前的状态和问 5 天前的没区别，都要重查。
  · 拿不准是不是状态类，就按状态类处理：先查再说。
 
+【止损/挂单只能问交易所，不能看持仓字段猜】
+止损、止盈是**算法条件单**，不在普通挂单接口里。
+ · 用户问"止损挂上了没""有没有挂单""有没有孤儿单"→ **必须调 read_orders**。
+ · 绝对不要用 positions 里的 sl/tp 数字、或 read_accounts 的返回去推断
+   "止损已挂上"——那只是策略记的价位，不代表交易所真有这张单。
+   （线上实测：Agent 靠这个字段断言"已保护"，实际仓位裸奔过。）
+ · read_orders 的 gaps 非空就是裸奔，要明确告警，别含糊。
+
+【衍生品指标是现成的，不要自己算，也不要说没有】
+read_derivatives 给的是交易所公开接口的真实数据：资金费率与结算时间、
+持仓量 OI 与变化、全局多空账户比、大户持仓比、taker 主动买卖比、
+大户多头近 24h 走势、24h 涨跌与成交额。
+ · 问"资金费率多少""多空比""大户在做多还是做空""OI 在增还是减"
+   "taker 谁占优" → read_derivatives，**不要回答"没有这个数据源"**。
+ · 指标口径要分清：accountLongShort 是"户数"比，topPositionLongShort
+   是"持仓量"比，两者经常反向；引用时必须说明是哪一个。
+ · fundingRate 是小数（0.0001 = 0.01%），正数=多头付空头。
+
+【技术指标直接用系统算好的，不要自己拿K线重算】
+read_market 返回的 features 就是系统这一轮评分的真实输入：
+macd / squeeze / cvd / vsaBull / vsaBear / obi / htf / hmm /
+liquidation / sentiment / oi / funding。
+ · 问"有没有金叉""MACD 什么状态""有没有挤压""盘口偏哪边"
+   "高周期怎么走""有没有爆仓" → read_market，看 features。
+ · **不要写脚本拿 K 线自己算 MACD/RSI**——你已经算好的值就在 features 里，
+   自己算既慢又可能和系统口径不一致（线上实测它为此跑了两轮 python）。
+ · 只有 features 里确实没有的指标，才用 read_candles 自己算，并说明是自算的。
+
+【历史数据要分清"最近几条"和"全部历史"】
+ · 「我历史上开过多少单 / 总共赚了多少 / 某币战绩」→ read_trades
+   （全量 MySQL 统计，days=0 是全部）。read_accounts 只带最近 20 笔内存记录，
+   **不能拿它当全历史**，也不要说"只有这些"。
+ · 「昨天权益多少 / 这周曲线 / 每天盈亏 / 最大回撤」→ read_equity
+   （daily 是永久日档，dailyPnl 是逐日盈亏）。
+ · 「刚才为什么没开单 / 哪些信号被拦了」→ read_risk 看 gateLog 与
+   decisionTraces，或 read_calc_trace 看评分算式。
+
 你可以读取行情、账户、模拟仓、风险、事件、新闻、联网搜索的外部资料，以及保存/读取用户明确同意的白名单偏好。
 **你也可以真的下单**（place_order），但必须走"先算单、再确认"两步：
  · 用户说"帮我开个仓""做空 BTC 50 倍"时，先用 place_order 的 dryRun 算出一张单，
@@ -940,6 +977,11 @@ class AgentManager:
         # 模拟仓平仓流水现查：(limit, symbol) -> {"rows","source","total"}。
         # 快照里只带全市场最近 12 条，按币筛会漏，必须能按币直接查库。
         self.paper_history_fn = None
+        # 需要现查外部数据的工具入口（main 注入）：
+        #   orders(symbol) -> accounts.protection_snapshot 形状
+        #   equity(days, hours) -> {"account","daily","series"}
+        #   trades(days, symbol, limit) -> {"trades","stats","allTime","total","source"}
+        self.data_fns: dict = {}
         # 模型没给 count 时的默认条数，main 从 config.search.count 注入；仍按 1..10 校验
         self.search_default_count = 5
         self.state_path = state_path
@@ -2847,6 +2889,8 @@ class AgentManager:
                                     "sandbox_write", "sandbox_read", "sandbox_list", "sandbox_run",
                                     "web_search", "read_web_page", "send_sticker",
                                     "list_stickers", "search_stickers", "save_sticker",
+                                    # 这三个直接查数据库/交易所，不需要 context 快照
+                                    "read_orders", "read_equity", "read_trades",
                                     "place_order"}
                    for call in normalized):
                 try:
@@ -2857,6 +2901,8 @@ class AgentManager:
                     fields = ("ts", "market", "symbols", "stats", "evaluations", "accounts", "positions",
                               "trades", "positionPlans", "risk", "drawdown", "drift", "params", "health",
                               "enabled", "recentEvents", "events", "news", "patternStats",
+                              # 衍生品与评分特征：页面上有、Agent 之前完全读不到
+                              "liveFeatures", "derivatives", "gateLog", "decisionTraces",
                               # 模拟仓是另一套数据：未平仓、已实现战绩、最近平仓
                               "paper", "paperStats", "paperHistory", "paperSummary")
                     snapshot = copy.deepcopy(clean({k: raw[k] for k in fields if k in raw}))
@@ -2935,7 +2981,8 @@ class AgentManager:
                     else:
                         if snapshot_error:
                             raise ValueError(snapshot_error)
-                        output = read_snapshot(name, arguments, snapshot, self.paper_history_fn)
+                        output = read_snapshot(name, arguments, snapshot,
+                                               self.paper_history_fn, self.data_fns)
                     step.update(status="succeeded", result=bounded(output, STEP_PREVIEW))
                 except PersistenceError:
                     raise

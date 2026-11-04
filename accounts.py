@@ -153,6 +153,58 @@ def open_orders(api_key: str, api_secret: str, symbol: str) -> list:
                           {"symbol": symbol.upper()})
 
 
+def algo_orders(api_key: str, api_secret: str, symbol: str = "") -> list:
+    """当前挂着的算法条件单（止损/止盈）。
+
+    止损走的是 /fapi/v1/algoOrder，**不在** /fapi/v1/openOrders 里。
+    只查 openOrders 会得出"没有任何挂单保护"的错误结论——Agent 之前
+    就是靠 positions 里的 sl 字段猜的，压根没查过交易所。
+    symbol 为空时查全部合约。
+    """
+    params = {"symbol": symbol.upper()} if symbol else {}
+    rows = signed_request(api_key, api_secret, "/fapi/v1/openAlgoOrders", params)
+    return (rows.get("orders", rows) if isinstance(rows, dict) else rows) or []
+
+
+def protection_snapshot(api_key: str, api_secret: str, positions: list) -> dict:
+    """把"每个持仓有没有挂保护单"查清楚——这是用户最常问的一句话。
+
+    输出两类：
+      · symbols：每个合约当前的普通挂单 + 算法条件单（原始精简字段）
+      · gaps：有仓但没找到 reduceOnly 条件单的合约（裸奔警告）
+
+    只读，不下单、不撤单。
+    """
+    syms = sorted({str(p.get("symbol") or "").lower()
+                   for p in positions or [] if p.get("symbol")})
+    symbols, gaps, errors = {}, [], []
+    for sym in syms:
+        try:
+            plain = open_orders(api_key, api_secret, sym) or []
+        except Exception as exc:
+            plain = []
+            errors.append(f"{sym} 普通挂单: {str(exc)[:80]}")
+        try:
+            algo = algo_orders(api_key, api_secret, sym)
+        except Exception as exc:
+            algo = []
+            errors.append(f"{sym} 条件单: {str(exc)[:80]}")
+        keep = ("symbol", "side", "type", "origQty", "price", "stopPrice",
+                "triggerPrice", "reduceOnly", "closePosition", "timeInForce", "status")
+        algo_keep = ("symbol", "side", "type", "quantity", "triggerPrice",
+                     "reduceOnly", "closePosition", "algoStatus", "algoId", "bookTime")
+        rows = [{k: o.get(k) for k in keep if k in o} for o in plain if isinstance(o, dict)]
+        rows += [{"algo": True, **{k: o.get(k) for k in algo_keep if k in o}}
+                 for o in algo if isinstance(o, dict)]
+        symbols[sym] = rows
+        # 有仓却没有任何"只减仓/全平"条件单 = 保护缺失
+        protected = any(
+            (o.get("reduceOnly") in (True, "true")) or (o.get("closePosition") in (True, "true"))
+            for o in algo if isinstance(o, dict))
+        if not protected:
+            gaps.append(sym)
+    return {"symbols": symbols, "gaps": gaps, "errors": errors}
+
 def cancel_all_open_orders(api_key: str, api_secret: str, symbol: str) -> dict:
     return signed_request(api_key, api_secret, "/fapi/v1/allOpenOrders",
                           {"symbol": symbol.upper()}, method="DELETE")
