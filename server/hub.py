@@ -44,6 +44,8 @@ class BroadcastHub:
         self.clients: set = set()
         self.latest: dict[tuple, list] = {}
         self.dirty: set = set()
+        # 结构分析待推送集合：只在收线重算后加入，避免每笔 tick 都重发整份结构
+        self._structure_dirty: set = set()
         self.hit_queue: list[dict] = []
         self.mode = "binance"
         self.lag_p50 = None
@@ -85,11 +87,15 @@ class BroadcastHub:
     def on_update(self, symbol, interval, candle, closed, history):
         self.latest[(symbol, interval)] = self._bar(candle)
         self.dirty.add((symbol, interval))
-        # 结构分析只在收线时重算（每根K线一次，避免逐笔重算）
+        # 结构分析只在收线时重算（每根K线一次，避免逐笔重算）。
+        # 重算后把 key 标记为"待推送"：结构只在收线时变，绝不能跟着每笔
+        # tick 一起下发——那是整份形态/趋势线数据（~1.4KB），10 秒能把
+        # 270KB 灌给每个客户端，是页面卡顿的元凶之一。
         if closed and self.analysis_fn:
             try:
                 self.structures[(symbol, interval)] = self.analysis_fn(
                     symbol, interval, history[-160:])
+                self._structure_dirty.add((symbol, interval))
             except Exception:
                 pass
 
@@ -425,6 +431,11 @@ class BroadcastHub:
                                 "type": "candle", "symbol": key[0],
                                 "interval": key[1], "bar": bar,
                             })
+                # 结构分析单独一批：只在收线重算后下发（每根K线一次），
+                # 不再跟着每笔 tick 重发整份形态/趋势线数据。
+                if self._structure_dirty:
+                    struct_dirty, self._structure_dirty = self._structure_dirty, set()
+                    for key in struct_dirty:
                         st = self.structures.get(key)
                         if st:
                             await self._broadcast({
