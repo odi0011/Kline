@@ -346,6 +346,20 @@ def _is_silent(text: str) -> bool:
 
 SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依据、可追踪的分析。
 必须通过提供的真实工具读取所需数据，不得编造工具执行、行情或持仓。
+
+【数据边界：交易所拿得到的，你都能读】
+ · **任何币种、任何周期**都能读，不受监控列表限制。用户问 SOL、问 4 小时、
+   问日线，都直接读得到——read_candles 支持 1m/3m/5m/15m/30m/1h/2h/4h/
+   6h/12h/1d/1w/1M，币不在监控里也一样能取。别答"这个币没在监控里"。
+ · 用户问"这个币现在什么情况""全部数据给我看看""多空压力如何"→
+   **直接用 read_symbol_everything**，它会一次返回：24h 全字段行情、
+   指定周期K线、实时盘口深度与买卖压力、最近逐笔成交与主动买卖比、
+   资金费率、持仓量 OI、全局多空账户比、大户持仓比，以及系统评估。
+   一次拿全，不要一个个工具去试。
+ · 要比较多个周期（多周期共振）就分多次调 read_candles，例如先 15m
+   看结构、再 1h 看趋势、再 1d 看大方向。
+ · **只有交易所本身没有的东西**才说没有（比如别人的私密持仓、未来价格）。
+
 用户问走势、K线、支撑压力、形态时，先用 read_candles 读该币的K线再看图说话；
 只说"我读不到K线"是错的——你有这个工具。
 用户问"该做多还是做空""系统怎么建议""胶囊为什么这么说"时，
@@ -1044,6 +1058,10 @@ class AgentManager:
         self.config_fn, self.proxy_fn = config_fn, proxy_fn
         self.context_fn, self.broadcast = context_fn, broadcast
         self.bars_fn = None             # (symbol, interval) -> list[Candle]，main 注入
+        # 交易所按需取数：(what, symbol, params) -> 任意结构，main 注入。
+        # what: ticker / candles / derivatives / depth / trades
+        # 有了它 Agent 才能读**任意币任意周期**，不受监控列表限制。
+        self.symbol_fetch_fn = None
         self.advice_fn = None           # (symbol) -> 胶囊同款建议，main 注入
         self.symbols_fn = None          # () -> 当前监控币种列表，main 注入
         self.calc_read_fn = None        # (seconds) -> 计算流水，main 注入
@@ -2747,10 +2765,13 @@ class AgentManager:
                          "如果 ageSeconds 较大，说明数据不是最新")}
 
     def _read_candles(self, arguments: dict) -> dict:
-        """读某个币的最近K线。数据源由 main 注入（走聚合器，不联网）。
+        """读某个币的最近K线。
 
-        没有这个工具时模型只能看到聚合后的指标，问"读一下 1m 图"就只能
-        说"我没有K线能力"——那是工具缺口，不是数据缺口。
+        数据源分两层：
+          1. **交易所按需取**（symbol_fetch_fn，任意币任意周期）——优先
+          2. 本地聚合器（只覆盖监控中的币和已订阅周期）
+        任何币、任何周期都该能读：用户问"看看 SOL 的 4 小时"时，
+        不该因为 SOL 不在监控列表就答"没有它的K线"。
         """
         if not isinstance(arguments, dict):
             raise ValueError("read_candles 参数需为对象")
@@ -2762,15 +2783,31 @@ class AgentManager:
                          self.symbols_fn() if self.symbols_fn else None)
         interval = _text(arguments.get("interval", ""), "interval", 8) or ""
         raw_limit = arguments.get("limit", 40)
-        if type(raw_limit) is not int or not 10 <= raw_limit <= 120:
-            raise ValueError("limit 需为 10–120 的整数")
-        if self.bars_fn is None:
-            return {"available": False, "reason": "行情源未接入"}
-        try:
-            bars = self.bars_fn(symbol, interval) or []
-        except Exception as exc:
-            return {"available": False, "reason": f"读取失败: {str(clean(str(exc)))[:120]}"}
+        if type(raw_limit) is not int or not 10 <= raw_limit <= 500:
+            raise ValueError("limit 需为 10–500 的整数")
+        bars = []
+        source = ""
+        # 1) 先问交易所：任意币、任意周期都能拿到，不受监控列表限制
+        if interval and self.symbol_fetch_fn is not None:
+            try:
+                bars = self.symbol_fetch_fn("candles", symbol, {
+                    "interval": interval, "limit": raw_limit}) or []
+                if bars:
+                    source = "exchange"
+            except Exception:
+                bars = []
+        # 2) 退回本地聚合器（没指定周期，或交易所取不到）
+        if not bars and self.bars_fn is not None:
+            try:
+                bars = self.bars_fn(symbol, interval) or []
+                if bars:
+                    source = "local"
+            except Exception as exc:
+                return {"available": False,
+                        "reason": f"读取失败: {str(clean(str(exc)))[:120]}"}
         if not bars:
+            if self.bars_fn is None and self.symbol_fetch_fn is None:
+                return {"available": False, "reason": "行情源未接入"}
             # 区分"不在监控列表"和"在列表但还没攒够数据"——两者对用户的
             # 含义完全不同。混成一句会让模型说出"BTC 已不在监控范围"
             # 这种误导性结论（实际只是回补还没跟上）。
@@ -2779,7 +2816,8 @@ class AgentManager:
                 reason = (f"{symbol} 在监控列表里，但K线还没攒够（刚启动或正在回补），"
                           "稍等几十秒再读")
             else:
-                reason = f"{symbol} 不在当前监控列表里，没有它的K线"
+                reason = (f"{symbol} 的K线取不到（交易所和本地都没有）。"
+                          "确认币种写法是否正确，例如 btcusdt")
             return {"available": False, "symbol": symbol, "monitored": monitored,
                     "reason": reason}
         rows = []
@@ -2795,7 +2833,135 @@ class AgentManager:
                 "sell": round(float(getattr(candle, "sell_vol", 0) or 0), 6),
             })
         return {"available": True, "untrusted": False, "symbol": symbol,
-                "interval": interval or "default", "count": len(rows), "bars": rows}
+                "interval": interval or "default", "source": source or "unknown",
+                "count": len(rows), "bars": rows}
+
+    async def _read_symbol_everything(self, arguments: dict) -> dict:
+        """某个币在交易所能拿到的全部实时数据，一次拿全。
+
+        为什么需要它：之前模型只能一个个工具试（read_market 拿指标、
+        read_derivatives 拿资金费率、read_orders 拿挂单…），既慢又容易
+        漏。用户问"这个币现在什么情况"，它该一次就把能拿的全拿到。
+
+        数据分两块：
+          · **交易所原始数据**（symbol_fetch_fn，任意币任意周期）
+          · **系统评估**（本地快照，只有监控中的币才有）
+        取不到的部分如实置空并写进 errors，绝不编。
+        """
+        if not isinstance(arguments, dict):
+            raise ValueError("read_symbol_everything 参数需为对象")
+        if set(arguments) - {"symbol", "interval", "limit", "trades"}:
+            raise ValueError("包含不支持的参数")
+        symbol = _symbol(arguments.get("symbol", ""),
+                         self.symbols_fn() if self.symbols_fn else None)
+        interval = _text(arguments.get("interval", ""), "interval", 8) or "15m"
+        limit = arguments.get("limit", 60)
+        if type(limit) is not int or not 20 <= limit <= 300:
+            raise ValueError("limit 需为 20–300 的整数")
+        trades = arguments.get("trades", 100)
+        if type(trades) is not int or not 0 <= trades <= 500:
+            raise ValueError("trades 需为 0–500 的整数")
+        if self.symbol_fetch_fn is None:
+            return {"available": False, "symbol": symbol,
+                    "reason": "交易所取数入口未接入"}
+
+        import asyncio as _asyncio
+        loop = _asyncio.get_running_loop()
+
+        def call(what, params=None):
+            return loop.run_in_executor(
+                None, lambda: self.symbol_fetch_fn(what, symbol, params or {}))
+
+        # 并发取：串行要十几秒，这里每个源互相独立
+        jobs = {
+            "ticker": call("ticker"),
+            "candles": call("candles", {"interval": interval, "limit": limit}),
+            "derivatives": call("derivatives"),
+            "depth": call("depth"),
+            "trades": call("trades", {"limit": trades}) if trades else None,
+        }
+        results, errors = {}, {}
+        for name, job in jobs.items():
+            if job is None:
+                continue
+            try:
+                results[name] = await job
+            except Exception as exc:
+                errors[name] = str(clean(str(exc)))[:120]
+
+        # 系统这一侧的评估（只有监控中的币才有——没有就明确说，不编）
+        system = {}
+        try:
+            raw = self.context_fn() if self.context_fn else None
+            if isinstance(raw, dict):
+                key = symbol.lower()
+                system = {
+                    "monitored": True,
+                    "state": (raw.get("market") or {}).get(key),
+                    "evaluation": (raw.get("evaluations") or {}).get(key),
+                    "features": (raw.get("liveFeatures") or {}).get(key),
+                    "derivativesCached": (raw.get("derivatives") or {}).get(key),
+                    "hasPosition": any(
+                        str(p.get("symbol") or "").lower() == key
+                        for p in (raw.get("positions") or [])),
+                }
+        except Exception as exc:
+            errors["system"] = str(clean(str(exc)))[:120]
+
+        # 主动买卖比：从逐笔成交直接汇出来，比 K 线口径细
+        trade_rows = results.get("trades") or []
+        flow = None
+        if trade_rows:
+            buy = sum(r.get("notional") or 0 for r in trade_rows if r.get("side") == "buy")
+            sell = sum(r.get("notional") or 0 for r in trade_rows if r.get("side") == "sell")
+            total = buy + sell
+            flow = {"buyNotional": round(buy, 2), "sellNotional": round(sell, 2),
+                    "buyPct": round(buy / total * 100, 2) if total else None,
+                    "trades": len(trade_rows)}
+
+        # 盘口压力：按档位汇总买卖挂单金额
+        depth = results.get("depth") or {}
+        pressure = None
+        bids = depth.get("bids") or []
+        asks = depth.get("asks") or []
+        if bids or asks:
+            bid_notional = sum(float(p) * float(q) for p, q in bids[:20])
+            ask_notional = sum(float(p) * float(q) for p, q in asks[:20])
+            span = bid_notional + ask_notional
+            pressure = {
+                "bidNotionalTop20": round(bid_notional, 2),
+                "askNotionalTop20": round(ask_notional, 2),
+                "bidPct": round(bid_notional / span * 100, 2) if span else None,
+                "bestBid": bids[0][0] if bids else None,
+                "bestAsk": asks[0][0] if asks else None,
+                "spreadPct": (round((float(asks[0][0]) - float(bids[0][0]))
+                                    / float(bids[0][0]) * 100, 4)
+                              if bids and asks and float(bids[0][0]) else None),
+            }
+
+        payload = {
+            "available": bool(results),
+            "untrusted": True,
+            "symbol": symbol,
+            "interval": interval,
+            "ticker": results.get("ticker"),
+            "candles": (results.get("candles") or [])[-limit:],
+            "derivatives": results.get("derivatives"),
+            "depthPressure": pressure,
+            "orderbookTop": {"bids": bids[:10], "asks": asks[:10]} if (bids or asks) else None,
+            "recentTrades": trade_rows[-30:],
+            "tradeFlow": flow,
+            "system": system,
+            # 明确标注每块是"交易所原始"还是"系统评估"，别让模型混着引用
+            "note": ("ticker/candles/derivatives/depthPressure/orderbookTop/"
+                     "recentTrades/tradeFlow 都是**交易所原始数据**（任意币都能取）；"
+                     "system 是系统对这一币的评估，只有监控列表里的币才有。"
+                     "depthPressure 与 tradeFlow 的百分比是买卖方向的强度，"
+                     "不是价格预测。"),
+        }
+        if errors:
+            payload["errors"] = errors
+        return payload
 
     async def _http_notext(self, config, model, messages, proxy, deadline, note):
         """无工具模式：请求不带 tools，并把"你没有工具"并进同一条 system。
@@ -3059,6 +3225,8 @@ class AgentManager:
                         output = {"preferences": dict(self.memory)}
                     elif name == "read_candles":
                         output = self._read_candles(arguments)
+                    elif name == "read_symbol_everything":
+                        output = await self._read_symbol_everything(arguments)
                     elif name == "read_advice":
                         output = self._read_advice(arguments)
                     elif name == "create_watch":

@@ -58,10 +58,26 @@ TOOLS = [
     _tool("read_market", "读取当前行情/评估快照；可按 symbol 筛选，不请求外部网络。",
           {"symbol": {"type": "string", "maxLength": 24}}),
     _tool("read_candles", "读取某个币种最近的K线（OHLCV + 主动买卖量）。"
-          "回答走势、形态、支撑压力之前应该先读它。",
+          "**任何周期都可以**：1m/3m/5m/15m/30m/1h/2h/4h/6h/12h/1d/1w/1M。"
+          "**任何币种都可以**：不在监控列表里的也一样能读（直接问交易所）。"
+          "回答走势、形态、支撑压力、多周期共振之前应该先读它。"
+          "想比较多个周期就分多次调用（例如先 15m 看结构，再 1h 看趋势）。",
           {"symbol": {"type": "string", "maxLength": 24},
            "interval": {"type": "string", "maxLength": 8},
-           "limit": {"type": "integer", "minimum": 10, "maximum": 120}},
+           "limit": {"type": "integer", "minimum": 10, "maximum": 500}},
+          ["symbol"]),
+    _tool("read_symbol_everything", "读取某个币种**在交易所能拿到的全部实时数据**，一次性返回："
+          "24h 全字段行情（开高低收/涨跌/成交量额/笔数/盘口买卖价）、"
+          "指定周期的K线（默认 15m）、实时盘口深度（多空挂单压力）、"
+          "最近逐笔成交与主动买卖比、资金费率、持仓量 OI 与变化、"
+          "全局多空账户比、大户持仓比、taker 主动买卖比、"
+          "以及系统对这一币的评估（评分/方向/指标/特征）。"
+          "用户问'这个币现在什么情况''多空压力如何''全部数据给我看看'"
+          "'帮我全面分析一下'时**优先用它**——一次拿全，别一个个工具试。",
+          {"symbol": {"type": "string", "maxLength": 24},
+           "interval": {"type": "string", "maxLength": 8},
+           "limit": {"type": "integer", "minimum": 20, "maximum": 300},
+           "trades": {"type": "integer", "minimum": 0, "maximum": 500}},
           ["symbol"]),
     _tool("read_advice", "读取系统给某个币的实时交易建议（就是 K 线图右上角胶囊显示的那条）。"
           "用户问'该做多还是做空''系统怎么建议'时必须先读它，并复述它的结论；"

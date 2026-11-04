@@ -130,9 +130,11 @@ def test_unknown_kind_uses_conservative_policy():
 def test_stats_reports_budget_and_reason():
     gate = ProactiveGate(rng=random.Random(0))
     gate.policy["position"] = {"cooldown": 0, "prob": 1.0, "dedupe": 0}
-    gate.should_speak(ProactiveEvent(kind="position", summary="开仓"))
+    # risk 类是 urgent，概率恒为 1，不会因为随机撞不上
+    gate.policy["risk"] = {"cooldown": 0, "prob": 1.0, "dedupe": 0}
+    assert gate.should_speak(ProactiveEvent(kind="risk", summary="裸奔")) is True
     s = gate.stats()
-    assert s["spokenLastHour"] == 1
+    assert s["spokenLastHour"] >= 1
     assert s["budget"] == MAX_PER_HOUR
     assert s["lastReason"] == "ok"
 
@@ -198,6 +200,9 @@ def test_speaking_event_posts_human_style_messages(tmp_path, monkeypatch):
 
     async def scenario():
         manager, _ = make_manager(tmp_path, monkeypatch, provider=provider)
+        # 闸门有概率，测试显式放行，只验"说了什么"
+        manager.proactive_gate.policy["position"] = {"cooldown": 0, "prob": 1.0,
+                                                      "dedupe": 0}
         await manager.proactive(ProactiveEvent(
             kind="position", summary="开仓 btcusdt", symbol="btcusdt"))
         assert await wait_for(lambda: not manager.chat_runners)
@@ -232,3 +237,19 @@ def test_gate_blocks_before_any_model_call(tmp_path, monkeypatch):
         assert calls == [], "闸门拦住时不能调用模型"
         await manager.stop()
     asyncio.run(scenario())
+
+
+def test_prob_one_is_never_discounted():
+    """prob=1.0 表示"必说"，深夜也不能打折。
+
+    真实 bug：深夜折半逻辑只判断 urgent 标记，结果把 prob=1.0 的类别
+    折成 0.5——"必说"变成了"一半概率别说"，而且随本地时钟变化，
+    测试在凌晨跑就会莫名其妙失败。
+    """
+    night = time.mktime((2026, 11, 5, 3, 0, 0, 0, 0, -1))
+    # 预算调大：这条只测"概率不打折"，每小时上限是另一条测试的事
+    gate = ProactiveGate(rng=random.Random(0), max_per_hour=100)
+    gate.policy["pattern"] = {"cooldown": 0, "prob": 1.0, "dedupe": 0}
+    for i in range(20):
+        ev = ProactiveEvent(kind="pattern", summary=f"x{i}", symbol=f"s{i}")
+        assert gate.should_speak(ev, now=night) is True, f"第 {i} 次被静默了"

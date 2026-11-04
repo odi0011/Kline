@@ -129,6 +129,75 @@ def ticker_24h(symbol: str, proxy: str | None = None) -> dict | None:
         return None
 
 
+def ticker_full(symbol: str, proxy: str | None = None) -> dict | None:
+    """24h 全字段行情：涨跌、开高低收、成交量、成交额、笔数、买卖盘口价。
+
+    比 ticker_24h 给得多——Agent 被问"这个币 24 小时怎么样"时，
+    只有成交额和涨跌幅是答不完整的。
+    """
+    row = _get_json("/fapi/v1/ticker/24hr", {"symbol": symbol.upper()}, proxy)
+    if not isinstance(row, dict):
+        return None
+
+    def num(key):
+        try:
+            return float(row.get(key) or 0)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "symbol": str(row.get("symbol") or symbol).lower(),
+        "last": num("lastPrice"),
+        "changePct": num("priceChangePercent"),
+        "change": num("priceChange"),
+        "open": num("openPrice"),
+        "high": num("highPrice"),
+        "low": num("lowPrice"),
+        "volume": num("volume"),
+        "quoteVolume": num("quoteVolume"),
+        "trades": int(num("count") or 0),
+        "weightedAvg": num("weightedAvgPrice"),
+        "bestBid": num("bidPrice"),
+        "bestAsk": num("askPrice"),
+        "bidQty": num("bidQty"),
+        "askQty": num("askQty"),
+        "ts": int(time.time() * 1000),
+    }
+
+
+def recent_trades(symbol: str, limit: int = 100,
+                  proxy: str | None = None) -> list[dict] | None:
+    """最近的逐笔成交（交易所 /fapi/v1/aggTrades）。
+
+    用途：Agent 要看"刚才这几分钟是谁在打"——每一笔都带方向
+    （买方主动/卖方主动），可以直接汇成主动买卖比，比 1 分钟K线细得多。
+    返回按时间升序。
+    """
+    limit = max(1, min(1000, int(limit or 100)))
+    rows = _get_json("/fapi/v1/aggTrades", {"symbol": symbol.upper(), "limit": limit},
+                     proxy)
+    if not isinstance(rows, list):
+        return None
+    out = []
+    for row in rows:
+        try:
+            price = float(row.get("p") or 0)
+            qty = float(row.get("q") or 0)
+            # m=True 表示买方是挂单方 → 这一笔是**主动卖出**
+            maker = bool(row.get("m"))
+            out.append({
+                "ts": int(row.get("T") or 0),
+                "price": price,
+                "qty": qty,
+                "notional": round(price * qty, 4),
+                "side": "sell" if maker else "buy",
+            })
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+
 def onboard_dates(symbols: list[str], proxy: str | None = None) -> dict[str, int]:
     data = _get_json("/fapi/v1/exchangeInfo", {}, proxy)
     wanted = {symbol.upper() for symbol in symbols}

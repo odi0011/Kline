@@ -1087,6 +1087,60 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         return hist
 
     agent.bars_fn = _agent_bars
+
+    # ---- Agent 的交易所直连取数：任意币、任意周期 ----
+    # 本地聚合器只覆盖监控中的币和已订阅周期，而用户会问监控外的币
+    # （"看看 SOL 的 4 小时"）或未订阅的周期（1d/1w）。这些只有问交易所
+    # 才拿得到。K 线走 fetch_klines（币安被墙自动回退欧易），
+    # 其余走公开 REST。
+    def _agent_symbol_fetch(what: str, symbol: str, params: dict | None = None):
+        from feed import market_data as _md
+        from feed.backfill import fetch_klines
+        from feed.derivatives import derivatives_snapshot as _deriv
+        params = params or {}
+        sym = str(symbol or "").lower()
+        if not sym:
+            raise RuntimeError("缺少币种")
+        if what == "candles":
+            interval = str(params.get("interval") or "15m")
+            limit = max(10, min(1000, int(params.get("limit") or 60)))
+            bars = fetch_klines(sym, interval, limit, proxy_cfg or None) or []
+            return [{
+                "t": int(getattr(b, "open_time", 0) or 0),
+                "o": float(getattr(b, "open", 0) or 0),
+                "h": float(getattr(b, "high", 0) or 0),
+                "l": float(getattr(b, "low", 0) or 0),
+                "c": float(getattr(b, "close", 0) or 0),
+                "v": round(float(getattr(b, "volume", 0) or 0), 6),
+                "buy": round(float(getattr(b, "buy_vol", 0) or 0), 6),
+                "sell": round(float(getattr(b, "sell_vol", 0) or 0), 6),
+            } for b in bars]
+        if what == "ticker":
+            return _md.ticker_full(sym, proxy_cfg or None)
+        if what == "derivatives":
+            row = _deriv(sym, "5m", proxy_cfg or None)
+            return row if isinstance(row, dict) else None
+        if what == "depth":
+            # 优先用已经跑着的深度流（免费、实时）；没有就现拉一档快照
+            stream = depth_box.get("stream")
+            if stream is not None:
+                snap = getattr(stream, "latest", {}).get(sym)
+                if snap:
+                    return {"bids": snap.get("bids"), "asks": snap.get("asks"),
+                            "ts": snap.get("ts"), "source": "stream"}
+            row = _md._get_json("/fapi/v1/depth",
+                                {"symbol": sym.upper(), "limit": 20},
+                                proxy_cfg or None)
+            if isinstance(row, dict):
+                return {"bids": row.get("bids"), "asks": row.get("asks"),
+                        "ts": KlineAggregator.now_ms(), "source": "rest"}
+            return None
+        if what == "trades":
+            limit = max(1, min(1000, int(params.get("limit") or 100)))
+            return _md.recent_trades(sym, limit, proxy_cfg or None)
+        raise RuntimeError(f"不支持的取数类型: {what}")
+
+    agent.symbol_fetch_fn = _agent_symbol_fetch
     # 让 Agent 能区分"币不在监控列表"和"在列表但数据还没回来"
     agent.symbols_fn = lambda: list(symbols)
     agent.calc_read_fn = storage.calc_recent

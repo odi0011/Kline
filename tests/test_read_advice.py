@@ -147,9 +147,12 @@ def test_read_candles_distinguishes_not_ready_from_not_watched(tmp_path, monkeyp
         assert watched["available"] is False and watched["monitored"] is True
         assert "还没攒够" in watched["reason"]
 
+        # 监控外的币现在也能直接问交易所；取不到时的文案是"取不到"，
+        # 不再是"不在监控列表"——后者会让模型误答"这个币没在监控"
         other = manager._read_candles({"symbol": "dogeusdt"})
         assert other["available"] is False and other["monitored"] is False
-        assert "不在当前监控列表" in other["reason"]
+        assert "取不到" in other["reason"]
+        assert "不在当前监控列表" not in other["reason"]
         await manager.stop()
     asyncio.run(scenario())
 

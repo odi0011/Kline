@@ -129,10 +129,13 @@ class ProactiveGate:
             self.last_reason = f"budget {len(self._recent_speaks)}/{self.max_per_hour}"
             return False
 
-        # 4) 概率。深夜（本地 0-7 点）更克制——但**紧急类不降概率**，
-        #    仓位裸奔这种事凌晨三点也必须说。
+        # 4) 概率。深夜（本地 0-7 点）更克制，但：
+        #    · prob=1.0 的类别表示"必说"，永不打折——包括 risk（已标 urgent）
+        #      和任何调用方显式设成 1.0 的场景（测试/用户要求）。
+        #      第一版只判断 urgent 标记，结果测试里把 prob 设成 1.0 仍被
+        #      折成 0.5，触发了"必说却不说"的诡异行为。
         prob = float(cfg.get("prob") or 0.0)
-        urgent = bool(cfg.get("urgent"))
+        urgent = bool(cfg.get("urgent")) or prob >= 1.0
         hour = self._hour_local(now)
         if not urgent and 0 <= hour < 7:
             prob *= 0.5
