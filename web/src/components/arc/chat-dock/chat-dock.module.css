@@ -18,20 +18,20 @@
   height: 100%;
   overflow: hidden;
   border-radius: 20px;
-  /* 玻璃：亮色底 + 背景模糊 + 细白描边 + 柔和投影 */
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.62));
+  /* 固定面板：和其它板块一样用"细边框 + 极浅投影"。
+     原来的 0 18px 44px 是给悬浮窗做的，贴在两栏中间会拖出一道脏边，
+     和旁边的卡片完全不是一个视觉层级。 */
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.78));
   backdrop-filter: blur(22px) saturate(170%);
   -webkit-backdrop-filter: blur(22px) saturate(170%);
-  border: 1px solid rgba(255, 255, 255, 0.72);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.85) inset,
-    0 18px 44px rgba(16, 24, 40, 0.16),
-    0 2px 8px rgba(16, 24, 40, 0.06);
+  border: 1px solid rgba(28, 35, 51, 0.08);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
 }
 
 /* ---------- 标题栏 ----------
    绝对定位压在消息滚动区上方，不占布局高度；胶囊只包住头像和名字。
-   没有收起/拖动：这是固定面板，位置由页面布局决定。 */
+   固定面板没有拖拽，所以不能留 grab 光标——之前鼠标移上去变成"可拖动"
+   的手型却拖不动，是浮窗时代的残留。 */
 .header {
   position: absolute;
   top: 8px;
@@ -43,10 +43,8 @@
   justify-content: space-between;
   gap: 8px;
   pointer-events: none;
-  cursor: grab;
   user-select: none;
 }
-.header:active { cursor: grabbing; }
 .header > * { pointer-events: auto; }
 
 /* 右侧圆形菜单钮 */
@@ -81,11 +79,12 @@
   height: 32px;
   padding: 0 12px 0 5px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.55);
-  backdrop-filter: blur(14px) saturate(160%);
-  -webkit-backdrop-filter: blur(14px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.9);
-  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  /* 面板本身是固定板块、底下没有内容，胶囊不需要再"透"。
+     原来 0.55 的半透明在滚动时会把下面的消息文字透出来（截图里
+     "ODDD" 后面跟着半行字就是它），改成接近实心 + 极浅描边。 */
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(28, 35, 51, 0.08);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
   overflow: hidden;
 }
 .avatarWrap { position: relative; flex: none; display: block; width: 24px; height: 24px; }
