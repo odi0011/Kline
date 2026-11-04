@@ -19,6 +19,7 @@ import copy
 import json
 import math
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -2306,11 +2307,81 @@ class QuantEngine:
 
     # ---------- Agent 手动下单（带风控闸） ----------
 
-    # 单笔名义价值上限（USDT）：Agent 下的单不该比自动信号更大。
-    # 自动开仓走 kelly/风险预算，这里给一个硬顶，模型算错也炸不了账户。
-    MANUAL_MAX_NOTIONAL = 2000.0
+    # 单笔名义价值上限（USDT）。这是"防手滑"的天花板，不是策略限制：
+    # 用户要求"人能做的它就能做"，所以给得足够宽，但必须有顶——
+    # 模型把 50 USDT 算成 50000 时至少不会把账户打穿。
+    MANUAL_MAX_NOTIONAL = 200000.0
     # 单笔最多动用可用保证金的百分比
-    MANUAL_MAX_MARGIN_PCT = 0.25
+    MANUAL_MAX_MARGIN_PCT = 0.50
+    # 手动单杠杆上限（交易所自身上限更低时以交易所为准）
+    MANUAL_MAX_LEVERAGE = 125
+
+    def _normalize_symbol(self, symbol) -> str:
+        """把模型给的各种写法归一成内部键（btcusdt）。
+
+        模型会写 "BTC" / "btc" / "BTC-USDT" / "BTCUSDT" / "币安BTC"…
+        内部键、.indicators、.price_fn 全部是 "btcusdt" 这种小写无分隔形式，
+        不归一会直接取不到价（线上实测："取不到 BTC 最新价"）。
+        认不出来就返回空串——宁可拒绝，也不要拿一个猜的币种去下单。
+        """
+        raw = str(symbol or "").strip().lower()
+        if not raw:
+            return ""
+        # 去掉常见分隔符与中文前缀
+        cleaned = re.sub(r"[\s\-_/]|币安|okx|欧易|合约|永续", "", raw)
+        if not cleaned:
+            return ""
+        known = set(self.indicators.keys()) | set(self._step_sizes) | {
+            s.lower() for s in (self.symbol_filter or ())}
+        if cleaned in known:
+            return cleaned
+        # 只有币名没有计价货币：补 usdt
+        if cleaned in ("btc", "eth", "bnb", "sol", "xrp", "doge", "ada", "tsla",
+                       "xau", "xag", "avax", "link", "ltc", "dot", "trx", "matic"):
+            return cleaned + "usdt"
+        # 已经是 usdt 结尾或者带 usdc
+        if cleaned.endswith(("usdt", "usdc")):
+            return cleaned
+        # 在监控池里找前缀匹配（btc → btcusdt），只认唯一命中
+        hits = [k for k in known if k.startswith(cleaned)]
+        if len(hits) == 1:
+            return hits[0]
+        return cleaned if cleaned.isalnum() and len(cleaned) <= 16 else ""
+
+    def _manual_price(self, acct: dict, sym: str) -> tuple[float | None, str]:
+        """下单用价：本地行情 → 交易所 markPrice → 交易所最新成交价。
+
+        三层兜底，因为三种情况都要覆盖：
+          · 监控池内的币：本地聚合器零延迟
+          · 池外但有持仓：markPrice
+          · 池外且没持仓、markPrice 也不给（比如刚上架的合约）：拉 24h ticker
+        返回 (价格, 来源)，来源写进 plan 让用户知道这个价是怎么来的。
+        """
+        try:
+            p = (self.price_fn or (lambda s: None))(sym)
+            if p and float(p) > 0:
+                return float(p), "local"
+        except Exception:
+            pass
+        try:
+            p = self._mark_price(acct, sym)
+            if p and float(p) > 0:
+                return float(p), "markPrice"
+        except Exception:
+            pass
+        # 最后一层：24h ticker 的最新价（池外币种也能取到）
+        try:
+            rows = signed_request(acct.get("api_key", ""), acct.get("api_secret", ""),
+                                  "/fapi/v1/ticker/24hr", {"symbol": sym.upper()})
+            row = rows[0] if isinstance(rows, list) and rows else rows
+            if isinstance(row, dict):
+                for key in ("lastPrice", "price", "markPrice"):
+                    v = row.get(key)
+                    if v and float(v) > 0:
+                        return float(v), "ticker"
+        except Exception:
+            pass
+        return None, ""
 
     def manual_order_plan(self, symbol: str, side: str, notional: float | None = None,
                           leverage: int | None = None) -> dict:
@@ -2322,7 +2393,9 @@ class QuantEngine:
 
         返回 ready=false 时带 reason，Agent 应原样转述给用户，不要自己编。
         """
-        sym = str(symbol or "").strip().lower()
+        # 币种归一：模型经常只写 "BTC"、"btc"、"BTC-USDT"，而内部键统一是
+        # "btcusdt"。不归一就会取不到价（线上实测："取不到 BTC 最新价"）。
+        sym = self._normalize_symbol(symbol)
         if not sym:
             return {"ready": False, "reason": "缺少币种"}
         direction = str(side or "").strip().lower()
@@ -2339,25 +2412,24 @@ class QuantEngine:
         acct = accounts[0]
         key, secret = acct.get("api_key", ""), acct.get("api_secret", "")
 
-        price = (self.price_fn or (lambda s: None))(sym)
+        price, price_src = self._manual_price(acct, sym)
         if not price or price <= 0:
-            try:
-                price = self._mark_price(acct, sym)
-            except Exception:
-                price = None
-        if not price or price <= 0:
-            return {"ready": False, "reason": f"取不到 {sym.upper()} 的最新价，无法下单"}
+            return {"ready": False,
+                    "reason": f"取不到 {sym.upper()} 的最新价（本地行情没有这个币，"
+                              f"交易所接口也没返回），无法算单"}
 
-        # 杠杆：不超过交易所对该合约的上限，也不超过 20x（与模拟仓同一口径）
+        # 杠杆：不超过交易所对该合约的上限，也不超过手动单上限
         try:
             max_lev = int(self.max_leverage_fn(sym) or 0) if self.max_leverage_fn else 0
         except Exception:
             max_lev = 0
         want_lev = int(leverage or max_lev or 20)
-        lev = max(1, min(want_lev, max_lev or want_lev, 20))
+        hard_cap = min(self.MANUAL_MAX_LEVERAGE, max_lev or self.MANUAL_MAX_LEVERAGE)
+        lev = max(1, min(want_lev, hard_cap))
         note = ""
-        if max_lev and want_lev > max_lev:
-            note = f"交易所上限 {max_lev}x，已按上限开"
+        if want_lev > hard_cap:
+            note = (f"交易所/系统上限 {hard_cap}x，已按上限 {lev}x 算"
+                    f"（你要求 {want_lev}x）")
 
         # 风控：可用保证金 → 名义价值上限
         try:
@@ -2367,17 +2439,28 @@ class QuantEngine:
         if available <= 0:
             return {"ready": False, "reason": "账户可用保证金为 0，无法下单"}
         margin_cap = available * self.MANUAL_MAX_MARGIN_PCT
+        # 名义上限取两者的小值：系统硬顶 vs 保证金允许的规模
         cap = min(self.MANUAL_MAX_NOTIONAL, margin_cap * lev)
         want = float(notional or 0)
         if want <= 0:
             # 没指定金额：按上限的一半给一个稳健默认，别一开口就是满仓
             want = round(min(self.MANUAL_MAX_NOTIONAL, cap) * 0.5, 2)
         if want > cap:
+            # 把真实限额一起返回：模型需要知道"最多能下多少"才能给用户可用建议，
+            # 否则只会干巴巴地说"被风控拒绝了"。线上实测模型把上限说成
+            # "单笔最多 10 万 U"，就是因为它只能猜。
             return {"ready": False,
-                    "reason": f"金额 {want:.0f} 超过上限 {cap:.0f} USDT"
-                              f"（可用保证金 {available:.2f}，单笔最多用其 "
-                              f"{int(self.MANUAL_MAX_MARGIN_PCT * 100)}%，且名义不超过 "
-                              f"{self.MANUAL_MAX_NOTIONAL:.0f}）"}
+                    "reason": f"金额 {want:.0f} USDT 超过单笔上限 {cap:.0f} USDT",
+                    "limits": {
+                        "maxNotional": round(cap, 2),
+                        "maxNotionalBySystem": self.MANUAL_MAX_NOTIONAL,
+                        "available": round(available, 2),
+                        "marginPct": int(self.MANUAL_MAX_MARGIN_PCT * 100),
+                        "leverage": lev,
+                        "maxLeverage": hard_cap,
+                    },
+                    "suggest": (f"按 {lev}x 最多可下 {cap:.0f} USDT 名义"
+                                f"（约 {cap / lev:.0f} USDT 保证金）")}
         if want < 5:
             return {"ready": False, "reason": "金额太小，交易所最小名义价值约 5 USDT"}
 
@@ -2400,6 +2483,7 @@ class QuantEngine:
             "ready": True,
             "account": acct.get("name", ""),
             "symbol": sym,
+            "priceSource": price_src,
             "orderSide": order_side,
             "closeSide": close_side,
             "direction": "long" if order_side == "BUY" else "short",

@@ -56,19 +56,21 @@ def test_plan_short_direction_is_reversed(tmp_path):
 
 
 def test_plan_rejects_over_notional_cap(tmp_path):
-    """超过单笔名义上限要拒绝，不能说"帮你下了"。"""
+    """超过单笔名义上限要拒绝，并给出真实上限（不是一句干巴巴的拒绝）。"""
     eng = _engine(tmp_path, available=100000)
     plan = eng.manual_order_plan("btcusdt", "long", 999999, 10)
     assert plan["ready"] is False
-    assert "超过上限" in plan["reason"]
+    assert "超过单笔上限" in plan["reason"]
+    assert plan["limits"]["maxNotional"] > 0
 
 
 def test_plan_rejects_when_margin_insufficient(tmp_path):
     """可用保证金太小 → 按比例算出的上限低于请求金额，拒绝。"""
-    eng = _engine(tmp_path, available=100.0)      # 25% = 25 USDT 保证金
+    eng = _engine(tmp_path, available=100.0)      # 50% = 50 USDT 保证金 × 10x = 500 名义
     plan = eng.manual_order_plan("btcusdt", "long", 1000, 10)
     assert plan["ready"] is False
-    assert "超过上限" in plan["reason"]
+    assert "超过单笔上限" in plan["reason"]
+    assert plan["limits"]["maxNotional"] <= 500
 
 
 def test_plan_clamps_leverage_to_exchange_max(tmp_path):
@@ -182,3 +184,68 @@ def test_execute_rejects_invalid_plan(tmp_path):
     eng = _engine(tmp_path)
     assert eng.manual_order_execute({})["ok"] is False
     assert eng.manual_order_execute({"ready": False})["ok"] is False
+
+
+# ---------- 币种归一 & 取价兜底 ----------
+
+def test_symbol_normalisation(tmp_path):
+    """模型会写 BTC / btc / BTC-USDT / 币安BTC，都要归一到 btcusdt。
+
+    线上实测：模型传 "BTC" → 内部键是 "btcusdt" → price_fn 查不到 →
+    "取不到 BTC 最新价，连单都算不出来"。
+    """
+    eng = _engine(tmp_path)
+    for raw in ("BTC", "btc", "BTC-USDT", "BTCUSDT", "btc_usdt", "币安BTC"):
+        assert eng._normalize_symbol(raw) == "btcusdt", raw
+    assert eng._normalize_symbol("") == ""
+    assert eng._normalize_symbol("   ") == ""
+
+
+def test_price_falls_back_to_ticker(tmp_path):
+    """本地行情没有这个币时，要退回交易所 ticker，而不是直接说取不到价。"""
+    eng = _engine(tmp_path)
+    eng.price_fn = lambda s: None
+    eng._mark_price = MagicMock(return_value=None)
+    import quant as quant_mod
+    orig = quant_mod.signed_request
+    quant_mod.signed_request = MagicMock(return_value={"lastPrice": "123.45"})
+    try:
+        price, src = eng._manual_price({"api_key": "k", "api_secret": "s"}, "ethusdt")
+    finally:
+        quant_mod.signed_request = orig
+    assert price == 123.45
+    assert src == "ticker"
+
+
+def test_plan_reports_real_limits_when_over(tmp_path):
+    """超限时要返回真实上限，模型才能给出可用建议，而不是瞎猜。
+
+    线上模型说"单笔最多 10 万 U"——那是它猜的，因为之前只返回一句拒绝。
+    """
+    eng = _engine(tmp_path, available=7356.55)
+    plan = eng.manual_order_plan("btcusdt", "long", 500000, 10)
+    assert plan["ready"] is False
+    lim = plan["limits"]
+    assert lim["available"] == 7356.55
+    assert lim["marginPct"] == 50
+    assert 0 < lim["maxNotional"] <= lim["maxNotionalBySystem"]
+    assert "最多可下" in plan["suggest"]
+
+
+def test_high_leverage_allowed_up_to_exchange_max(tmp_path):
+    """150x 不应被硬砍到 20x：手动单上限是 125x（交易所自身上限优先）。"""
+    eng = _engine(tmp_path)
+    plan = eng.manual_order_plan("btcusdt", "long", 5000, 150)
+    assert plan["ready"] is True, plan
+    assert plan["leverage"] == 50          # 该测试里 max_leverage_fn 返回 50
+    assert "上限" in plan["note"]
+
+
+def test_trade_short_with_chinese_symbol(tmp_path):
+    """用户说"BTC开空 5000U 150倍"时，算单必须成功且方向是 SELL。"""
+    eng = _engine(tmp_path)
+    plan = eng.manual_order_plan("BTC", "short", 5000, 150)
+    assert plan["ready"] is True, plan
+    assert plan["symbol"] == "btcusdt"
+    assert plan["orderSide"] == "SELL"
+    assert plan["tp"] < plan["price"] < plan["sl"], "做空：止盈在下、止损在上"
