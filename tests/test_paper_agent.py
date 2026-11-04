@@ -115,6 +115,31 @@ def test_read_accounts_does_not_expose_paper():
     assert "模拟仓" in data["note"]
 
 
+def test_read_accounts_trades_newest_first_and_lean():
+    """成交明细必须最新在前，且不能因为超预算被截成 excerpt。
+
+    线上实测：20 条全字段成交撑爆 12000 预算，bounded() 从末尾砍，
+    最新的那笔正好没了——Agent 只能拿聊天历史答"止损挂上了没"。
+    """
+    now = int(time.time() * 1000)
+    trades = [{"ts": now - i * 1000, "symbol": "btcusdt", "side": "BUY",
+               "qty": 0.0045, "entry": 80000 + i, "exit": 80100 + i, "pnl": 1.2,
+               "movePct": 0.5, "reason": "移动止盈", "entryTs": now - i * 1000 - 60_000,
+               "holdMin": 12.0, "pattern": "bullish_engulfing",
+               # 排障字段：占长度但对回答没用
+               "orderId": 12345678901, "closeId": 12345678902,
+               "slippageAtr": 0.11, "entrySlippageAtr": 0.22, "atrAtEntry": 45.5}
+              for i in range(20)]
+    snap = {"ts": now, "accounts": [{"name": "O", "balance": 7352.95, "positions": [],
+                                     "error": None}],
+            "positions": [], "trades": trades}
+    data = read_snapshot("read_accounts", {}, snap)["data"]
+    assert "truncated" not in data, "账户数据不能被整段截断"
+    assert data["trades"][0]["ts"] == now, "最新一笔必须在第一个"
+    assert "orderId" not in data["trades"][0], "排障字段不该占预算"
+    assert data["accounts"][0]["balance"] == 7352.95
+
+
 def test_read_paper_missing_data_is_empty_not_error():
     out = read_snapshot("read_paper", {}, {"ts": 1})
     assert out["available"] is False

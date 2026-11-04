@@ -603,9 +603,14 @@ def read_snapshot(name, arguments, snapshot, history_fn=None):
     }[name]
     data = {key: snapshot[key] for key in fields if key in snapshot}
     if name == "read_accounts":
+        # trades 是 20 条全字段的真实成交，撑爆 12000 预算后 bounded()
+        # 会把整段压成 excerpt，而截断点在**最后**——最新那笔正好被切掉，
+        # Agent 就只能拿聊天历史里的旧状态回答（线上实测）。
+        # 这里按"最新在前 + 精简字段"投影，再按预算从最旧开始丢。
+        data["trades"] = _recent_trades(snapshot.get("trades") or [])
         data["note"] = ("账户=系统真正下单的那个交易账户（部署用哪种 key 是运维细节，"
-                        "不影响它的身份）。positions 是交易所里的真实持仓，trades 是已平仓真实成交。"
-                        "模拟仓（纸上交易、不产生委托）是另一套数据，请用 read_paper。")
+                        "不影响它的身份）。positions 是交易所里的真实持仓，trades 是已平仓真实成交"
+                        "（最新在前）。模拟仓（纸上交易、不产生委托）是另一套数据，请用 read_paper。")
     if name == "read_pattern_stats":
         # 原始字典不便阅读，按加权胜率并附上样本量排成一张榜。
         # 样本少于 3 次的单独标注：一两次的输赢不能当胜率用。
@@ -648,6 +653,40 @@ def read_snapshot(name, arguments, snapshot, history_fn=None):
             elif isinstance(value, list):
                 data[key] = [item for item in value
                              if hit(item.get("symbol", "") if isinstance(item, dict) else item)]
+    # 还是超预算就从最旧的成交开始丢，绝不让 bounded() 把整段压成 excerpt：
+    # 那等于账户权益、持仓、成交全读不到（线上实测 Agent 因此答旧状态）。
+    trades = data.get("trades")
+    dropped = 0
+    while (isinstance(trades, list) and len(trades) > 1
+           and len(json.dumps(clean(data), ensure_ascii=False)) > ACCOUNT_BUDGET):
+        trades.pop()
+        dropped += 1
+    if dropped:
+        data["tradesOmitted"] = dropped
     return {"untrusted": True, "source": "event-loop context snapshot",
             "ts": snapshot.get("ts"), "available": bool(data), "symbol": symbol,
-            "data": bounded(data)}
+            "data": bounded(data, ACCOUNT_BUDGET)}
+
+
+# 账户工具给足预算：trades 投影后仍有十几条
+ACCOUNT_BUDGET = 20000
+# 真实成交明细里 Agent 真会用到的字段。orderId/closeId/slippage* 是排障用的，
+# 占了半条记录的长度，却从来没被用来回答过问题。
+_TRADE_FIELDS = ("ts", "symbol", "side", "qty", "entry", "exit", "pnl", "movePct",
+                 "reason", "holdMin", "pattern")
+
+
+def _recent_trades(rows, limit: int = 20) -> list:
+    """已平仓成交：最新在前 + 精简字段。
+
+    快照里的 trades 是时间升序，bounded() 截断从后面砍——正好砍掉最新的。
+    这里按 ts 显式排序（不靠输入顺序），最多 limit 条；预算再不够由
+    调用方继续丢最旧的。
+    """
+    out = []
+    for row in list(rows):
+        if not isinstance(row, dict):
+            continue
+        out.append({k: row.get(k) for k in _TRADE_FIELDS if k in row})
+    out.sort(key=lambda r: r.get("ts") or 0)
+    return out[-limit:][::-1]
