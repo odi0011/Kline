@@ -10,6 +10,7 @@
   · 没有"一次拿全"的入口 → 模型得一个个试工具，还容易漏
 """
 import asyncio
+import json
 
 import pytest
 
@@ -232,3 +233,56 @@ def test_prompt_teaches_full_data_access():
                    "别答\"这个币没在监控里\"",
                    "只有交易所本身没有的东西"):
         assert phrase in SYSTEM_PROMPT, f"缺少: {phrase}"
+
+
+# ---------- 逐笔成交必须能回退到欧易 ----------
+
+def test_recent_trades_falls_back_to_okx(monkeypatch):
+    """币安被 451 时必须回退欧易。
+
+    线上实测：服务器访问 fapi.binance.com 返回 451，不回退的话逐笔成交
+    永远是 None，Agent 只能说"没有逐笔数据"——而欧易明明有。
+    那一轮它还靠 derivatives 的 taker 数据硬凑，说出了
+    "主动买盘 taker 73% 挺猛"和"盘口卖方略占优 48.2%"两句互相矛盾的话。
+    """
+    from feed import market_data as md
+
+    def binance_blocked(*a, **k):
+        raise OSError("HTTP Error 451")
+
+    okx_payload = {"code": "0", "data": [
+        {"px": "96.5", "sz": "2.0", "side": "buy", "ts": "1793809682000"},
+        {"px": "96.4", "sz": "1.0", "side": "sell", "ts": "1793809681000"},
+    ]}
+
+    class _Resp:
+        def __init__(self, payload):
+            self._b = json.dumps(payload).encode()
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(md, "_get_json", binance_blocked)
+    monkeypatch.setattr(md.urllib.request, "build_opener",
+                        lambda *a, **k: type("O", (), {
+                            "open": lambda self, *x, **y: _Resp(okx_payload)})())
+    rows = md.recent_trades("solusdt", 10, None)
+    assert rows, "必须从欧易拿到逐笔"
+    assert len(rows) == 2
+    # 欧易 side 语义直接映射：buy=主动买、sell=主动卖
+    assert [r["side"] for r in rows] == ["sell", "buy"], "按时间升序"
+    assert rows[0]["notional"] == pytest.approx(96.4, abs=0.01)
+
+
+def test_recent_trades_returns_none_when_both_fail(monkeypatch):
+    from feed import market_data as md
+    monkeypatch.setattr(md, "_get_json",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("451")))
+    monkeypatch.setattr(md, "_recent_trades_okx", lambda *a, **k: None)
+    assert md.recent_trades("solusdt", 10, None) is None

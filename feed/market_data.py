@@ -167,34 +167,87 @@ def ticker_full(symbol: str, proxy: str | None = None) -> dict | None:
 
 def recent_trades(symbol: str, limit: int = 100,
                   proxy: str | None = None) -> list[dict] | None:
-    """最近的逐笔成交（交易所 /fapi/v1/aggTrades）。
+    """最近的逐笔成交。优先币安 aggTrades，被地区限制(451)时回退欧易。
 
     用途：Agent 要看"刚才这几分钟是谁在打"——每一笔都带方向
     （买方主动/卖方主动），可以直接汇成主动买卖比，比 1 分钟K线细得多。
     返回按时间升序。
+
+    为什么必须回退：线上服务器访问币安 REST 会 451，不回退的话这一项
+    永远是 None，Agent 只能说"没有逐笔数据"——而欧易同样有。
     """
     limit = max(1, min(1000, int(limit or 100)))
-    rows = _get_json("/fapi/v1/aggTrades", {"symbol": symbol.upper(), "limit": limit},
-                     proxy)
-    if not isinstance(rows, list):
+    try:
+        rows = _get_json("/fapi/v1/aggTrades",
+                         {"symbol": symbol.upper(), "limit": limit}, proxy)
+    except Exception:
+        rows = None
+    if isinstance(rows, list):
+        out = []
+        for row in rows:
+            try:
+                price = float(row.get("p") or 0)
+                qty = float(row.get("q") or 0)
+                # m=True 表示买方是挂单方 → 这一笔是**主动卖出**
+                maker = bool(row.get("m"))
+                out.append({
+                    "ts": int(row.get("T") or 0),
+                    "price": price,
+                    "qty": qty,
+                    "notional": round(price * qty, 4),
+                    "side": "sell" if maker else "buy",
+                })
+            except (TypeError, ValueError):
+                continue
+        if out:
+            return out
+    return _recent_trades_okx(symbol, limit, proxy)
+
+
+def _recent_trades_okx(symbol: str, limit: int,
+                       proxy: str | None = None) -> list[dict] | None:
+    """欧易成交流（/api/v5/market/trades）。
+
+    欧易的每笔成交带 `side`：buy 表示**主动买**、sell 表示**主动卖**，
+    语义与币安的 isBuyerMaker 相反但含义一致（都是"谁主动"），
+    所以直接映射即可，不需要再推算。
+    """
+    base = symbol.upper()
+    if base.endswith("USDT"):
+        base = base[:-4]
+    inst = f"{base}-USDT-SWAP"
+    url = ("https://www.okx.com/api/v5/market/trades?"
+           + urllib.parse.urlencode({"instId": inst, "limit": min(limit, 500)}))
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "kline-pattern-monitor/1.0", "Accept": "application/json"})
+    opener = (urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+        if proxy else urllib.request.build_opener())
+    try:
+        with opener.open(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+    if str(payload.get("code")) != "0":
         return None
     out = []
-    for row in rows:
+    # 欧易返回新→旧，反转成正序
+    for row in reversed(payload.get("data") or []):
         try:
-            price = float(row.get("p") or 0)
-            qty = float(row.get("q") or 0)
-            # m=True 表示买方是挂单方 → 这一笔是**主动卖出**
-            maker = bool(row.get("m"))
+            price = float(row.get("px") or 0)
+            qty = float(row.get("sz") or 0)
+            side = "buy" if str(row.get("side") or "").lower() == "buy" else "sell"
             out.append({
-                "ts": int(row.get("T") or 0),
+                "ts": int(row.get("ts") or 0),
                 "price": price,
                 "qty": qty,
                 "notional": round(price * qty, 4),
-                "side": "sell" if maker else "buy",
+                "side": side,
             })
         except (TypeError, ValueError):
             continue
-    return out
+    return out or None
+
 
 
 
