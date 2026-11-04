@@ -30,6 +30,14 @@ export class LiveClient {
     this._retryTimer = null
     this._onVisibility = () => {
       if (document.hidden || this._closed) return
+      // 后台标签页期间 init/meta 通知被丢弃，回到前台必须补发一次。
+      // 只发 'resume' 不够：App 的 meta 状态永远停在 null，
+      // 整个看板（K线卡、账户、决策面板）就是空白——
+      // 在后台标签页打开看板、再切回来，看到的就是这个现象。
+      if (this.meta && !this._metaDelivered) {
+        this._metaDelivered = true
+        this.listeners.meta.forEach((f) => f(this.meta))
+      }
       this._emitStatus(this._lastStatus)
       this._emitKey('resume', {})
     }
@@ -103,7 +111,11 @@ export class LiveClient {
         }
       }
       this.meta = m
-      if (typeof document === 'undefined' || !document.hidden) this.listeners.meta.forEach((f) => f(m))
+      this._metaDelivered = false
+      if (typeof document === 'undefined' || !document.hidden) {
+        this._metaDelivered = true
+        this.listeners.meta.forEach((f) => f(m))
+      }
       this._emitKey('init', m)
     } else if (m.type === 'market') {
       if (Array.isArray(m.market) && this.meta) {
