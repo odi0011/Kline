@@ -1107,7 +1107,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 await asyncio.to_thread(quant.manage)    # 止损/止盈监控（每 5 秒，线程池内不卡主循环）
                 qtick += 1
                 if qtick % 10 == 0:                  # 约 5 秒广播一次量化快照
-                    asyncio.create_task(hub.broadcast({"type": "quant", "snapshot": quant.snapshot()}))
+                    # 广播走精简版：调试字段（decisionTraces/calcStream/
+                    # latestTraces/gateLog）不进浏览器，省掉 ~190KB/次
+                    asyncio.create_task(hub.broadcast(
+                        {"type": "quant", "snapshot": hub.slim_quant(quant.snapshot())}))
                 await asyncio.to_thread(quant.audit)  # 5 分钟自审计（引擎内部自限流）
             except Exception as e:
                 print(f"[quant] 运行异常: {e}")

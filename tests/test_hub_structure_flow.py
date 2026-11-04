@@ -107,3 +107,43 @@ async def _flush(hub):
             if st:
                 await hub._broadcast({"type": "structure", "symbol": key[0],
                                       "interval": key[1], "structure": st})
+
+
+# ---------------- 广播裁剪：调试字段不进浏览器 ----------------
+
+def _fat_snapshot():
+    analysis = {
+        "symbols": {"btcusdt": {"price": 1}}, "liveFeatures": {}, "liveEvaluations": {},
+        "liveScoreHistory": {}, "calcStream": [{"ts": 1}] * 50, "advice": {},
+        "paper": [], "paperStats": {}, "positionPlans": [], "params": {"minScore": 55},
+        "drawdown": {}, "drift": {},
+        # 下面四个是前端从来不读的调试字段，体积却最大
+        "decisionTraces": [{"x": "y" * 2000}] * 40,
+        "latestTraces": {f"a{i}": {"x": "y" * 1000} for i in range(30)},
+        "gateLog": [{"x": "y" * 500}] * 30,
+        "paperHistory": [{"x": "y" * 400}] * 40,
+    }
+    return {"enabled": True, "ts": 1, "stats": {}, "events": [], "positions": [],
+            "trades": [], "accounts": [], "unsupported": [], "analysis": analysis}
+
+
+def test_slim_quant_drops_debug_fields():
+    slim = BroadcastHub.slim_quant(_fat_snapshot())
+    a = slim["analysis"]
+    for gone in ("decisionTraces", "latestTraces", "gateLog", "paperHistory"):
+        assert gone not in a, f"{gone} 不该广播给浏览器"
+    # 前端真正要画的必须都在
+    for keep in ("symbols", "calcStream", "advice", "paper", "params", "drawdown"):
+        assert keep in a, f"{keep} 被误删了"
+
+
+def test_slim_quant_cuts_payload_size():
+    import json
+    fat = json.dumps(_fat_snapshot(), ensure_ascii=False)
+    thin = json.dumps(BroadcastHub.slim_quant(_fat_snapshot()), ensure_ascii=False)
+    assert len(thin) < len(fat) * 0.2, f"裁剪不够: {len(fat)} -> {len(thin)}"
+
+
+def test_slim_quant_tolerates_bad_input():
+    assert BroadcastHub.slim_quant(None) is None
+    assert BroadcastHub.slim_quant({"analysis": "oops"})["analysis"] == "oops"

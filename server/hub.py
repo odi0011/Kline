@@ -116,6 +116,33 @@ class BroadcastHub:
         return [c.open_time // 1000, c.open, c.high, c.low, c.close, round(c.volume, 4),
                 round(getattr(c, "buy_vol", 0.0), 4), round(getattr(c, "sell_vol", 0.0), 4)]
 
+    # 前端不读、但体积最大的三个字段（实测占快照 278KB 里的 ~137KB）：
+    #   decisionTraces 89KB / latestTraces 33KB / gateLog 14.5KB
+    # 它们是调试与回溯用的，前端没有任何地方读，每 5 秒全量推纯属浪费。
+    # 注意 calcStream（68KB）必须保留：计算流水面板靠它实时滚动。
+    _WIRE_ANALYSIS = ("symbols", "liveFeatures", "liveEvaluations", "liveScoreHistory",
+                      "calcStream", "advice", "paper", "paperStats", "positionPlans",
+                      "params", "drawdown", "drift")
+    _WIRE_TOP = ("enabled", "ts", "stats", "events", "positions", "trades", "accounts",
+                 "unsupported")
+
+    @classmethod
+    def slim_quant(cls, snap: dict) -> dict:
+        """广播用的量化快照：去掉调试字段，只留前端要画的。
+
+        quant.snapshot() 仍返回完整版本（Agent 的 read_calc_trace /
+        read_market 需要那些字段），这里只在"发给浏览器"这条路上裁剪。
+        """
+        if not isinstance(snap, dict):
+            return snap
+        out = {k: snap[k] for k in cls._WIRE_TOP if k in snap}
+        analysis = snap.get("analysis")
+        if isinstance(analysis, dict):
+            out["analysis"] = {k: analysis[k] for k in cls._WIRE_ANALYSIS if k in analysis}
+        elif "analysis" in snap:
+            out["analysis"] = analysis      # 形状异常时原样带过去，不过度清洗
+        return out
+
     # ---- WS 服务 ----
 
     @staticmethod
@@ -256,8 +283,9 @@ class BroadcastHub:
                 await ws.send(json.dumps({"type": "settings", "settings": self.settings_fn()},
                                          separators=(",", ":")))
             if self.quant_fn:
-                await ws.send(json.dumps({"type": "quant", "snapshot": self.quant_fn()},
-                                         separators=(",", ":")))
+                await ws.send(json.dumps(
+                    {"type": "quant", "snapshot": self.slim_quant(self.quant_fn())},
+                    separators=(",", ":")))
             if self.agent_state_fn:
                 await ws.send(json.dumps({"type": "agent_state", **self.agent_state_fn()},
                                          separators=(",", ":")))
