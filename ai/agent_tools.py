@@ -682,6 +682,73 @@ def _read_equity(arguments, fns) -> dict:
                     "如果 daily 为空但账户有权益，说明该账户还没有跨日采样。"}
 
 
+def trades_view(db_rows, local_rows, account_names, days=30, symbol="",
+                limit=50, now_ms=0) -> dict:
+    """把「库里 + 本地流水文件」两处成交合并成一份可引用的历史。
+
+    为什么不能只读库：quant_trades 表是后接的，线上实测库里只有 3 笔，
+    而 quant-trades.json 有 260 笔、净 +110U。只查库会把"全历史"答成 3 笔。
+
+    去重键用 (ts, symbol, side, qty)——同一条成交在两处都有时只算一次。
+    统计口径与 storage.trade_stats 对齐：wins=pnl>0，losses=pnl<0。
+    """
+    rows: list[dict] = [dict(r) for r in (db_rows or []) if isinstance(r, dict)]
+    source = "mysql" if rows else "none"
+    seen = {(int(r.get("ts") or 0), str(r.get("symbol") or ""),
+             str(r.get("side") or ""), round(float(r.get("qty") or 0), 12))
+            for r in rows}
+    added = 0
+    for t in local_rows or []:
+        if not isinstance(t, dict):
+            continue
+        key = (int(t.get("ts") or 0), str(t.get("symbol") or ""),
+               str(t.get("side") or ""), round(float(t.get("qty") or 0), 12))
+        if key in seen:
+            continue
+        seen.add(key)
+        added += 1
+        rows.append({k: t.get(k) for k in
+                     ("ts", "symbol", "side", "qty", "entry", "exit", "pnl",
+                      "movePct", "reason", "holdMin", "pattern", "account",
+                      "slippageAtr", "entrySlippageAtr")})
+    if added:
+        source = "mysql+json" if source == "mysql" else "json"
+    rows.sort(key=lambda r: int(r.get("ts") or 0), reverse=True)
+
+    def _stats(items: list[dict]) -> dict:
+        pnl = [float(r.get("pnl") or 0) for r in items]
+        slip = [abs(float(r.get("slippageAtr") or 0)) for r in items
+                if r.get("slippageAtr")]
+        return {"count": len(items),
+                "wins": sum(1 for p in pnl if p > 0),
+                "losses": sum(1 for p in pnl if p < 0),
+                "pnl": round(sum(pnl), 2),
+                "avgSlippageAtr": round(sum(slip) / len(slip), 4) if slip else 0.0}
+
+    names = {str(n) for n in (account_names or [])}
+    mine = [r for r in rows if str(r.get("account") or "") in names]
+    others: dict[str, int] = {}
+    for r in rows:
+        name = str(r.get("account") or "")
+        if name and name not in names:
+            others[name] = others.get(name, 0) + 1
+    cutoff = int(now_ms) - days * 86400_000 if days > 0 else 0
+    # 模型/调用方可能给 "BTC"、"btc-usdt"；库里是 "btcusdt"，统一归一
+    wanted = re.sub(r"[^a-z0-9]", "", str(symbol or "").lower())
+    if wanted and not wanted.endswith("usdt"):
+        wanted += "usdt"
+    window = [r for r in mine
+              if (not cutoff or int(r.get("ts") or 0) >= cutoff)
+              and (not wanted or str(r.get("symbol") or "").lower() == wanted)]
+    return {"trades": window[:limit], "total": len(window),
+            "stats": _stats(window), "allTime": _stats(mine),
+            "byAccount": others, "source": source,
+            "note": ("某账户的成交只统计该账户；byAccount 是其它历史账户的笔数"
+                     "（例如换过 API Key 之前的测试盘）。"
+                     "MySQL 里可能只有较近的成交，更早的在本地流水文件里，"
+                     "两处已合并去重。")}
+
+
 def _read_trades(arguments, symbol: str, fns) -> dict:
     fn = fns.get("trades")
     if fn is None:
@@ -703,11 +770,13 @@ def _read_trades(arguments, symbol: str, fns) -> dict:
             "days": days, "symbol": wanted or None,
             "stats": raw.get("stats") or {},
             "allTime": raw.get("allTime") or {},
+            "byAccount": raw.get("byAccount") or {},
             "trades": rows,
             "total": raw.get("total"),
             "source": raw.get("source"),
-            "note": "stats 是 days 区间内的统计（大于 0 天才有），allTime 是全部历史；"
-                    "trades 最新在前，已按 limit 截断。"
+            "note": (raw.get("note") or "") +
+                    "stats 是 days 区间内的统计（days=0 时等于 allTime），"
+                    "allTime 是当前账户的全部历史；trades 最新在前、已按 limit 截断。"
                     "read_accounts 只带最近 20 笔内存记录，不能当全历史用。"}
 
 

@@ -46,7 +46,7 @@ from server.hub import BroadcastHub
 from storage import Storage
 from accounts import fetch_account, protection_snapshot
 from ai.agent import AgentManager
-from ai.agent_tools import project_paper_positions
+from ai.agent_tools import project_paper_positions, trades_view
 from ai.sticker_cache import StickerCache
 from ai.provider import (
     PROVIDER_PRESETS, CAPABILITIES, mask_cfg, merge_cfg,
@@ -962,23 +962,26 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 "reason": "还没有任何权益采样（服务刚启动或账户取数一直失败）"}
 
     def _agent_trades(days: int = 30, symbol: str = "", limit: int = 50) -> dict:
-        """全历史成交 + 区间统计。days=0 表示全部历史。"""
-        if not storage.enabled:
-            raise RuntimeError("成交历史需要 MySQL，当前未连接")
+        """全历史成交 + 区间统计。days=0 表示全部历史。
+
+        **不能只读 MySQL**：quant_trades 是较晚才接的（线上实测库里只有 3 笔，
+        而 quant-trades.json 里有 260 笔、净 +110U）。早期成交只存在于本地
+        流水文件里，只查库会把"全历史"答成 3 笔。合并去重逻辑在 trades_view。
+        """
         accts = accts_box["list"]
-        acct = accts[0]["name"] if accts else ""
-        all_time = storage.trade_stats(acct, days=3650)
-        stats = storage.trade_stats(acct, days=days) if days > 0 else all_time
-        rows = storage.quant_trades(acct, limit=2000 if days == 0 else max(limit, 200))
-        cutoff = 0
-        if days > 0:
-            cutoff = KlineAggregator.now_ms() - days * 86400_000
-        wanted = str(symbol or "").lower()
-        kept = [r for r in rows
-                if (not cutoff or int(r.get("ts") or 0) >= cutoff)
-                and (not wanted or str(r.get("symbol") or "").lower() == wanted)]
-        return {"account": acct, "trades": kept[:limit], "total": len(kept),
-                "stats": stats, "allTime": all_time, "source": "mysql"}
+        db_rows: list[dict] = []
+        if storage.enabled:
+            try:
+                db_rows = storage.quant_trades(accts[0]["name"] if accts else "",
+                                               limit=5000)
+            except Exception:
+                db_rows = []
+        view = trades_view(db_rows, getattr(quant, "trades", None) or [],
+                           [a["name"] for a in accts],
+                           days=days, symbol=symbol, limit=limit,
+                           now_ms=KlineAggregator.now_ms())
+        view["account"] = accts[0]["name"] if accts else ""
+        return view
 
     agent.data_fns = {"orders": _agent_orders, "equity": _agent_equity,
                       "trades": _agent_trades}
