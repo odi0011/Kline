@@ -144,6 +144,39 @@ def _atomic_write_json(path: str, data) -> bool:
         return False
 
 
+class _ScoreFromEvaluation:
+    """把 live_evaluations 里那一份评估包装成 score_signal 的返回形状。
+
+    用途：开仓判定直接复用"页面上显示的那个分数"，不再拿盘中状态重算。
+    之前两条路径各算一次，同一个币同一时刻可能出现"胶囊显示 62 可入、
+    实际判定 48 被拦"——用户看到的和执行的不是一回事。
+    """
+
+    def __init__(self, evaluation: dict, direction: str, config):
+        ev = evaluation or {}
+        self.direction = direction
+        self.score = float(ev.get("score") or 0.0)
+        self.opposite_score = float(ev.get("oppositeScore") or 0.0)
+        self.gap = float(ev.get("gap") or 0.0)
+        self.grade = ev.get("grade") or "none"
+        self.confidence = float(ev.get("confidence") or 0.0)
+        self.breakdown = ev.get("breakdown") or {}
+        self.reasons = list(ev.get("reasons") or [])
+        vetoes = list(ev.get("vetoes") or [])
+        # 方向不符时（评估算的是多头、这次信号是空头）不能用这份分数：
+        # 直接判不通过，让调用方走现场重算，而不是拿反方向的分数开仓。
+        if ev.get("direction") and ev["direction"] != direction:
+            vetoes.append("信号方向与当前评估方向不一致，需重新评估")
+        min_score = float(getattr(config, "minimum_score", 55.0) or 55.0)
+        min_gap = float(getattr(config, "minimum_score_gap", 15.0) or 15.0)
+        if self.score < min_score:
+            vetoes.append(f"共鸣分 {self.score:.0f} < {min_score:.0f}")
+        if self.gap < min_gap:
+            vetoes.append(f"多空分离度 {self.gap:.1f} < {min_gap:.1f}")
+        self.vetoes = vetoes
+        self.allowed = not vetoes
+
+
 class QuantEngine:
     def __init__(self, accts_box: dict, config_path: str, price_fn=None,
                  min_pattern_winrate: float = 0.35, min_pattern_samples: int = 5,
@@ -1440,7 +1473,21 @@ class QuantEngine:
             if not st and len(bars) >= 30:
                 st = IND.market_state(bars)
                 self.indicators[symbol] = st
+            # ---- 评分必须和页面/胶囊用同一份口径 ----
+            # 之前这里是拿 indicators（**含未收盘K线**的盘中状态）重算一遍，
+            # 而页面胶囊显示的是 refresh_indicators 里基于已收盘K线的分数。
+            # 同一个币、同一时刻，用户看到 62 分"可入"，实际下单判定却可能
+            # 只有 48 分被拦——或者反过来。这就是"结论靠运气"的来源：
+            # 屏幕上那个数字和真正决定开不开仓的数字根本是两套。
+            #
+            # 现在优先直接复用已评估的结果（live_evaluations），保证
+            # "看到的"和"执行的"是同一个分数；没有评估结果时才现场算。
+            live_eval = self.live_evaluations.get(symbol) or {}
+            reuse_live = (live_eval.get("ts")
+                          and abs(_now_ms() - int(live_eval.get("ts") or 0)) <= 120_000)
             features = self._build_features(symbol, bars, st, direction)
+            if reuse_live:
+                score_features = features
             trace["factors"] = {
                 "regime": st.get("regime"),
                 "volState": st.get("volState"),
@@ -1474,10 +1521,17 @@ class QuantEngine:
                                 symbol=symbol, pattern=hit.get("pattern"))
                     self._finish_trace(trace, "blocked", "数据不足", why)
                     return
-                signal_score = score_signal(
-                    direction, st, features, self.decision_cfg,
-                    pattern=hit.get("pattern"), pattern_stats=pattern_stats,
-                )
+                if reuse_live and live_eval.get("score") is not None:
+                    # 复用页面/胶囊那份评估：保证"看到的分数"就是"判定的分数"
+                    signal_score = _ScoreFromEvaluation(
+                        live_eval, direction, self.decision_cfg)
+                    trace["scoreBasis"] = live_eval.get("basis") or "closedBar"
+                else:
+                    signal_score = score_signal(
+                        direction, st, features, self.decision_cfg,
+                        pattern=hit.get("pattern"), pattern_stats=pattern_stats,
+                    )
+                    trace["scoreBasis"] = "liveBar"
                 if not signal_score.allowed:
                     why = "；".join(signal_score.vetoes) or "信号分不足"
                     trace["score"] = {

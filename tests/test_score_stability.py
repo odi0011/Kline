@@ -141,3 +141,47 @@ def test_same_bar_reuses_previous_evaluation():
     assert "prev_eval_all.get(\"basisBarTime\") == bar_key" in src
     # 复用时只刷新时间戳，不重算分数
     assert '{**prev_eval_all, "ts": _now_ms()}' in src
+
+
+# ---------- 显示的分数 = 判定的分数 ----------
+
+def test_decision_reuses_displayed_evaluation():
+    """开仓判定必须复用页面显示的评估，不能拿盘中状态重算。
+
+    之前两条路径各算一次：胶囊显示 62 分"可入"，on_signal 却用含未收盘
+    K线的 indicators 重算，可能是 48 被拦——或者反过来。用户看到的和
+    真正决定开不开仓的不是同一个数字，这就是"靠运气"。
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "quant.py").read_text(encoding="utf-8")
+    assert "reuse_live = (live_eval.get(\"ts\")" in src
+    assert "live_eval = self.live_evaluations.get(symbol) or {}" in src
+    assert "_ScoreFromEvaluation(" in src
+    assert 'trace["scoreBasis"]' in src
+
+
+def test_score_adapter_rejects_opposite_direction():
+    """方向不符时不能用这份分数——那是反方向的结论。"""
+    from decision.config import DecisionConfig
+    from quant import _ScoreFromEvaluation
+    cfg = DecisionConfig()
+    ev = {"direction": "bullish", "score": 80.0, "oppositeScore": 30.0, "gap": 50.0,
+          "grade": "strong", "vetoes": []}
+    same = _ScoreFromEvaluation(ev, "bullish", cfg)
+    assert same.allowed is True
+    flipped = _ScoreFromEvaluation(ev, "bearish", cfg)
+    assert flipped.allowed is False
+    assert "方向不一致" in " ".join(flipped.vetoes)
+
+
+def test_score_adapter_applies_thresholds():
+    """复用评估时仍要按当前阈值复核，不能绕过刚刚调高的门槛。"""
+    from decision.config import DecisionConfig
+    from quant import _ScoreFromEvaluation
+    cfg = DecisionConfig.from_dict({"minimum_score": 70, "minimum_score_gap": 25})
+    ev = {"direction": "bullish", "score": 62.0, "oppositeScore": 40.0, "gap": 22.0,
+          "grade": "medium", "vetoes": []}
+    score = _ScoreFromEvaluation(ev, "bullish", cfg)
+    assert score.allowed is False
+    assert any("共鸣分" in v for v in score.vetoes)
+    assert any("分离度" in v for v in score.vetoes)
