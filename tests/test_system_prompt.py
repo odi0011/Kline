@@ -6,15 +6,19 @@
 import asyncio
 import copy
 
-from ai.agent import STICKER_NAMES, SYSTEM_PROMPT, _system_content
+from ai.agent import SILENT_TOKEN, STICKER_NAMES, SYSTEM_PROMPT, _system_content
 from tests.test_agent import completion, make_manager, wait_for
 
 
 def test_no_custom_returns_base_prompt():
-    # 返回的是**已经替换过表情包占位符**的版本，不能直接和模板比
+    # 返回的是**已经替换过占位符**的版本，不能直接和模板比
     text = _system_content("")
-    assert text == SYSTEM_PROMPT.replace("{{STICKER_NAMES}}", " / ".join(STICKER_NAMES))
-    assert "{{STICKER_NAMES}}" not in text, "占位符必须被替换掉"
+    expected = (SYSTEM_PROMPT
+                .replace("{{STICKER_NAMES}}", " / ".join(STICKER_NAMES))
+                .replace("{{SILENT}}", SILENT_TOKEN))
+    assert text == expected
+    for placeholder in ("{{STICKER_NAMES}}", "{{SILENT}}"):
+        assert placeholder not in text, f"占位符 {placeholder} 必须被替换掉"
 
 
 def test_sticker_names_are_rendered_into_prompt():

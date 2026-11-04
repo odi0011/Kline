@@ -407,7 +407,7 @@ def test_watch_notification_modes_dedupe_and_truncation(tmp_path, monkeypatch):
         assert manager._push_watch_notification(task, "succeeded") is True
         pushed = manager.chat[-1]
         assert pushed["kind"] == "watch" and pushed["role"] == "assistant"
-        assert pushed["content"] == "【盯 BTC】结论A"
+        assert pushed["content"] == "结论A"   # 不再加机器标题前缀
         assert task["lastNotified"] == "结论A"
 
         # always：重复结果也汇报
@@ -434,11 +434,12 @@ def test_watch_notification_modes_dedupe_and_truncation(tmp_path, monkeypatch):
         assert manager._push_watch_notification(task, "succeeded") is False
         assert len(manager.chat) == before
 
-        # 超长结果：总长 <= 400 且标题保留
+        # 超长结果：总长 <= 400（不加标题前缀，正文就是全部）
         task["result"] = "长" * 2000
         assert manager._push_watch_notification(task, "succeeded") is True
         content = manager.chat[-1]["content"]
-        assert content.startswith("【盯 BTC】") and len(content) <= 400
+        assert not content.startswith("【")
+        assert len(content) <= 400
 
         # 通知不会触发新的模型回复
         assert not manager.chat_runners
@@ -460,8 +461,8 @@ def test_watch_notification_via_real_execute(tmp_path, monkeypatch):
         assert await wait_for(lambda: task["runCount"] > 0 and task["id"] not in manager._executing)
         notices = [m for m in manager.chat if m.get("kind") == "watch"]
         assert len(notices) == 1
-        assert notices[0]["content"].startswith("【巡检】")
-        assert "巡检结论" in notices[0]["content"]
+        assert not notices[0]["content"].startswith("【")
+        assert notices[0]["content"] == "巡检结论"
         assert not manager.chat_runners          # 通知不会触发新回复
 
         # on_change：同样的结果再跑一次不重复通知

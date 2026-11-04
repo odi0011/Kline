@@ -413,7 +413,7 @@ def test_notification_on_change_dedupes(tmp_path, monkeypatch):
         assert manager._push_watch_notification(task, "succeeded") is True
         note = manager.chat[-1]
         assert note["kind"] == "watch" and note["role"] == "assistant"
-        assert note["content"] == "【盯 BTC】结论：空头"
+        assert note["content"] == "结论：空头"
         assert note["steps"] == [] and note["progress"]["phase"] == "succeeded"
         assert task["lastNotified"] == "结论：空头"
 
@@ -465,7 +465,9 @@ def test_notification_content_is_bounded(tmp_path, monkeypatch):
                 "result": "长" * 1000, "status": "succeeded"}
         assert manager._push_watch_notification(task, "succeeded") is True
         content = manager.chat[-1]["content"]
-        assert content.startswith("【长结果】")
+        # 通知不再带【标题】前缀（那是机器报告，不是人说话），
+        # 但长度上限仍然要守住
+        assert not content.startswith("【")
         assert len(content) <= 400
         await manager.stop()
     asyncio.run(scenario())
@@ -487,7 +489,9 @@ def test_task_run_pushes_notification_into_chat(tmp_path, monkeypatch):
             lambda: any(m.get("kind") == "watch" for m in manager.chat), rounds=800)
         note = [m for m in manager.chat if m.get("kind") == "watch"][-1]
         assert note["role"] == "assistant" and note["status"] == "succeeded"
-        assert note["content"].startswith("【盯 BTC】") and "空头" in note["content"]
+        # 不再加【标题】前缀：那种机器报告式开头一眼就不是人在说话
+        assert not note["content"].startswith("【")
+        assert note["content"] == "结论：现在是空头，等跌破再追"
         assert manager.tasks[0]["lastNotified"] == "结论：现在是空头，等跌破再追"
         assert any(item["type"] == "agent_state" for item in events)
         # 通知是普通 assistant 消息，不应产生新的回复 runner

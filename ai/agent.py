@@ -325,6 +325,24 @@ def _has_valid_sticker_marker(text: str) -> bool:
     return False
 
 
+# 后台任务的"没什么可说"标记。模型只回这一个东西 → 不往聊天里发任何消息。
+# 为什么需要它：监控任务每轮都会产出文本，而"条件没触发"也是有结论的，
+# 模型就会写成"没跌破，还差 3.2%，不打扰"这种客服话一遍遍推给用户。
+# 靠"文案是否变化"去重也没用——价格一变文案就变，照样每轮都推。
+SILENT_TOKEN = "[[静默]]"
+
+
+def _is_silent(text: str) -> bool:
+    """回复只是静默标记（允许模型加标点/空白，但不接受夹带正文）。"""
+    t = str(text or "").strip()
+    if not t:
+        return False
+    # 去掉标记本身与常见包裹符号后必须什么都不剩
+    rest = t.replace(SILENT_TOKEN, "").strip()
+    rest = rest.strip("。.!！~～ \n\t")
+    return not rest
+
+
 SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依据、可追踪的分析。
 必须通过提供的真实工具读取所需数据，不得编造工具执行、行情或持仓。
 用户问走势、K线、支撑压力、形态时，先用 read_candles 读该币的K线再看图说话；
@@ -574,6 +592,27 @@ liquidation / sentiment / oi / funding。
  · 默认还是一条说完。分条是为了像人，不是为了多。
    例：用户「BTC 能做吗」→「能，空。」|||「79500 止损，20 倍。」
    例：用户「又亏了草」→「这波确实难受。」|||「不过仓位不大，扛得住。」
+
+【后台任务：没什么可说的时候就别说】
+后台监控每轮跑完都会把结论送进聊天。**判断"这轮值不值得开口"是你的责任**，
+不是把所有检查结果都念一遍。
+ · **什么都没发生 → 只回 `{{SILENT}}` 这一个标记，不要别的字。**
+   系统看到它就不往聊天里发任何东西，用户什么都看不到。
+ · 什么时候该静默：条件没触发、距离还很远、和上一轮结论一样、只是例行确认。
+ · 什么时候该开口：条件真的触发了；出现了新的、用户需要立刻知道的事；
+   数值发生了用户会关心的实质变化。
+ · 一句话说完，别写成报告。不要加【】标题、不要复述任务名字、
+   不要写"不打扰""继续保持关注""已为你监控"这类客服话。
+ · 不要为了显得有用而汇报。**没消息就是最好的消息。**
+
+  反例（真人不会这么说话）：
+    「【BTC 盯 76000】没跌破，78552，离 76000 还有 3.2%，不打扰。」
+  正例（条件没满足时根本不该发）：
+    `{{SILENT}}`
+  正例（真跌破了）：
+    「破 76000 了，现在 75980。」
+  正例（接近但没破）：
+    「BTC 差 0.4% 到 76000 了，75970。」
 """
 
 
@@ -718,6 +757,7 @@ def _system_content(custom, memory=None) -> str:
     # 表情包名字列表是运行时填进模板的：新增表情只要改 STICKER_NAMES，
     # 提示词自动同步，不用两处手抄。
     base = SYSTEM_PROMPT.replace("{{STICKER_NAMES}}", " / ".join(STICKER_NAMES))
+    base = base.replace("{{SILENT}}", SILENT_TOKEN)
     # 偏好放在身份设定之前：它比"语气"重要，也不会被身份文本挤掉。
     base += _memory_block(memory)
     if not text:
@@ -3225,12 +3265,16 @@ class AgentManager:
         result = str(task.get("result") or "").strip()
         if not result:
             return False
+        # 模型判断"这轮没什么值得说的" → 一条都不发。
+        # 这是后台监控不刷屏的关键：条件没触发时，沉默才是正确行为。
+        if _is_silent(result):
+            task["lastNotified"] = ""
+            return False
         if mode == "on_change" and task.get("lastNotified") == result:
             return False
-        title = str(task.get("title") or "后台任务")
-        prefix = f"【{title}】"
-        # 通知文案总长 <= 400 字：先保住标题，再截结果正文。
-        content = prefix + result[:max(0, 400 - len(prefix))]
+        # 不再加【标题】前缀：那种机器报告式的开头一眼就不是人在说话，
+        # 而且任务名字用户自己起的，没必要每句都念一遍。
+        content = result[:400]
         message = {"id": uuid.uuid4().hex[:12], "role": "assistant", "content": content,
                    "status": "succeeded", "ts": now_ms(), "steps": [],
                    "progress": {"phase": "succeeded", "round": 0, "maxRounds": MAX_ROUNDS},
