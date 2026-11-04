@@ -712,8 +712,6 @@ def _read_trades(arguments, symbol: str, fns) -> dict:
 
 
 def read_snapshot(name, arguments, snapshot, history_fn=None, fns=None):
-    if not isinstance(snapshot, dict):
-        raise ValueError("context 快照必须为对象")
     fns = fns if isinstance(fns, dict) else {}
     # 需要现查外部数据（交易所 / 数据库）的工具，参数各不相同
     allowed = {"read_paper": {"symbol", "limit"},
@@ -744,14 +742,21 @@ def read_snapshot(name, arguments, snapshot, history_fn=None, fns=None):
         _int_arg("hours", 1, 720, 24)
     if name == "read_trades" and "limit" in arguments:
         _int_arg("limit", 1, 200, 50)
+    # 这三个直接查交易所/数据库，**不依赖 context 快照**。
+    # 必须先于快照校验返回：agent 的快照采集会把它们排除在外，
+    # 传进来的 snapshot 就是 None（线上实测：三个工具全报
+    # "context 快照必须为对象"）。
     if name == "read_orders":
         return _read_orders(arguments, fns)
-    if name == "read_derivatives":
-        return _read_derivatives(snapshot, symbol or "")
     if name == "read_equity":
         return _read_equity(arguments, fns)
     if name == "read_trades":
         return _read_trades(arguments, symbol or "", fns)
+
+    if not isinstance(snapshot, dict):
+        raise ValueError("context 快照必须为对象")
+    if name == "read_derivatives":
+        return _read_derivatives(snapshot, symbol or "")
 
     if name == "read_situation":
         if arguments:

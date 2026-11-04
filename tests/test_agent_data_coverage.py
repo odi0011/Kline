@@ -219,6 +219,33 @@ def test_read_market_without_features_still_works():
     assert "features" not in out["data"]
 
 
+def test_db_tools_work_without_context_snapshot():
+    """read_orders / read_equity / read_trades 不依赖 context 快照。
+
+    线上实测：agent 的快照采集把这三个排除在外，传进来的是 None，
+    三个工具全报"context 快照必须为对象"——查库工具压根跑不起来。
+    """
+    fns = {"orders": lambda symbol: {"symbols": {}, "gaps": [], "errors": []},
+           "equity": lambda days, hours: {"account": "O", "daily": [], "series": []},
+           "trades": lambda days, symbol, limit: {"trades": [], "stats": {},
+                                                  "allTime": {}, "total": 0}}
+    for name, args in (("read_orders", {}), ("read_equity", {"days": 7}),
+                       ("read_trades", {"days": 0})):
+        out = read_snapshot(name, args, None, None, fns)
+        assert isinstance(out, dict), name
+        assert "error" not in out, out
+
+
+def test_snapshot_tools_still_require_snapshot():
+    """依赖快照的工具不能因为放行查库工具就一起放行。"""
+    for name in ("read_market", "read_derivatives", "read_risk"):
+        try:
+            read_snapshot(name, {}, None)
+        except ValueError:
+            continue
+        raise AssertionError(f"{name} 没有快照应该报错")
+
+
 def test_read_market_symbol_filter_applies_to_features():
     """按币查时要连特征一起筛，别把十个币的特征全塞回去。"""
     feats = {f"{s}usdt": {"macd": {"hist": 0.0}} for s in ("btc", "eth", "sol")}
