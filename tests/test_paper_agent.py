@@ -192,3 +192,38 @@ def test_agent_dispatches_read_paper_end_to_end(tmp_path, monkeypatch):
         await manager.stop()
 
     asyncio.run(scenario())
+
+
+def test_winrate_denominator_excludes_draws_and_timeouts():
+    """胜率分母只算有明确输赢的笔数，不能把平局/超时算进去。
+
+    线上实测 ada 936 笔里只有 3 笔有输赢（其余是平价离场/超时），
+    按 closed 做分母得到 0.2%，看着像"几乎全输"，实际是 2 胜 1 负。
+    """
+    from decision.paper import PaperBook
+    book = PaperBook()
+    # 造 6 笔：2 胜 1 负 + 3 笔平价（pnl 恰好 0）
+    book.history = [
+        {"symbol": "adausdt", "pnl": 1.0, "reason": "tp"},
+        {"symbol": "adausdt", "pnl": 0.5, "reason": "tp"},
+        {"symbol": "adausdt", "pnl": -1.0, "reason": "sl"},
+        {"symbol": "adausdt", "pnl": 0.0, "reason": "manual"},
+        {"symbol": "adausdt", "pnl": 0.0, "reason": "manual"},
+        {"symbol": "adausdt", "pnl": 0.0, "reason": "timeout"},
+    ]
+    summary = book.summary()
+    row = summary["bySymbol"][0]
+    assert row["closed"] == 6
+    assert row["wins"] == 2 and row["losses"] == 1
+    assert row["decided"] == 3
+    # 2/3 = 66.7%，不是 2/6 = 33.3%
+    assert row["winrate"] == 66.7, row
+
+
+def test_session_winrate_uses_decided_denominator():
+    from decision.paper import PaperBook
+    book = PaperBook()
+    book.stats.update(closed=10, wins=3, losses=2, timeouts=5)
+    session = book.summary()["session"]
+    assert session["decided"] == 5
+    assert session["winrate"] == 60.0, session

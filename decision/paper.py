@@ -461,8 +461,12 @@ class PaperBook:
                 item["timeouts"] += 1
         ranked = []
         for item in by.values():
-            item["winrate"] = (round(item["wins"] / item["closed"] * 100, 1)
-                               if item["closed"] else None)
+            # 分母用"有明确输赢的笔数"：平局和超时不算赢也不算输，
+            # 放进分母会把胜率压成 0.x% 这种看着像"几乎全输"的数字。
+            decided = item["wins"] + item["losses"]
+            item["decided"] = decided
+            item["winrate"] = (round(item["wins"] / decided * 100, 1)
+                               if decided else None)
             item["avgPnl"] = (round(item["netPnl"] / item["closed"], 4)
                               if item["closed"] else None)
             ranked.append(item)
@@ -478,8 +482,10 @@ class PaperBook:
             "session": {
                 "closed": stats["closed"], "wins": stats["wins"],
                 "losses": stats["losses"], "timeouts": stats["timeouts"],
-                "winrate": (round(stats["wins"] / stats["closed"] * 100, 1)
-                            if stats["closed"] else None),
+                # 与 bySymbol 同一口径：分母只算有明确输赢的笔数
+                "decided": stats["wins"] + stats["losses"],
+                "winrate": (round(stats["wins"] / (stats["wins"] + stats["losses"]) * 100, 1)
+                            if (stats["wins"] + stats["losses"]) else None),
                 "netPnl": round(stats["netPnl"], 4),
             },
             # 内存降级模式保持旧契约（Agent/测试都按这两个键读）
@@ -501,15 +507,22 @@ class PaperBook:
                 continue
             n = int(item.get("closed") or 0)
             w = int(item.get("wins") or 0)
+            l = int(item.get("losses") or 0)
             pnl = round(float(item.get("netPnl") or 0), 4)
+            # 胜率的分母用"有明确输赢的笔数"，不是全部分母。
+            # 平局（pnl 恰好为 0）和超时都不进 wins/losses，把它们算进分母
+            # 会把胜率压成 0.2%、0.6% 这种数字——线上 ada 936 笔里只有 3 笔
+            # 有输赢，显示 0.2% 看着像"几乎全输"，其实是 933 笔平价离场。
+            decided = w + l
             ranked.append({
                 "symbol": sym,
                 "closed": n,
                 "wins": w,
-                "losses": int(item.get("losses") or 0),
+                "losses": l,
+                "decided": decided,
                 "timeouts": int(item.get("timeouts") or 0),
                 "netPnl": pnl,
-                "winrate": round(w / n * 100, 1) if n else None,
+                "winrate": round(w / decided * 100, 1) if decided else None,
                 "avgPnl": round(pnl / n, 4) if n else None,
             })
         # 胜率高的在前；胜率相同比样本量。没有平仓记录的币不上榜。

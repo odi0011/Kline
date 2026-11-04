@@ -952,8 +952,12 @@ class Storage:
         for r in rows:
             if not r[0]:
                 continue
+            wins, losses = int(r[2] or 0), int(r[3] or 0)
             out.append({"symbol": r[0], "closed": int(r[1] or 0),
-                        "wins": int(r[2] or 0), "losses": int(r[3] or 0),
+                        "wins": wins, "losses": losses,
+                        # 有明确输赢的笔数：平局/超时既不进 wins 也不进 losses，
+                        # 胜率要以它为分母（见 paper._db_summary 的说明）
+                        "decided": wins + losses,
                         "timeouts": int(r[4] or 0),
                         "netPnl": round(float(r[5] or 0), 4)})
         return out

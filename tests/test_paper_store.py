@@ -330,15 +330,16 @@ def test_symbol_stats_groups_and_filters(make_store, clock):
         s.save_paper_trade({"symbol": sym, "pnl": pnl, "reason": reason,
                             "closedAt": now - ago_days * DAY})
     assert s.paper_symbol_stats() == [
-        {"symbol": "BTCUSDT", "closed": 3, "wins": 1, "losses": 1,
+        # decided = wins + losses：平局/超时不算输赢，胜率要以它为分母
+        {"symbol": "BTCUSDT", "closed": 3, "wins": 1, "losses": 1, "decided": 2,
          "timeouts": 1, "netPnl": 7},
-        {"symbol": "ETHUSDT", "closed": 2, "wins": 1, "losses": 1,
+        {"symbol": "ETHUSDT", "closed": 2, "wins": 1, "losses": 1, "decided": 2,
          "timeouts": 1, "netPnl": 1.5},
     ]
     assert s.paper_symbol_stats(days=7) == [
-        {"symbol": "BTCUSDT", "closed": 3, "wins": 1, "losses": 1,
+        {"symbol": "BTCUSDT", "closed": 3, "wins": 1, "losses": 1, "decided": 2,
          "timeouts": 1, "netPnl": 7},
-        {"symbol": "ETHUSDT", "closed": 1, "wins": 1, "losses": 0,
+        {"symbol": "ETHUSDT", "closed": 1, "wins": 1, "losses": 0, "decided": 1,
          "timeouts": 0, "netPnl": 2.5},
     ]
 
