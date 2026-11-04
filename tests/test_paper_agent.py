@@ -227,3 +227,50 @@ def test_session_winrate_uses_decided_denominator():
     session = book.summary()["session"]
     assert session["decided"] == 5
     assert session["winrate"] == 60.0, session
+
+
+# ---------- 历史必须能在截断预算内读到 ----------
+
+def test_recent_closed_survives_payload_trim():
+    """recentClosed 不能被 bounded() 截掉。
+
+    线上实测：未平仓明细写在前面，把 recentClosed 挤成 excerpt，
+    Agent 于是回答"查不到明细，没有可列的平仓记录"。
+    """
+    book = _book_with_history()
+    snap = _snapshot(book)
+    # 造 16 个未平仓仓位，撑大体积
+    snap["paper"] = [
+        {"symbol": f"coin{i}usdt", "direction": "long", "entry": 1.0, "mark": 1.0,
+         "leverage": 20, "notional": 1000, "margin": 50, "sl": 0.9, "tp": 1.1,
+         "liq": 0.8, "upnl": 0.0, "upnl_pct": 0.0, "winrate": 55.0, "score": 60,
+         "grade": "medium", "reason": "测试信号", "trailing": False,
+         "entry_ts": 1, "expires_ts": 2}
+        for i in range(16)
+    ]
+    out = read_snapshot("read_paper", {}, snap)
+    data = out["data"]
+    assert "truncated" not in data, "不该被截断"
+    assert data["recentClosed"], "最近平仓记录必须读得到"
+    assert data["realized"]["bySymbol"], "按币汇总必须在"
+
+
+def test_paper_payload_order_is_summary_first():
+    """字段顺序：汇总和 recentClosed 在前，未平仓明细在后。"""
+    book = _book_with_history()
+    out = read_snapshot("read_paper", {}, _snapshot(book))
+    keys = list(out["data"].keys())
+    assert keys.index("realized") < keys.index("openPositions")
+    assert keys.index("recentClosed") < keys.index("openPositions")
+
+
+def test_prompt_requires_fresh_state_lookup():
+    """提示词要禁止拿聊天历史当现状。
+
+    线上实测：那笔空单早就平了、止损也清掉了，Agent 仍说
+    "实盘那笔空单的止损还没挂上"——引用的是几轮前的旧状态。
+    """
+    from ai.agent import SYSTEM_PROMPT
+    for phrase in ("现状类问题必须现查", "不能引用聊天历史",
+                   "先调工具现查", "那笔单可能早就平了"):
+        assert phrase in SYSTEM_PROMPT, f"缺少: {phrase}"

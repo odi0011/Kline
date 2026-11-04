@@ -501,14 +501,15 @@ def _paper_view(snapshot, symbol: str = "") -> dict:
                 "不是历史胜率；realized.bySymbol.winrate 才是已平仓的实际胜率。"
                 + persist + "window 只是内存缓存条数，统计口径以 session/bySymbol 为准。",
         "best": best,
-        # 汇总放在明细之前：bounded() 超长会截断，聚合结论不能因为
-        # 后面的未平仓明细太多而被切掉。
+        # 汇总和最近平仓放在最前面：bounded() 超长会截成 excerpt，
+        # 放后面的字段等于读不到。线上实测：未平仓明细把 recentClosed
+        # 挤掉过一次，Agent 就答"查不到明细"。
         "realized": {**realized, "bySymbol": by_symbol[:40]},
-        # 上限只是防止整个回包撑爆工具预算（监控币多了会很长）；
-        # best 已经按全部仓位/全部币种算过，截断不影响"谁最高"。
-        "openPositions": open_rows[:16],
-        "openOmitted": max(0, len(open_rows) - 16),
         "recentClosed": recent,
+        # 未平仓明细放最后，条数和字段都收紧——它是"现在开着什么"，
+        # 不需要历史那样的细节。
+        "openPositions": open_rows[:12],
+        "openOmitted": max(0, len(open_rows) - 12),
         "sessionStats": snapshot.get("paperStats") or {},
     }
 
@@ -536,9 +537,12 @@ def read_snapshot(name, arguments, snapshot):
         session = view["realized"].get("sessionAllSymbols") or {}
         available = bool(view["openPositions"] or view["realized"]["bySymbol"]
                          or session.get("closed"))
+        # 这一段给足预算：里面有 recentClosed 明细，12000 字符不够，
+        # 会被截成 excerpt（线上实测：Agent 因此答"查不到明细"）。
         return {"untrusted": True, "source": "event-loop context snapshot",
                 "ts": snapshot.get("ts"), "available": available,
-                "symbol": symbol.upper() if symbol else None, "data": bounded(view)}
+                "symbol": symbol.upper() if symbol else None,
+                "data": bounded(view, 24000)}
     fields = {
         "read_market": ("market", "symbols", "stats", "evaluations", "positionPlans"),
         "read_accounts": ("accounts", "positions", "trades"),
