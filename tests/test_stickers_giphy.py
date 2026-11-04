@@ -549,6 +549,26 @@ def test_save_requires_name(tmp_path):
         asyncio.run(manager._save_sticker({"candidate_id": "cand-a"}))
 
 
+def test_save_requires_when(tmp_path):
+    """when 必填：早期没传 when 存出的 3 张图，清单里只剩名字，用途不明。"""
+    manager, cache = _manager_with_stickers(tmp_path)
+    asyncio.run(manager._search_sticker_candidates({"query": "facepalm"}))
+    with pytest.raises(ValueError, match="when 不能为空"):
+        asyncio.run(manager._save_sticker({"candidate_id": "cand-a", "name": "捂脸"}))
+    assert cache.catalog() == []
+
+
+def test_catalog_flags_missing_when(tmp_path):
+    """老数据没写 when 时，清单要标 whenMissing，别让模型当成万能图。"""
+    manager, _ = _manager_with_stickers(tmp_path)
+    asyncio.run(manager._search_sticker_candidates({"query": "facepalm"}))
+    asyncio.run(manager._save_sticker({"candidate_id": "cand-a", "name": "捂脸",
+                                      "when": "自嘲"}))
+    out = manager._list_stickers({})
+    assert out["stickers"][0]["when"] == "自嘲"
+    assert out["stickers"][0]["whenMissing"] is False
+
+
 def test_saved_sticker_can_be_sent_by_id(tmp_path):
     """存完之后按 id 发送：不再联网。"""
     manager, cache = _manager_with_stickers(tmp_path)

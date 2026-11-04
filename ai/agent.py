@@ -2247,7 +2247,9 @@ class AgentManager:
         elif rows:
             note = ("列表是按最近使用排的，第一张通常最合适；"
                     "直接 send_sticker(sticker_id=...) 发，别念清单。"
-                    "都不合适再 search_stickers。")
+                    "都不合适再 search_stickers。"
+                    "when 是这张图该用的场景；whenMissing=true 表示早期存的坏数据"
+                    "没有场景说明，只能按 tags/名字判断，别当成万能图。")
         return {
             "available": bool(rows),
             "count": len(rows),
@@ -2256,7 +2258,11 @@ class AgentManager:
             "stickers": [{"id": r["id"], "name": r.get("name", ""),
                           "when": r.get("when", ""), "tags": r.get("tags", ""),
                           "width": r.get("width", 0), "height": r.get("height", 0),
-                          "uses": r.get("uses", 0)} for r in rows],
+                          "uses": r.get("uses", 0),
+                          # 早期存进来的坏数据（没写 when）：标出来，别让模型
+                          # 把"没场景说明"当成"什么场合都能用"
+                          "whenMissing": not str(r.get("when") or "").strip()}
+                         for r in rows],
             "note": note,
         }
 
@@ -2353,9 +2359,15 @@ class AgentManager:
             raise ValueError("name 不能为空（给它起个中文名）")
         pending = getattr(self, "_sticker_candidates", None) or {}
         cand = pending.get(cid)
+        # 先判候选是否存在：编出来的 id 应该报"先搜再选"，
+        # 而不是被参数校验先拦住（那是两件不同的错）。
         if not cand:
             return {"saved": False,
                     "reason": "这个候选不在本轮搜索结果里，先 search_stickers 再选"}
+        # when 必填：库里已有的坏数据就是早期没传 when 存出来的，
+        # 7 张里 3 张没有使用场景——下次命中时模型只能靠名字猜。
+        if not when:
+            raise ValueError("when 不能为空（写清什么场景该用这张，20 字以内）")
         cache = self.sticker_cache
         download = self.sticker_download_fn
         if cache is None or download is None:
