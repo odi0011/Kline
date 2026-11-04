@@ -475,14 +475,14 @@ def _paper_view(snapshot, symbol: str = "", history=None) -> dict:
     if history.get("rows"):
         recent = [{k: rec.get(k) for k in
                    ("symbol", "direction", "entry", "exit", "pnl", "pnlPct",
-                    "reason", "score", "grade", "closedAt", "heldMs")}
+                    "reason", "score", "grade", "closedAt", "heldMs", "trailing")}
                   for rec in history["rows"] if isinstance(rec, dict)]
     else:
         for rec in (snapshot.get("paperHistory") or [])[-12:]:
             if isinstance(rec, dict) and hit(rec.get("symbol")):
                 recent.append({k: rec.get(k) for k in
                                ("symbol", "direction", "entry", "exit", "pnl", "pnlPct",
-                                "reason", "score", "grade", "closedAt")})
+                                "reason", "score", "grade", "closedAt", "trailing")})
     # 查库结果是最新在前；快照回退路径是时间升序。标注清楚，别让模型自己猜。
     recent_meta = {
         "order": "newestFirst" if history.get("rows") else "oldestFirst",
@@ -519,6 +519,10 @@ def _paper_view(snapshot, symbol: str = "", history=None) -> dict:
         "note": "模拟仓=15 分钟纸上交易，不产生任何真实委托，与账户实盘持仓无关。"
                 "openPositions.estimatedWinrate 是按止损/止盈距离与信号分估算的概率，"
                 "不是历史胜率；realized.bySymbol.winrate 才是已平仓的实际胜率。"
+                "recentClosed.reason 是**出场方式**：sl=止损单触发、tp=止盈单触发、"
+                "timeout=15 分钟到期、recovered=停机后补算。"
+                "移动止损会把止损价推到成本之上，所以 reason=sl 也可能是盈利单"
+                "（trailing=true 就是这种情况），这是正常的，不是记录错误。"
                 + persist + "window 只是内存缓存条数，统计口径以 session/bySymbol 为准。",
         "best": best,
         # 汇总和最近平仓放在最前面：bounded() 超长会截成 excerpt，

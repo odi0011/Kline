@@ -384,6 +384,26 @@ def test_large_history_trims_tail_not_summary():
     assert meta["total"] == 100
 
 
+def test_recent_closed_explains_stop_exit_semantics():
+    """reason=sl 也可能是盈利单（移动止损把止损推到成本之上）。
+
+    线上实测：Agent 看到"盈利单标成止损"就断定"是记录口径问题"，
+    其实是 trailing 生效后的正常结果——工具 note 必须说清楚，
+    明细里也要带 trailing 字段，否则模型只能瞎猜。
+    """
+    book = _stored_book()
+    snap = _snapshot(book)
+    rows = [{"symbol": "btcusdt", "direction": "long", "entry": 100.0, "exit": 105.0,
+             "pnl": 2.0, "pnlPct": 4.0, "reason": "sl", "trailing": True,
+             "closedAt": int(time.time() * 1000)}]
+    out = read_snapshot("read_paper", {"symbol": "BTC"}, snap,
+                        lambda limit, symbol: {"rows": rows, "source": "mysql", "total": 1})
+    row = out["data"]["recentClosed"][0]
+    assert row["reason"] == "sl" and row["trailing"] is True
+    note = out["data"]["note"]
+    assert "移动止损" in note and "也可能是盈利单" in note
+
+
 def test_prompt_requires_fresh_state_lookup():
     """提示词要禁止拿聊天历史当现状。
 
