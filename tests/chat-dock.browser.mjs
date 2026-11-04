@@ -86,16 +86,11 @@ try {
   })
   await cdp("Page.navigate", { url: base })
 
-  // 页面先渲染出折叠胶囊，点它才展开聊天窗
-  const island = await until(`!!document.querySelector('[aria-label="打开 ODDD 对话"]')`, 25000)
-  check("页面加载并渲染折叠胶囊", island)
-  await delay(800)
-
-  if (island) {
-    await evaluate(`document.querySelector('[aria-label="打开 ODDD 对话"]').click()`)
-  }
-  const ready = await until(`!!document.querySelector('[aria-label="ODDD 对话"]')`, 8000)
-  check("点击胶囊后聊天窗展开", ready)
+  // 对话面板现在是页面第二行的固定板块，不再需要点胶囊展开
+  const ready = await until(`!!document.querySelector('[aria-label="ODDD 对话"]')`, 25000)
+  check("页面加载并渲染对话面板", ready)
+  const island = await evaluate(`!!document.querySelector('[aria-label="打开 ODDD 对话"]')`)
+  check("没有折叠胶囊（已改为固定面板）", !island)
   await delay(1200)
 
   // 1) 不该有"停止"按钮

@@ -19,7 +19,6 @@ import NewsFeed from '@/components/arc/news-feed/news-feed'
 import ComputeTrace from '@/components/arc/compute-trace/compute-trace'
 import ChatDock from '@/components/arc/chat-dock/chat-dock'
 import StrategyPanel from '@/components/arc/strategy-panel/strategy-panel' 
-import DecisionOrchestrator from '@/components/arc/decision-orchestrator/decision-orchestrator'
 import HitFlight from './HitFlight.jsx'
 import { hexHue } from './lib/account-theme'
 import { SlidersHorizontal, Clock3, BarChart3, Grid3x3, MoveHorizontal, Coins, Settings } from 'lucide-react'
@@ -852,15 +851,27 @@ export default function App() {
               chartColors={chartColors} />
           </div>
         </div>
-      {/* 第二行：原有币种分析 30% / 实时决策编排 50% / 后续板块预留 20% */}
+      {/* 第二行：币种分析 / 计算流水（3D 编排场景已移除：
+          125 个 draw calls + 实时阴影，实测帧间隔中位数 296ms、p95 824ms，
+          占掉近四分之一 CPU，而它展示的评分/风控/成交别处都有。） */}
+      {/* 第二行：币种分析 30% / ODDD 对话 50% / 计算流水 20%。
+          中间那格原来是 3D 编排场景（实测 125 个 draw calls + 实时阴影，
+          帧间隔中位数 296ms、p95 824ms，占掉近四分之一 CPU），
+          现在换成对话面板——它本来就该是页面上固定的一块，不必做成浮窗。 */}
       <div className="row2">
         <div className="strategy-slot">
           <StrategyPanel analysis={quantSnap && quantSnap.analysis} symbols={orderedSymbols}
             chartColors={chartColors} />
         </div>
-        <div className="orchestrator-slot">
-          <DecisionOrchestrator analysis={quantSnap && quantSnap.analysis} snapshot={quantSnap}
-            symbols={orderedSymbols} events={visibleEvents} />
+        <div className="chat-slot">
+          <ChatDock messages={agentChat} connected={connected} stats={agentStats}
+            onSend={agentRequest} busy={agentChatBusy}
+            onClear={() => agentRequest({ type: 'agent_action', action: 'clear_chat', payload: {} })}
+            onCompact={() => agentRequest({ type: 'agent_action', action: 'compact_chat', payload: {} })}
+            onCancel={() => {
+              const running = (agentChat || []).filter((m) => m.role !== 'user' && (m.status === 'running' || m.status === 'queued')).pop()
+              if (running) agentRequest({ type: 'agent_action', action: 'cancel_chat', payload: { id: running.id } })
+            }} />
         </div>
         <div className="row2-reserved">
           {/* 计算流水：每轮运算的实时轨迹，一条连续的流（不按币分组） */}
@@ -896,15 +907,6 @@ export default function App() {
       {/* 命中飞线：K线卡片 → 形态卡片，落地后触发卡片背景扩散 */}
       <HitFlight flight={flight} onLand={onFlightLand} onDone={onFlightDone} />
 
-      {/* ODDD 悬浮对话窗：可拖动、可折叠到左下角设置按钮上方 */}
-      <ChatDock messages={agentChat} connected={connected} stats={agentStats}
-        onSend={agentRequest} busy={agentChatBusy}
-        onClear={() => agentRequest({ type: 'agent_action', action: 'clear_chat', payload: {} })}
-        onCompact={() => agentRequest({ type: 'agent_action', action: 'compact_chat', payload: {} })}
-        onCancel={() => {
-          const running = (agentChat || []).filter((m) => m.role !== 'user' && (m.status === 'running' || m.status === 'queued')).pop()
-          if (running) agentRequest({ type: 'agent_action', action: 'cancel_chat', payload: { id: running.id } })
-        }} />
 
       {/* 形态信号通知：左上角 */}
       <NotificationViewport position="top-left">

@@ -785,20 +785,29 @@ def test_frontend_jitter_fix_static_review():
     # 入场动画只给新出现的 assistant 分组
     assert "seenGroupsRef" in jsx and "animateIn" in jsx
     assert 'group.role !== "user"' in jsx
-    # 胶囊只在 busy/idle 切换时重挂载
+    # 标题栏状态词只在 busy/idle 切换时重挂载（否则每 250ms 重放入场动画）
     assert 'key={busy ? "busy" : "idle"}' in jsx
     # MessageGroup 签名 memo：签名必须覆盖所有渲染字段（content/status/error/attachments）
     assert "groupSignature" in jsx and "prev.sig === next.sig" in jsx
     for field in ("item?.id", "item?.role", "item?.status", "item?.content",
                   "item?.error", "attachments"):
         assert field in jsx, field
-    # 既有行为不能被破坏：分组（-N 合并）/ 时间分隔 / 未读 / [sticker:] 解析 / 拖拽
+    # 既有行为不能被破坏：分组（-N 合并）/ 时间分隔 / [sticker:] 解析
     assert "groupMessages" in jsx
-    assert 'id.replace(/-\\d+$/, "")' in jsx
+    # 分组规则本身（id 里的 -2/-3 后缀去掉后归为同一轮）。
+    # 注意别用带反斜杠的字面量去比对源码里的正则——转义层级很容易写错，
+    # 分别校验「replace 调用」「-」「$」三个片段即可达到同样目的。
+    assert "id.replace(" in jsx and "id.replace(/-" in jsx, "缺少去掉 -N 后缀的分组逻辑"
+    assert 'const base = id.replace' in jsx
     assert "TIME_GAP_MS" in jsx and "timeDivider" in jsx
-    assert "unread" in jsx and "doneCount" in jsx
     assert "splitSticker" in jsx
-    assert "startDrag" in jsx and "commitPos" in jsx
+    # 浮窗/胶囊/拖拽已移除：面板固定在页面第二行，不再是浮层
+    # 只查代码里的用法（onPointerDown={startDrag} 等），不查注释里的历史说明
+    assert "createPortal" not in jsx
+    assert "onPointerDown={startDrag}" not in jsx
+    assert "commitPos(" not in jsx
+    assert 'aria-label="打开 ODDD 对话"' not in jsx   # 折叠胶囊（已删除）
+    assert 'aria-label="收起窗口"' not in jsx         # 收起按钮（已删除）
     # 贴纸占位：真实宽高 + eager；单图 4:3 占位；贴纸行最小高度
     stickers = (REPO / "web/src/components/arc/chat-dock/stickers.jsx").read_text(
         encoding="utf-8")

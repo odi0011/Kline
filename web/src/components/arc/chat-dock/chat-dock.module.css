@@ -2,10 +2,13 @@
    气泡参考 Grok：用户消息右侧实心胶囊、助手消息左侧浅底块，均大圆角。
    输入区为渐变描边 + 半透明内层的玻璃卡片。 */
 
+/* 固定面板：填满第二行给它的那一格（与其它板块同高），不再是浮层。 */
 .dock {
-  z-index: 60;
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
   border-radius: 20px;
-  touch-action: none;
 }
 
 .shell {
@@ -26,9 +29,9 @@
     0 2px 8px rgba(16, 24, 40, 0.06);
 }
 
-/* ---------- 悬浮标题栏 ----------
-   绝对定位压在消息滚动区上方，不占布局高度；胶囊只包住头像和名字，
-   不再拉满整行。没有返回按钮（这个窗口没有上一页）。 */
+/* ---------- 标题栏 ----------
+   绝对定位压在消息滚动区上方，不占布局高度；胶囊只包住头像和名字。
+   没有收起/拖动：这是固定面板，位置由页面布局决定。 */
 .header {
   position: absolute;
   top: 8px;
@@ -398,90 +401,7 @@
 }
 .fileSize { font-size: 9.5px; opacity: 0.6; }
 
-/* ---------- 折叠态：顶部居中的玻璃胶囊（灵动岛） ----------
-   形态要点（对齐 Dynamic Island）：
-     · 圆角 = 高度一半，所以是个胶囊而不是圆角方块
-     · 平时只有头像那么宽；忙碌/未读时横向生长显示状态
-     · 生长是 layout 动画，宽度和圆角连续插值，不会突变成矩形
-     · 默认状态就完整可见——不用 opacity:0 起始动画（时间轴冻结时会消失） */
-/* 折叠态外层：只做"贴顶 + 水平居中"，不参与任何形状/动效。
-   让它居中而不是让胶囊自己 transform —— motion 的 layout 动画会接管
-   transform，写 translateX(-50%) 会被覆盖，实测胶囊偏右半个身位。 */
-.islandWrap {
-  position: fixed;
-  left: 0;
-  right: 0;
-  z-index: 60;
-  display: flex;
-  justify-content: center;
-  pointer-events: none;
-}
-.islandWrap > * { pointer-events: auto; }
-
-/* 折叠态：顶部居中的玻璃胶囊（灵动岛）。
-   形态要点：圆角 = 高度一半，所以是胶囊而不是圆角方块；
-   平时只有头像宽，忙碌/未读时横向生长显示状态（layout 动画插值）。 */
-/* 灵动岛是**横向胶囊**，不是正圆：即使内容为空也要有明确的长宽比。
-   高度 34px，最小宽度 96px（≈ 2.8:1），左右各留出空白，
-   头像居中偏左——这样空态也是"岛"而不是一个圆点。 */
-/* 折叠态：顶部居中的玻璃圆环（不是横条）。
-   圆形直径 46px，头像居中；忙碌/未读时右下角出小点，
-   展开时从圆的位置放大成对话窗。 */
-.island {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 46px;
-  height: 46px;
-  padding: 0;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.88);
-  backdrop-filter: blur(18px) saturate(170%);
-  -webkit-backdrop-filter: blur(18px) saturate(170%);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.9) inset,
-    0 6px 20px rgba(16, 24, 40, 0.16);
-  cursor: pointer;
-  overflow: visible;
-  font: inherit;
-  color: #1c2333;
-}
-.island:hover { background: rgba(255, 255, 255, 0.68); }
-
-.islandAvatar { position: relative; display: block; width: 30px; height: 30px; }
-.islandAvatar img { display: block; width: 30px; height: 30px; border-radius: 50%; object-fit: cover; }
-
-/* 忙碌：右下角一圈旋转弧，提示"在算" */
-.islandBusy {
-  position: absolute;
-  right: 5px;
-  bottom: 5px;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  border: 1.5px solid rgba(240, 185, 11, 0.28);
-  border-top-color: var(--accent, #f0b90b);
-  animation: islandSpin 0.9s linear infinite;
-}
-@keyframes islandSpin { to { transform: rotate(360deg); } }
-
-/* 未读：右下角黄点 */
-.islandBadge {
-  position: absolute;
-  right: 5px;
-  bottom: 5px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent, #f0b90b);
-  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.92);
-  display: none;
-}
-.island[data-unread] .islandBadge { display: block; }
-.island[data-busy] .islandBadge { display: none; }
-
-/* 标题栏右侧两个圆钮：收起 + 更多 */
+/* 标题栏右侧：更多（清空/压缩） */
 .headerBtns { display: flex; align-items: center; gap: 6px; flex: none; }
 
 .spin { animation: dockSpin 0.9s linear infinite; }
@@ -496,6 +416,3 @@
   .spin, .busyDot { animation: none; }
 }
 
-/* 拖动中：关掉子元素过渡，避免跟手有延迟 */
-.dock[data-dragging] { cursor: grabbing; }
-.dock[data-dragging] * { transition: none !important; }

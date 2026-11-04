@@ -152,6 +152,9 @@ body {
    策略面板内部自带 ScrollArea，压缩后内容仍可滚动查看。 */
 .row2 {
   display: grid;
+  /* 30% / 50% / 20%：中间那格从 3D 编排场景换成了 ODDD 对话面板。
+     3D 实测 125 个 draw calls + 实时阴影，帧间隔中位数 296ms、
+     p95 824ms，占掉近四分之一 CPU，删掉后站点才不卡。 */
   grid-template-columns: minmax(0, 3fr) minmax(0, 5fr) minmax(0, 2fr);
   gap: var(--gap);
   flex: 1 1 auto;
@@ -160,17 +163,18 @@ body {
   overflow: hidden;
 }
 
-/* 第二行：原有币种分析 30%，实时决策编排 50%，右侧预留给后续板块 20%。 */
+/* 第二行：币种分析 30% / ODDD 对话 50% / 计算流水 20% */
 .strategy-slot {
   min-width: 0;
   display: flex;
   min-height: 0;
 }
 
-.orchestrator-slot {
+/* 对话面板所占的那一格：填满即可，内部由 ChatDock 自己撑开 */
+.chat-slot {
   min-width: 0;
-  display: flex;
   min-height: 0;
+  display: flex;
 }
 
 .row2-reserved {
