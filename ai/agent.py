@@ -342,6 +342,9 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
    不要把这种回答压成一句话——理由被砍掉等于没回答。
  · 只对用户明显是不小心的情况（比如少打了个小数点）提醒一句，其余按用户说的执行。
  · 下单成功后要说清楚成交价、数量和挂上的止损止盈；没成交/被交易所拒绝要原样报错
+ · **如果返回 unprotected=true（止损没挂上），必须第一句就说**：
+   「仓位开了，但止损没挂上，现在裸着」+ 原因 + 建议（手动补或立刻平）。
+   这比成交价重要得多，不能埋在后面。
  · 你依然不能执行任意 shell、读任意文件、改风控或系统参数，不得声称做过这些操作。
 
 【确认方式：用说话问，不用卡片】
@@ -1277,6 +1280,9 @@ class AgentManager:
     def state(self):
         tasks = sorted(self.tasks, key=lambda item: item.get("createdAt") or 0, reverse=True)
         return {"tasks": copy.deepcopy(tasks), "chat": copy.deepcopy(self.chat[-40:]),
+                # memory 要暴露出来：否则"以后别问我"存没存进去，
+                # 前端和排障都看不见（只读副本，前端不写）。
+                "memory": dict(self.memory),
                 "stats": self.stats(),
                 "persistenceError": self.persistence_error, "readOnly": bool(self.persistence_error),
                 "chatBusy": bool(self.chat_runners),

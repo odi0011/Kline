@@ -147,21 +147,42 @@ def query_order(api_key: str, api_secret: str, symbol: str, order_id: int) -> di
 def place_protective_order(api_key: str, api_secret: str, symbol: str,
                            side: str, order_type: str, qty: float,
                            stop_price: float) -> dict:
-    """Place an exchange-held STOP_MARKET or TAKE_PROFIT_MARKET order.
+    """挂交易所侧止损/止盈（进程挂了也有效）。
 
-    ``quantity + reduceOnly`` is used instead of ``closePosition`` because the
-    latter is unreliable on the testnet.  The order lives on the exchange even
-    if this process dies.
+    **必须走 /fapi/v1/algoOrder**：老的 /fapi/v1/order + STOP_MARKET
+    在现在的币安合约上会直接被拒（-4120 "Order type not supported for
+    this endpoint, please use the Algo Order API endpoints instead"）。
+    线上实测下单成功但止损单全失败，仓位裸奔。
+
+    参数要点：
+      algoType=CONDITIONAL  条件单
+      triggerPrice          触发价（新接口叫这个，不叫 stopPrice）
+      reduceOnly            只减仓，不会反向开新仓
+      workingType=MARK_PRICE 用标记价触发，避免插针误触
     """
     if order_type not in ("STOP_MARKET", "TAKE_PROFIT_MARKET"):
         raise ValueError(f"unsupported protective order type: {order_type}")
-    return signed_request(api_key, api_secret, "/fapi/v1/order", {
+    body = {
+        "algoType": "CONDITIONAL",
         "symbol": symbol.upper(),
         "side": side.upper(),
         "type": order_type,
         "quantity": f"{qty:.12f}".rstrip("0").rstrip("."),
-        "stopPrice": f"{stop_price:.12f}".rstrip("0").rstrip("."),
+        "triggerPrice": f"{stop_price:.12f}".rstrip("0").rstrip("."),
         "workingType": "MARK_PRICE",
         "reduceOnly": "true",
-        "newOrderRespType": "RESULT",
-    }, method="POST")
+    }
+    try:
+        return signed_request(api_key, api_secret, "/fapi/v1/algoOrder",
+                              body, method="POST")
+    except Exception as first:
+        # 老账户/老环境可能还没有 algoOrder 路由，退回旧接口再试一次。
+        # 旧接口在新环境会报 -4120，但留着这层对老部署更稳。
+        if "-4120" not in str(first) and "404" not in str(first):
+            raise
+        return signed_request(api_key, api_secret, "/fapi/v1/order", {
+            "symbol": body["symbol"], "side": body["side"], "type": order_type,
+            "quantity": body["quantity"], "stopPrice": body["triggerPrice"],
+            "workingType": "MARK_PRICE", "reduceOnly": "true",
+            "newOrderRespType": "RESULT",
+        }, method="POST")

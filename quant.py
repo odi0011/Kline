@@ -2531,19 +2531,24 @@ class QuantEngine:
 
         fill = self._num(order.get("avgPrice")) or float(plan.get("price") or 0)
         sl_order_id = tp_order_id = None
-        protect_error = ""
-        # 强制带止损：下完立刻挂交易所侧条件单，进程挂了也有效
+        protect_errors = []
+        # 止损和止盈**分别**捕获：一个失败不能连累另一个。
+        # 止损优先——仓位已经开了，没有止损就是在裸奔。
         try:
             sl_order = place_protective_order(
                 key, secret, sym, plan["closeSide"], "STOP_MARKET", qty,
                 float(plan["sl"]))
-            sl_order_id = sl_order.get("orderId")
+            sl_order_id = sl_order.get("algoId") or sl_order.get("orderId")
+        except Exception as e:
+            protect_errors.append(f"止损: {str(e)[:120]}")
+        try:
             tp_order = place_protective_order(
                 key, secret, sym, plan["closeSide"], "TAKE_PROFIT_MARKET", qty,
                 float(plan["tp"]))
-            tp_order_id = tp_order.get("orderId")
+            tp_order_id = tp_order.get("algoId") or tp_order.get("orderId")
         except Exception as e:
-            protect_error = str(e)
+            protect_errors.append(f"止盈: {str(e)[:120]}")
+        protect_error = "；".join(protect_errors)
 
         self.stats["orders"] += 1
         self._event(
@@ -2560,6 +2565,11 @@ class QuantEngine:
             "orderId": order.get("orderId"),
             "slOrderId": sl_order_id, "tpOrderId": tp_order_id,
             "protectError": protect_error,
+            # 止损没挂上 = 仓位裸奔，必须让用户知道，不能只在 tooltip 里躺着
+            "unprotected": bool(protect_error),
+            "warning": (f"仓位已成交，但保护单没挂上：{protect_error}。"
+                        f"这个仓现在是裸的，建议手动补止损或立刻平掉。"
+                        if protect_error else ""),
         }
 
     @staticmethod

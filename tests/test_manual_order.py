@@ -261,3 +261,87 @@ def test_trade_short_with_chinese_symbol(tmp_path):
     assert plan["symbol"] == "btcusdt"
     assert plan["orderSide"] == "SELL"
     assert plan["tp"] < plan["price"] < plan["sl"], "做空：止盈在下、止损在上"
+
+
+def test_protective_order_uses_algo_endpoint(tmp_path, monkeypatch):
+    """止损必须走 /fapi/v1/algoOrder。
+
+    线上实测：用老接口 /fapi/v1/order + STOP_MARKET 会被拒
+    （-4120 "Order type not supported for this endpoint, please use the
+    Algo Order API endpoints instead"），下单成功但止损全失败，仓位裸奔。
+    """
+    from accounts import place_protective_order
+    import accounts as acc_mod
+    seen = {}
+
+    def fake(key, secret, path, params=None, method="GET"):
+        seen["path"] = path
+        seen["params"] = params
+        return {"algoId": 123}
+
+    orig = acc_mod.signed_request
+    acc_mod.signed_request = fake
+    try:
+        out = place_protective_order("k", "s", "btcusdt", "BUY", "STOP_MARKET",
+                                     0.001, 78000.0)
+    finally:
+        acc_mod.signed_request = orig
+    assert out["algoId"] == 123
+    assert seen["path"] == "/fapi/v1/algoOrder"
+    p = seen["params"]
+    assert p["algoType"] == "CONDITIONAL"
+    assert p["triggerPrice"] == "78000"     # 新接口叫 triggerPrice，不是 stopPrice
+    assert p["reduceOnly"] == "true"
+    assert p["workingType"] == "MARK_PRICE"
+
+
+def test_sl_and_tp_fail_independently(tmp_path):
+    """止盈挂了但止损成功，也要如实报错（不能一个失败连累另一个）。"""
+    eng = _engine(tmp_path)
+    calls = []
+
+    def fake(key, secret, sym, side, otype, qty, stop):
+        calls.append(otype)
+        if otype == "TAKE_PROFIT_MARKET":
+            raise RuntimeError("tp boom")
+        return {"algoId": 1}
+
+    import quant as quant_mod
+    orig = quant_mod.place_protective_order
+    orig_req = quant_mod.signed_request
+    quant_mod.place_protective_order = fake
+    quant_mod.signed_request = MagicMock(return_value={})
+    try:
+        plan = eng.manual_order_plan("btcusdt", "long", 100.0, 10)
+        result = eng.manual_order_execute(plan)
+    finally:
+        quant_mod.place_protective_order = orig
+        quant_mod.signed_request = orig_req
+    assert "STOP_MARKET" in calls and "TAKE_PROFIT_MARKET" in calls
+    assert result["slOrderId"] == 1, "止损成功就该记下 id"
+    assert result["tpOrderId"] is None
+    assert result["unprotected"] is True
+    assert "止盈" in result["protectError"]
+
+
+def test_unprotected_warning_is_explicit(tmp_path):
+    """止损完全没挂上时，要返回醒目的 warning 字段供 Agent 转述。"""
+    eng = _engine(tmp_path)
+
+    def boom(*a, **k):
+        raise RuntimeError("-4120 not supported")
+
+    import quant as quant_mod
+    orig = quant_mod.place_protective_order
+    orig_req = quant_mod.signed_request
+    quant_mod.place_protective_order = boom
+    quant_mod.signed_request = MagicMock(return_value={})
+    try:
+        plan = eng.manual_order_plan("btcusdt", "long", 100, 10)
+        result = eng.manual_order_execute(plan)
+    finally:
+        quant_mod.place_protective_order = orig
+        quant_mod.signed_request = orig_req
+    assert result["unprotected"] is True
+    assert "裸" in result["warning"]
+    assert "手动补止损" in result["warning"]

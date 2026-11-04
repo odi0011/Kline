@@ -50,11 +50,15 @@ def test_protective_order_payload(monkeypatch):
     result = accounts.place_protective_order(
         "key", "secret", "btcusdt", "SELL", "STOP_MARKET", 0.0046, 79700.0)
     assert result["orderId"] == 7
-    assert captured["path"] == "/fapi/v1/order"
+    # 必须走 Algo Order 接口：老接口 /fapi/v1/order + STOP_MARKET 会被拒（-4120）
+    assert captured["path"] == "/fapi/v1/algoOrder"
     assert captured["method"] == "POST"
+    assert captured["params"]["algoType"] == "CONDITIONAL"
     assert captured["params"]["type"] == "STOP_MARKET"
     assert captured["params"]["reduceOnly"] == "true"
     assert captured["params"]["workingType"] == "MARK_PRICE"
+    # 新接口用 triggerPrice（不是 stopPrice）
+    assert captured["params"]["triggerPrice"] == "79700"
 
 
 def test_liquidation_stream_blocks_cascade_and_cooldown():
