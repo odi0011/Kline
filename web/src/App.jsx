@@ -858,7 +858,8 @@ export default function App() {
           </div>
           <div className="wallet-zone">
             <AccountCard account={account} series={accountSeries} accent={ui.themeColor}
-              chartColors={chartColors} />
+              chartColors={chartColors}
+              overview={quantSnap?.analysis?.overview} />
           </div>
         </div>
       {/* 第二行：币种分析 / 计算流水（3D 编排场景已移除：

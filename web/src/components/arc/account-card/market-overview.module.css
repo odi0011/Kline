@@ -1,0 +1,129 @@
+/* 账户卡下半区：情绪条 + 两个时间窗口的战绩格。
+   尺寸按账户卡可用高度设计（约 120~160px），不出现内部滚动。 */
+
+.wrap {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 2px 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 11px;
+  color: var(--text-muted, #8b949e);
+}
+
+/* ---- 情绪 ---- */
+.sentiment { flex: none; display: flex; flex-direction: column; gap: 3px; }
+.sentRow {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-variant-numeric: tabular-nums;
+}
+.sentLabel {
+  font-size: 9px;
+  color: var(--text-muted, #8b949e);
+  letter-spacing: 0.02em;
+}
+.sentValue {
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+.sentValue[data-tone="up"] { color: var(--up); }
+.sentValue[data-tone="down"] { color: var(--down); }
+.sentValue[data-tone="flat"] { color: rgba(16, 24, 40, 0.55); }
+.sentDetail,
+.sentScore {
+  font-size: 9px;
+  color: var(--text-muted, #8b949e);
+}
+.sentScore { margin-left: auto; }
+
+.sentBar {
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(28, 35, 51, 0.08);
+}
+.sentBar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  transition: width 320ms ease, background 320ms ease;
+}
+
+/* ---- 两个窗口并排 ---- */
+.windows {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: rgba(28, 35, 51, 0.035);
+  min-width: 0;
+  overflow: hidden;
+}
+.blockTitle {
+  font-size: 8.5px;
+  font-weight: 700;
+  color: rgba(16, 24, 40, 0.5);
+  letter-spacing: 0.03em;
+}
+.blockEmpty {
+  font-size: 9.5px;
+  color: var(--text-muted, #8b949e);
+  margin-top: 2px;
+}
+.blockStats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 6px;
+  min-width: 0;
+}
+.stat {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+.statLabel {
+  font-size: 8px;
+  color: var(--text-muted, #8b949e);
+  flex: none;
+}
+.statValue {
+  font-size: 10px;
+  font-weight: 700;
+  color: #1c2333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.statValue[data-tone="up"] { color: var(--up); }
+.statValue[data-tone="down"] { color: var(--down); }
+.statHint {
+  font-size: 7.5px;
+  color: var(--text-muted, #8b949e);
+  white-space: nowrap;
+  flex: none;
+}
+
+/* 有持仓时这块被仓位卡挤到下面，稍微收紧留白 */
+.wrap[data-has-position] { gap: 4px; }

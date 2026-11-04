@@ -2986,7 +2986,7 @@ class AgentManager:
                               "trades", "positionPlans", "risk", "drawdown", "drift", "params", "health",
                               "enabled", "recentEvents", "events", "news", "patternStats",
                               # 衍生品与评分特征：页面上有、Agent 之前完全读不到
-                              "liveFeatures", "derivatives", "gateLog", "decisionTraces",
+                              "liveFeatures", "derivatives", "gateLog", "decisionTraces", "overview",
                               # 模拟仓是另一套数据：未平仓、已实现战绩、最近平仓
                               "paper", "paperStats", "paperChecks", "paperHistory", "paperSummary")
                     snapshot = copy.deepcopy(clean({k: raw[k] for k in fields if k in raw}))

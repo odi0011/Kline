@@ -1134,6 +1134,119 @@ class QuantEngine:
     def _dd_paused(self) -> bool:
         return _now_ms() < self.dd_state.get("paused_until", 0)
 
+    # ---- 账户卡的市场概览：情绪 + 分窗口战绩 ----
+
+    def _sentiment(self) -> dict:
+        """当前市场情绪：监控币种的方向分布 + 分数。
+
+        "情绪"不是新闻情绪分（那个只有 0.0x 的量级、看不出方向），
+        而是**系统此刻对全部监控币的多空判断汇总**：
+          breadth = 偏多币数 / 有方向的币数（0-100）
+          avgScore = 这些币的平均共鸣分
+        breadth ≥65 判偏多、≤35 判偏空，中间是分歧。
+        这个数每 5 秒随评估刷新，是真正"实时"的。
+        """
+        bull = bear = 0
+        scores = []
+        for ev in (self.live_evaluations or {}).values():
+            if not isinstance(ev, dict):
+                continue
+            direction = ev.get("direction")
+            if direction == "bullish":
+                bull += 1
+            elif direction == "bearish":
+                bear += 1
+            score = ev.get("score")
+            if isinstance(score, (int, float)):
+                scores.append(float(score))
+        directed = bull + bear
+        breadth = round(bull / directed * 100, 1) if directed else None
+        avg = round(sum(scores) / len(scores), 1) if scores else None
+        if breadth is None:
+            label = "无方向"
+        elif breadth >= 65:
+            label = "偏多"
+        elif breadth <= 35:
+            label = "偏空"
+        else:
+            label = "分歧"
+        return {"label": label, "breadth": breadth, "avgScore": avg,
+                "bullish": bull, "bearish": bear, "count": directed}
+
+    def _window_stats(self, rows: list[dict]) -> dict:
+        """一批已平仓成交在某个时间窗口内的战绩（胜率/盈亏/回撤/夏普）。
+
+        胜率分母用"有明确输赢的笔数"（pnl 恰好为 0 的平局不算输也不算赢）——
+        和模拟仓/账户统计同一口径，避免把平局当成"几乎全输"。
+        """
+        pnls = [float(r.get("pnl") or 0) for r in rows]
+        wins = sum(1 for p in pnls if p > 0)
+        losses = sum(1 for p in pnls if p < 0)
+        decided = wins + losses
+        # 累计盈亏曲线 → 窗口内最大回撤（金额，和盈亏同单位）
+        equity = peak = 0.0
+        max_dd = 0.0
+        for pnl in pnls:
+            equity += pnl
+            peak = max(peak, equity)
+            max_dd = min(max_dd, equity - peak)
+        # 夏普：每笔收益率（movePct）的均值 / 标准差。
+        # **不年化**——3 分钟周期的年化会得到一个上百的噪声数字，
+        # 对"这笔策略稳不稳"毫无参考价值。
+        returns = [float(r.get("movePct") or 0) / 100.0 for r in rows]
+        sharpe = None
+        if len(returns) >= 3:
+            mean = sum(returns) / len(returns)
+            var = sum((x - mean) ** 2 for x in returns) / (len(returns) - 1)
+            sd = math.sqrt(max(var, 0.0))
+            sharpe = round(mean / sd, 2) if sd > 1e-12 else None
+        return {
+            "trades": len(rows),
+            "wins": wins,
+            "losses": losses,
+            "winrate": round(wins / decided * 100, 1) if decided else None,
+            "pnl": round(sum(pnls), 2),
+            "maxDrawdown": round(max_dd, 2),
+            "sharpe": sharpe,
+        }
+
+    def market_overview(self) -> dict:
+        """账户卡下半区要显示的东西：情绪 + 30 分钟/今日战绩。
+
+        全部基于**实时数据**：情绪来自这一轮的评估，战绩来自真实平仓流水。
+        窗口内没有成交时各项为 0 / None，前端显示"无交易"——
+        不拿别的窗口的数据冒充，也不拿模拟仓的数字顶替真实账户。
+        """
+        now = _now_ms()
+        trades = [t for t in (self.trades or []) if isinstance(t, dict)]
+        # 只统计当前账户：换过 key 的旧账户成交混进来会让战绩虚高
+        current = {a.get("name") for a in self._tradable_accounts()}
+        if current:
+            trades = [t for t in trades if str(t.get("account") or "") in current]
+
+        def window(ms: int) -> list[dict]:
+            cutoff = now - ms
+            out = [t for t in trades if int(t.get("ts") or 0) >= cutoff]
+            out.sort(key=lambda t: int(t.get("ts") or 0))
+            return out
+
+        # 今日 = UTC 自然日（与权益日档/热力图的日界一致）
+        day_start = int(now // 86_400_000 * 86_400_000)
+        today_rows = [t for t in trades if int(t.get("ts") or 0) >= day_start]
+        today_rows.sort(key=lambda t: int(t.get("ts") or 0))
+
+        return {
+            "sentiment": self._sentiment(),
+            "m30": self._window_stats(window(30 * 60 * 1000)),
+            "today": self._window_stats(today_rows),
+            "all": self._window_stats(sorted(trades,
+                                             key=lambda t: int(t.get("ts") or 0))),
+            # 不要在这里调 self.snapshot()——market_overview 会被 snapshot 调用，
+            # 那样直接无限递归。持仓数从 state 里数。
+            "openPositions": sum(len(self._st(n)["positions"]) for n in self.state),
+            "ts": now,
+        }
+
     def _build_features(self, symbol: str, bars: list, state: dict,
                         direction: str) -> dict:
         now = _now_ms()
@@ -2874,6 +2987,8 @@ class QuantEngine:
                 "gateLog": list(self.gate_log)[-20:],
                 "decisionTraces": list(self.decision_traces)[-16:],
                 "latestTraces": dict(self.latest_traces),
+                # 账户卡下半区：市场情绪 + 30 分钟/今日/全部的胜率、回撤、夏普
+                "overview": self.market_overview(),
                 # 尾部风险画像：CVaR / 已实现波动率 / 最差笔。
                 # 之前看板上只有一个"回撤"，看不出"一次尾部亏损能吃多少"。
                 "risk": self._tail_profile(),

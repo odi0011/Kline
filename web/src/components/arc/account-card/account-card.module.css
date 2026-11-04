@@ -228,3 +228,20 @@
 }
 .heatScale { display: inline-flex; gap: 1px; flex: none; }
 .heatScale i { width: 6px; height: 6px; border-radius: 1px; }
+
+/* ---------- 下半区：仓位 + 市场概览 ----------
+   无仓位：概览占满整块。
+   有仓位：上半是持仓卡（固定高度），下半是概览（剩余空间）。
+   仓位更紧急、概览也不该被藏起来，所以是上下分栏而不是二选一。 */
+.posArea.split {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.posArea.split .posScroll { flex: none; height: 92px; }
+.posArea.split .posViewport { height: 92px; }
+.overviewArea {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}

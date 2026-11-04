@@ -124,6 +124,8 @@ class BroadcastHub:
                       "calcStream", "advice", "paper", "paperStats", "paperBySymbol", "positionPlans",
                       # 3 分钟自检的专项统计（判赢/判亏/反手 + 回撤）
                       "paperChecks",
+                      # 账户卡下半区：市场情绪 + 30 分钟/今日战绩
+                      "overview",
                       "params", "drawdown", "drift",
                       # 尾部风险画像（CVaR/波动率/样本数）：K线浮层和风险条要画它。
                       # 漏这一项时前端拿到 undefined，整块风险显示为空。

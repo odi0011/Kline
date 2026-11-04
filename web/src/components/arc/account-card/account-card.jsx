@@ -9,7 +9,7 @@ import { LiquidGlass } from "@/components/ui/liquid-glass"
 import CoinAvatar from "@/components/ui/coin-avatar"
 import { hexHue } from "@/lib/account-theme"
 import EquityCurve from "./equity-curve"
-import EquityHeatmap from "./equity-heatmap"
+import MarketOverview from "./market-overview"
 import styles from "./account-card.module.css"
 
 const fmtPrice = (v) => {
@@ -64,7 +64,7 @@ function PositionCard({ p, chartColors }) {
   )
 }
 
-export default function AccountCard({ account, series, chartColors, accent = "#f0b90b" }) {
+export default function AccountCard({ account, series, chartColors, accent = "#f0b90b", overview }) {
   const [hoverS, setHoverS] = useState(null)
   const [edges, setEdges] = useState({ left: false, right: false })
   const viewportRef = useRef(null)
@@ -126,7 +126,7 @@ export default function AccountCard({ account, series, chartColors, accent = "#f
         )}
       </div>
 
-      <div className={styles.posArea}>
+      <div className={`${styles.posArea}${positions.length > 0 ? ` ${styles.split}` : ""}`}>
         {positions.length > 0 ? (
           <ScrollArea viewportRef={viewportRef} orientation="horizontal" fade={16} scrollbars="auto"
             className={styles.posScroll} viewportClassName={styles.posViewport} label="当前持仓"
@@ -139,9 +139,14 @@ export default function AccountCard({ account, series, chartColors, accent = "#f
           </ScrollArea>
         ) : account.error ? (
           <span className={styles.posEmpty} role="alert">数据获取失败</span>
-        ) : (
-          <EquityHeatmap key={account.id || account.name} history={account.equityHistory} />
-        )}
+        ) : null}
+        {/* 无仓位时这里就是市场概览；有仓位时仓位卡优先，概览退到下面
+            （仓位是更紧急的信息，但情绪/战绩也不该被完全藏起来）。
+            原来的权益热力图已去掉：它只回答"哪天赚了多少"，
+            而这块空间该回答"现在市场什么状态、我的策略在这些窗口里打得怎么样"。 */}
+        <div className={styles.overviewArea}>
+          <MarketOverview overview={overview} positions={positions} />
+        </div>
         {scrollable && (
           <div className={styles.posNav}>
             <LiquidGlass radius={999} scale={20} aberration={0} frost={2} tint={0.14} className={styles.navGlass}>

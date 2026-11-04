@@ -55,11 +55,16 @@ def test_overlay_peak_label_bug_is_gone():
     assert "EquityView" not in code
 
 
-def test_account_card_owns_equity_curve_and_heatmap():
-    """权益曲线的权威位置是账户卡，必须仍然在。"""
+def test_account_card_owns_equity_curve():
+    """权益曲线的权威位置是账户卡，必须仍然在。
+
+    热力图已按用户要求移除——它只回答"哪天赚了多少"，而那块空间
+    改成显示市场情绪 + 30 分钟/今日战绩（更实时、更能指导当下决策）。
+    """
     src = _read(ACCOUNT)
     assert "EquityCurve" in src
-    assert "EquityHeatmap" in src
+    assert "EquityHeatmap" not in src, "热力图已移除"
+    assert "MarketOverview" in src, "要么显示仓位、要么显示市场概览"
 
 
 def test_strategy_panel_has_account_level_risk_strip():

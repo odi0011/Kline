@@ -877,7 +877,7 @@ def read_snapshot(name, arguments, snapshot, history_fn=None, fns=None):
         "read_market": ("market", "symbols", "stats", "evaluations", "positionPlans"),
         "read_accounts": ("accounts", "positions", "trades"),
         "read_risk": ("risk", "drawdown", "drift", "params", "health", "enabled",
-                      "gateLog", "decisionTraces"),
+                      "gateLog", "decisionTraces", "overview"),
         "read_events": ("recentEvents", "events"),
         "read_news": ("news",),
         "read_pattern_stats": ("patternStats",),
