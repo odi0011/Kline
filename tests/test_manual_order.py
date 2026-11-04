@@ -55,31 +55,37 @@ def test_plan_short_direction_is_reversed(tmp_path):
     assert plan["tp"] < plan["price"] < plan["sl"]
 
 
-def test_plan_rejects_over_notional_cap(tmp_path):
-    """超过单笔名义上限要拒绝，并给出真实上限（不是一句干巴巴的拒绝）。"""
+def test_plan_rejects_only_when_margin_insufficient(tmp_path):
+    """不设人工上限：只要账户真有钱就允许，超出可用保证金才拒绝。"""
     eng = _engine(tmp_path, available=100000)
+    # 10x、可用 10 万 → 最多 100 万名义
     plan = eng.manual_order_plan("btcusdt", "long", 999999, 10)
-    assert plan["ready"] is False
-    assert "超过单笔上限" in plan["reason"]
-    assert plan["limits"]["maxNotional"] > 0
+    assert plan["ready"] is True, plan
+    assert plan["notional"] > 900000, "大单不该被人为上限挡掉"
+    # 再大就真的超出账户能力了
+    over = eng.manual_order_plan("btcusdt", "long", 2000000, 10)
+    assert over["ready"] is False
+    assert "超出账户能支撑" in over["reason"]
+    assert over["limits"]["maxNotional"] > 0
 
 
-def test_plan_rejects_when_margin_insufficient(tmp_path):
-    """可用保证金太小 → 按比例算出的上限低于请求金额，拒绝。"""
-    eng = _engine(tmp_path, available=100.0)      # 50% = 50 USDT 保证金 × 10x = 500 名义
+def test_plan_allows_full_margin(tmp_path):
+    """满仓也能下：不做百分比打折。"""
+    eng = _engine(tmp_path, available=100.0)
+    # 100 USDT 保证金 × 10x = 1000 名义，正好用满
     plan = eng.manual_order_plan("btcusdt", "long", 1000, 10)
-    assert plan["ready"] is False
-    assert "超过单笔上限" in plan["reason"]
-    assert plan["limits"]["maxNotional"] <= 500
+    assert plan["ready"] is True, plan
+    assert plan["margin"] >= 99
 
 
 def test_plan_clamps_leverage_to_exchange_max(tmp_path):
+    """杠杆只受交易所上限约束——不是我们设的顶。"""
     eng = _engine(tmp_path)
     eng.max_leverage_fn = lambda s: 5
     plan = eng.manual_order_plan("btcusdt", "long", 100.0, 50)
     assert plan["ready"] is True
     assert plan["leverage"] == 5
-    assert "上限" in plan["note"]
+    assert "交易所最高 5x" in plan["note"]
 
 
 def test_plan_rejects_bad_direction(tmp_path):
@@ -218,27 +224,33 @@ def test_price_falls_back_to_ticker(tmp_path):
 
 
 def test_plan_reports_real_limits_when_over(tmp_path):
-    """超限时要返回真实上限，模型才能给出可用建议，而不是瞎猜。
-
-    线上模型说"单笔最多 10 万 U"——那是它猜的，因为之前只返回一句拒绝。
-    """
+    """超限时要返回真实边界（可用保证金 × 杠杆），模型才能给出可用建议。"""
     eng = _engine(tmp_path, available=7356.55)
-    plan = eng.manual_order_plan("btcusdt", "long", 500000, 10)
+    plan = eng.manual_order_plan("btcusdt", "long", 5000000, 10)
     assert plan["ready"] is False
     lim = plan["limits"]
     assert lim["available"] == 7356.55
-    assert lim["marginPct"] == 50
-    assert 0 < lim["maxNotional"] <= lim["maxNotionalBySystem"]
+    # 上限就是可用保证金 × 杠杆，不含任何人为比例
+    assert abs(lim["maxNotional"] - 7356.55 * 10) < 1
     assert "最多可下" in plan["suggest"]
 
 
 def test_high_leverage_allowed_up_to_exchange_max(tmp_path):
-    """150x 不应被硬砍到 20x：手动单上限是 125x（交易所自身上限优先）。"""
+    """150x 只被交易所上限拦，不被我们自己砍。
+
+    测试里 max_leverage_fn 返回 50，所以按 50x 算并说明；
+    如果交易所支持 150x，就应该原样 150x。
+    """
     eng = _engine(tmp_path)
     plan = eng.manual_order_plan("btcusdt", "long", 5000, 150)
     assert plan["ready"] is True, plan
-    assert plan["leverage"] == 50          # 该测试里 max_leverage_fn 返回 50
-    assert "上限" in plan["note"]
+    assert plan["leverage"] == 50
+    assert "交易所最高 50x" in plan["note"]
+
+    # 交易所支持 150x 时不该被砍到 125x
+    eng.max_leverage_fn = lambda s: 150
+    plan2 = eng.manual_order_plan("btcusdt", "long", 5000, 150)
+    assert plan2["leverage"] == 150, plan2
 
 
 def test_trade_short_with_chinese_symbol(tmp_path):

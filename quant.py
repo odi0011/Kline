@@ -2305,16 +2305,12 @@ class QuantEngine:
             self._event("error", f"模拟仓刷新失败({symbol}): {e}", symbol=symbol)
             return None
 
-    # ---------- Agent 手动下单（带风控闸） ----------
+    # ---------- Agent 手动下单 ----------
 
-    # 单笔名义价值上限（USDT）。这是"防手滑"的天花板，不是策略限制：
-    # 用户要求"人能做的它就能做"，所以给得足够宽，但必须有顶——
-    # 模型把 50 USDT 算成 50000 时至少不会把账户打穿。
-    MANUAL_MAX_NOTIONAL = 200000.0
-    # 单笔最多动用可用保证金的百分比
-    MANUAL_MAX_MARGIN_PCT = 0.50
-    # 手动单杠杆上限（交易所自身上限更低时以交易所为准）
-    MANUAL_MAX_LEVERAGE = 125
+    # 不设人工上限：人能下的单它也能下。
+    # 唯一的约束来自交易所本身（可用保证金、合约杠杆上限、最小名义价值），
+    # 这些不是我们加的规则，是真实存在的边界——人下单同样受它们约束。
+    # 想控制风险请直接说金额/杠杆，或调低账户里的可用余额。
 
     def _normalize_symbol(self, symbol) -> str:
         """把模型给的各种写法归一成内部键（btcusdt）。
@@ -2418,49 +2414,48 @@ class QuantEngine:
                     "reason": f"取不到 {sym.upper()} 的最新价（本地行情没有这个币，"
                               f"交易所接口也没返回），无法算单"}
 
-        # 杠杆：不超过交易所对该合约的上限，也不超过手动单上限
+        # 杠杆：只受交易所对该合约的上限约束（这是真实规则，人下单也一样）。
+        # 用户要 150x 而交易所只支持 125x → 按 125x 算并说明，不额外加自己的顶。
         try:
             max_lev = int(self.max_leverage_fn(sym) or 0) if self.max_leverage_fn else 0
         except Exception:
             max_lev = 0
         want_lev = int(leverage or max_lev or 20)
-        hard_cap = min(self.MANUAL_MAX_LEVERAGE, max_lev or self.MANUAL_MAX_LEVERAGE)
-        lev = max(1, min(want_lev, hard_cap))
+        lev = max(1, want_lev)
         note = ""
-        if want_lev > hard_cap:
-            note = (f"交易所/系统上限 {hard_cap}x，已按上限 {lev}x 算"
+        if max_lev and want_lev > max_lev:
+            lev = max_lev
+            note = (f"这个合约交易所最高 {max_lev}x，已按 {lev}x 算"
                     f"（你要求 {want_lev}x）")
 
-        # 风控：可用保证金 → 名义价值上限
+        # 保证金：唯一约束是账户里真有这么多钱。
+        # 不再按百分比打折——人要满仓就能满仓。
         try:
             available = float(self._available(acct) or 0)
         except Exception:
             available = 0.0
         if available <= 0:
             return {"ready": False, "reason": "账户可用保证金为 0，无法下单"}
-        margin_cap = available * self.MANUAL_MAX_MARGIN_PCT
-        # 名义上限取两者的小值：系统硬顶 vs 保证金允许的规模
-        cap = min(self.MANUAL_MAX_NOTIONAL, margin_cap * lev)
+        # 满杠杆下的名义上限：可用保证金 × 杠杆
+        cap = round(available * lev, 2)
         want = float(notional or 0)
         if want <= 0:
-            # 没指定金额：按上限的一半给一个稳健默认，别一开口就是满仓
-            want = round(min(self.MANUAL_MAX_NOTIONAL, cap) * 0.5, 2)
+            # 没指定金额：按可用保证金的 10% 折算，给个不至于一开口就满仓的默认
+            want = round(min(cap, available * lev * 0.1), 2)
         if want > cap:
-            # 把真实限额一起返回：模型需要知道"最多能下多少"才能给用户可用建议，
-            # 否则只会干巴巴地说"被风控拒绝了"。线上实测模型把上限说成
-            # "单笔最多 10 万 U"，就是因为它只能猜。
+            # 超出可用保证金能支撑的规模：这是账户余额的硬约束，不是我们设的顶。
+            # 把真实数字一起返回，模型才能给用户"最多能下多少"的可用建议。
             return {"ready": False,
-                    "reason": f"金额 {want:.0f} USDT 超过单笔上限 {cap:.0f} USDT",
+                    "reason": (f"金额 {want:.0f} USDT 超出账户能支撑的 {cap:.0f} USDT"
+                               f"（可用保证金 {available:.2f} × {lev}x）"),
                     "limits": {
-                        "maxNotional": round(cap, 2),
-                        "maxNotionalBySystem": self.MANUAL_MAX_NOTIONAL,
+                        "maxNotional": cap,
                         "available": round(available, 2),
-                        "marginPct": int(self.MANUAL_MAX_MARGIN_PCT * 100),
                         "leverage": lev,
-                        "maxLeverage": hard_cap,
+                        "maxLeverage": max_lev or None,
                     },
                     "suggest": (f"按 {lev}x 最多可下 {cap:.0f} USDT 名义"
-                                f"（约 {cap / lev:.0f} USDT 保证金）")}
+                                f"（约 {available:.0f} USDT 保证金，即当前全部可用）")}
         if want < 5:
             return {"ready": False, "reason": "金额太小，交易所最小名义价值约 5 USDT"}
 
