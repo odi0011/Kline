@@ -905,6 +905,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         agent.sticker_download_fn = _sticker_download
         agent.sticker_cache = sticker_cache
         print(f"[stickers] GIPHY 在线贴纸已启用（缓存目录 {sticker_cache.root}）")
+    # Agent 下单能力：两个回调分开注入——算单与执行必须能分别调用，
+    # 否则模型会一步下完（真实资金操作必须先让用户看到那张单）。
+    agent.order_plan_fn = quant.manual_order_plan
+    agent.order_exec_fn = quant.manual_order_execute
     hub.agent_state_fn = agent.state
     hub.agent_fn = agent.handle
 

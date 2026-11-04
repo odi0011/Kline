@@ -553,8 +553,10 @@ def test_prompt_watch_notifications_documented():
     for phrase in ("create_watch", "后台常驻", "主动通知到聊天", "notify",
                    "always", "on_change", "never", "做不到"):
         assert phrase in SYSTEM_PROMPT, f"后台任务说明缺少: {phrase}"
-    # 能力边界与无下单能力不能因新功能被放宽
-    for rule in ("绝无 shell", "不得声称做过这些操作"):
+    # 下单能力已按用户要求开放（place_order 两步确认），
+    # 但这些边界不能被放宽：
+    for rule in ("不能执行任意 shell", "读任意文件", "改风控或系统参数",
+                 "不得声称做过这些操作"):
         assert rule in SYSTEM_PROMPT, f"安全边界丢失: {rule}"
     # 身份设定注入后仍声明优先级更高
     assert "优先级更高" in _system_content("你叫 ODDD")

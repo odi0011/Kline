@@ -308,7 +308,14 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
  · 账户里没有模拟仓的仓位，模拟仓也不能解释账户的盈亏——两者绝不能互相引用。
 
 你可以读取行情、账户、模拟仓、风险、事件、新闻、联网搜索的外部资料，以及保存/读取用户明确同意的白名单偏好。
-绝无 shell、任意文件读取、下单、平仓、修改风控或系统参数的能力，不得声称做过这些操作。
+**你也可以真的下单**（place_order），但必须走"先算单、再确认"两步：
+ · 用户说"帮我开个仓""做空 BTC 50 倍"时，先用 place_order 的 dryRun 算出一张单，
+   把币种/方向/数量/杠杆/保证金/止损止盈复述给用户，等他说"确认/下吧/可以"才真正执行
+ · 用户已经明确说过"直接下，不用问"时才可以跳过一次确认
+ · 风控闸是硬的：超过单笔上限、可用保证金不足、算不出止损，一律拒绝并如实说明，
+   不要把拒绝包装成"已经帮你下了"
+ · 下单成功后要说清楚成交价、数量和挂上的止损止盈；没成交/被交易所拒绝要原样报错
+ · 你依然不能执行任意 shell、读任意文件、改风控或系统参数，不得声称做过这些操作。
 
 【沙盒】你有一个受限沙盒，可以写脚本、跑命令、处理数据：
  · sandbox_write / sandbox_read / sandbox_list：在工作目录里读写文件
@@ -786,6 +793,11 @@ class AgentManager:
         self.sticker_search_fn = None
         self.sticker_download_fn = None
         self.sticker_cache = None
+        # 下单能力：main 注入两个回调，None 则工具返回"未接入"而不是假装做过。
+        #   order_plan_fn(symbol, side, notional, leverage) -> dict（只算，不下单）
+        #   order_exec_fn(plan) -> dict（真下单）
+        self.order_plan_fn = None
+        self.order_exec_fn = None
         # 模型没给 count 时的默认条数，main 从 config.search.count 注入；仍按 1..10 校验
         self.search_default_count = 5
         self.state_path = state_path
@@ -1952,6 +1964,63 @@ class AgentManager:
                 "title": str(data.get("title") or "")[:300],
                 "text": text, "truncated": truncated}
 
+    async def _place_order(self, arguments: dict) -> dict:
+        """真实下单，严格两步：先 dryRun 算单给用户看，确认后才执行。
+
+        为什么不让模型一步下单：它可能把"做空"理解成做多、把 50 倍理解成
+        50 USDT，或者算错数量。真实资金操作必须让用户先看到那张单。
+        plan 必须原样回传——用户确认的是什么就下什么，不能重新算。
+        """
+        if not isinstance(arguments, dict):
+            raise ValueError("place_order 参数需为对象")
+        if set(arguments) - {"symbol", "side", "notional", "leverage", "dryRun", "plan"}:
+            raise ValueError("place_order 包含不支持的参数")
+
+        # 第二步：执行
+        if arguments.get("dryRun") is False:
+            plan = arguments.get("plan")
+            if not isinstance(plan, dict) or not plan.get("ready"):
+                return {"ok": False,
+                        "error": "缺少有效的 plan。先用 dryRun=true 算单、给用户确认，"
+                                 "再把返回的 plan 原样传回来才能执行。"}
+            fn = self.order_exec_fn
+            if fn is None:
+                return {"ok": False, "error": "下单未接入（服务端没有交易账户）"}
+            try:
+                result = await asyncio.to_thread(fn, plan)
+            except Exception as exc:
+                return {"ok": False, "error": str(clean(str(exc)))[:300]}
+            return result if isinstance(result, dict) else {"ok": False, "error": "返回格式异常"}
+
+        # 第一步：只算单
+        symbol = str(arguments.get("symbol") or "").strip().lower()
+        side = str(arguments.get("side") or "").strip().lower()
+        if not symbol:
+            return {"ready": False, "reason": "缺少币种"}
+        if side not in ("long", "short"):
+            return {"ready": False, "reason": "方向只能是 long（做多）或 short（做空）"}
+        notional = arguments.get("notional")
+        if notional is not None and not isinstance(notional, (int, float)):
+            return {"ready": False, "reason": "notional 需为数字（USDT）"}
+        leverage = arguments.get("leverage")
+        if leverage is not None and not isinstance(leverage, int):
+            return {"ready": False, "reason": "leverage 需为整数"}
+
+        fn = self.order_plan_fn
+        if fn is None:
+            return {"ready": False, "reason": "下单未接入（服务端没有可交易的账户）"}
+        try:
+            plan = await asyncio.to_thread(fn, symbol, side, notional, leverage)
+        except Exception as exc:
+            return {"ready": False, "reason": f"算单失败: {str(clean(str(exc)))[:200]}"}
+        if not isinstance(plan, dict):
+            return {"ready": False, "reason": "算单返回格式异常"}
+        if plan.get("ready"):
+            plan["next"] = ("把上面这些参数（币种、方向、数量、杠杆、保证金、"
+                            "止损价、止盈价）复述给用户，等他确认后再用 "
+                            "dryRun=false 并原样传回 plan 执行。")
+        return plan
+
     def _list_stickers(self, arguments: dict) -> dict:
         """列出表情包库：Agent 看库里有什么、各自叫什么、什么时候该用。
 
@@ -2629,7 +2698,8 @@ class AgentManager:
                                     "create_watch", "list_watches", "stop_watch", "read_calc_trace",
                                     "sandbox_write", "sandbox_read", "sandbox_list", "sandbox_run",
                                     "web_search", "read_web_page", "send_sticker",
-                                    "list_stickers", "search_stickers", "save_sticker"}
+                                    "list_stickers", "search_stickers", "save_sticker",
+                                    "place_order"}
                    for call in normalized):
                 try:
                     # 先投影/脱敏再复制；绝不把整个上下文或配置拼到 prompt。
@@ -2702,6 +2772,8 @@ class AgentManager:
                         output = await self._web_search(arguments)
                     elif name == "read_web_page":
                         output = await self._read_web_page(arguments)
+                    elif name == "place_order":
+                        output = await self._place_order(arguments)
                     elif name == "list_stickers":
                         output = self._list_stickers(arguments)
                     elif name == "search_stickers":

@@ -26,6 +26,7 @@ from collections import deque
 from accounts import (
     signed_request, open_orders, cancel_order, query_order, cancel_all_open_orders,
     place_protective_order,
+    place_protective_order,
 )
 from analysis import indicators as IND
 from decision.advice import build_advice
@@ -2303,9 +2304,195 @@ class QuantEngine:
             self._event("error", f"模拟仓刷新失败({symbol}): {e}", symbol=symbol)
             return None
 
+    # ---------- Agent 手动下单（带风控闸） ----------
+
+    # 单笔名义价值上限（USDT）：Agent 下的单不该比自动信号更大。
+    # 自动开仓走 kelly/风险预算，这里给一个硬顶，模型算错也炸不了账户。
+    MANUAL_MAX_NOTIONAL = 2000.0
+    # 单笔最多动用可用保证金的百分比
+    MANUAL_MAX_MARGIN_PCT = 0.25
+
+    def manual_order_plan(self, symbol: str, side: str, notional: float | None = None,
+                          leverage: int | None = None) -> dict:
+        """算一张手动单的全部参数，**不下单**——供 Agent 先给用户看。
+
+        为什么单独一步：真实资金操作必须先让用户看到
+        「币种 / 方向 / 数量 / 杠杆 / 保证金 / 止损止盈」再确认。
+        模型把"做个空"理解反、或者数量算错，直接下单就是真金白银的损失。
+
+        返回 ready=false 时带 reason，Agent 应原样转述给用户，不要自己编。
+        """
+        sym = str(symbol or "").strip().lower()
+        if not sym:
+            return {"ready": False, "reason": "缺少币种"}
+        direction = str(side or "").strip().lower()
+        if direction in ("long", "buy", "做多", "多"):
+            order_side, close_side, label = "BUY", "SELL", "做多"
+        elif direction in ("short", "sell", "做空", "空"):
+            order_side, close_side, label = "SELL", "BUY", "做空"
+        else:
+            return {"ready": False, "reason": "方向只能是做多或做空"}
+
+        accounts = self._tradable_accounts()
+        if not accounts:
+            return {"ready": False, "reason": "没有可交易的账户（未配置 API Key）"}
+        acct = accounts[0]
+        key, secret = acct.get("api_key", ""), acct.get("api_secret", "")
+
+        price = (self.price_fn or (lambda s: None))(sym)
+        if not price or price <= 0:
+            try:
+                price = self._mark_price(acct, sym)
+            except Exception:
+                price = None
+        if not price or price <= 0:
+            return {"ready": False, "reason": f"取不到 {sym.upper()} 的最新价，无法下单"}
+
+        # 杠杆：不超过交易所对该合约的上限，也不超过 20x（与模拟仓同一口径）
+        try:
+            max_lev = int(self.max_leverage_fn(sym) or 0) if self.max_leverage_fn else 0
+        except Exception:
+            max_lev = 0
+        want_lev = int(leverage or max_lev or 20)
+        lev = max(1, min(want_lev, max_lev or want_lev, 20))
+        note = ""
+        if max_lev and want_lev > max_lev:
+            note = f"交易所上限 {max_lev}x，已按上限开"
+
+        # 风控：可用保证金 → 名义价值上限
+        try:
+            available = float(self._available(acct) or 0)
+        except Exception:
+            available = 0.0
+        if available <= 0:
+            return {"ready": False, "reason": "账户可用保证金为 0，无法下单"}
+        margin_cap = available * self.MANUAL_MAX_MARGIN_PCT
+        cap = min(self.MANUAL_MAX_NOTIONAL, margin_cap * lev)
+        want = float(notional or 0)
+        if want <= 0:
+            # 没指定金额：按上限的一半给一个稳健默认，别一开口就是满仓
+            want = round(min(self.MANUAL_MAX_NOTIONAL, cap) * 0.5, 2)
+        if want > cap:
+            return {"ready": False,
+                    "reason": f"金额 {want:.0f} 超过上限 {cap:.0f} USDT"
+                              f"（可用保证金 {available:.2f}，单笔最多用其 "
+                              f"{int(self.MANUAL_MAX_MARGIN_PCT * 100)}%，且名义不超过 "
+                              f"{self.MANUAL_MAX_NOTIONAL:.0f}）"}
+        if want < 5:
+            return {"ready": False, "reason": "金额太小，交易所最小名义价值约 5 USDT"}
+
+        try:
+            step = self._step_size(key, secret, sym)
+        except Exception:
+            step = 0.001
+        qty = self._quantize(want / price, step)
+        if qty <= 0:
+            return {"ready": False, "reason": "按当前价格和最小步长算出的数量为 0"}
+
+        # 止损止盈：沿用 K 线胶囊那套 ATR 参数，保证和页面建议一致
+        state = self.indicators.get(sym) or {}
+        from decision.advice import _stop_plan
+        plan = _stop_plan(float(price), state.get("atr"), direction == "long")
+        if not plan:
+            return {"ready": False, "reason": "算不出止损止盈"}
+
+        return {
+            "ready": True,
+            "account": acct.get("name", ""),
+            "symbol": sym,
+            "orderSide": order_side,
+            "closeSide": close_side,
+            "direction": "long" if order_side == "BUY" else "short",
+            "label": label,
+            "price": round(float(price), 6),
+            "qty": qty,
+            "notional": round(qty * float(price), 2),
+            "leverage": lev,
+            "margin": round(qty * float(price) / lev, 2),
+            "available": round(available, 2),
+            "sl": plan["sl"], "tp": plan["tp"],
+            "slPct": plan["slPct"], "tpPct": plan["tpPct"],
+            "rr": plan["rr"],
+            "note": note,
+        }
+
+    def manual_order_execute(self, plan: dict) -> dict:
+        """按 manual_order_plan 的结果真正下单，并挂上交易所侧止损止盈。
+
+        **只接受 plan 对象**，不接受"币种+方向"重新算一遍：
+        用户确认的是那张具体的单（数量/杠杆/止损价），执行时必须一模一样，
+        重新计算可能因为价格变了导致下出来的和看到的不一样。
+        """
+        if not isinstance(plan, dict) or not plan.get("ready"):
+            return {"ok": False, "error": "下单计划无效"}
+        accounts = self._tradable_accounts()
+        if not accounts:
+            return {"ok": False, "error": "没有可交易的账户"}
+        acct = accounts[0]
+        key, secret = acct.get("api_key", ""), acct.get("api_secret", "")
+        sym = str(plan.get("symbol") or "")
+        side = str(plan.get("orderSide") or "")
+        qty = float(plan.get("qty") or 0)
+        lev = int(plan.get("leverage") or 1)
+        if not sym or side not in ("BUY", "SELL") or qty <= 0:
+            return {"ok": False, "error": "下单参数不完整"}
+
+        # 杠杆先设好，否则实际名义价值和计划不一致
+        try:
+            signed_request(key, secret, "/fapi/v1/leverage",
+                           {"symbol": sym.upper(), "leverage": lev}, method="POST")
+        except Exception as e:
+            return {"ok": False, "error": f"设置杠杆失败: {e}"}
+
+        try:
+            order = self._place_order(key, secret, sym, side, qty, order_type="MARKET")
+        except Exception as e:
+            self._event("error", f"手动下单失败({sym}): {e}", symbol=sym)
+            return {"ok": False, "error": f"交易所拒绝: {e}"}
+
+        fill = self._num(order.get("avgPrice")) or float(plan.get("price") or 0)
+        sl_order_id = tp_order_id = None
+        protect_error = ""
+        # 强制带止损：下完立刻挂交易所侧条件单，进程挂了也有效
+        try:
+            sl_order = place_protective_order(
+                key, secret, sym, plan["closeSide"], "STOP_MARKET", qty,
+                float(plan["sl"]))
+            sl_order_id = sl_order.get("orderId")
+            tp_order = place_protective_order(
+                key, secret, sym, plan["closeSide"], "TAKE_PROFIT_MARKET", qty,
+                float(plan["tp"]))
+            tp_order_id = tp_order.get("orderId")
+        except Exception as e:
+            protect_error = str(e)
+
+        self.stats["orders"] += 1
+        self._event(
+            "open",
+            f"手动{plan['label']} {sym.upper()} 数量 {qty} @ {fill}"
+            + (f"（止损单挂失败: {protect_error[:60]}）" if protect_error else ""),
+            account=acct.get("name", ""), symbol=sym, side=side, qty=qty,
+            entry=fill, orderId=order.get("orderId"), margin=plan.get("margin"),
+            direction=plan.get("direction"), slPct=plan.get("slPct"),
+            tpPct=plan.get("tpPct"), manual=True)
+        self._broadcast_positions()
+        return {
+            "ok": True, "symbol": sym, "side": side, "qty": qty, "fill": fill,
+            "orderId": order.get("orderId"),
+            "slOrderId": sl_order_id, "tpOrderId": tp_order_id,
+            "protectError": protect_error,
+        }
+
+    @staticmethod
+    def _num(v):
+        try:
+            f = float(v)
+            return f if math.isfinite(f) else None
+        except (TypeError, ValueError):
+            return None
+
     def _advice_map(self) -> dict:
         """把评估结果 + 真实杠杆上限压成前端可直接展示的一句话建议。
-
         永远给「现在该做多还是做空」的分析结论；有没有持仓不影响，
         持仓状态由账户卡和仓位历史展示，不在这里重复。
         """
