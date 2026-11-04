@@ -52,17 +52,33 @@ def test_two_badges_estimated_and_total():
     assert "display: flex" in block.group(1)
 
 
-def test_winrate_colours_match_pattern_badge():
-    """三档配色要和 styles.css 里的 .win-badge 用同一套 color-mix 规则。"""
+def test_estimated_badge_matches_pattern_badge():
+    """「估」徽标三档要和形态卡片 .win-badge 用同一套 --accent 规则。"""
     for tier in ("low", "mid", "hi"):
         pat = re.search(rf"\.win-badge\.{tier} \{{([^}}]*)\}}", STYLES)
-        pap = re.search(rf"\.winrate\.{tier} \{{([^}}]*)\}}", CSS)
+        pap = re.search(rf"\.winrate(?:\.actual)?\.{tier}\s*\{{([^}}]*)\}}", CSS)
         assert pat and pap, f"{tier} 档缺失"
-        # 两边的 background 必须都是同一种 percent 的 --accent 派生
         p = re.search(r"var\(--accent\)\s*(\d+)%", pat.group(1))
         q = re.search(r"var\(--accent\)\s*(\d+)%", pap.group(1))
         assert p and q and p.group(1) == q.group(1), \
             f"{tier} 档色值不一致: 形态={p and p.group(1)} 模拟仓={q and q.group(1)}"
+
+
+def test_actual_winrate_badge_uses_green_family():
+    """「胜」徽标必须用绿色系，不能和「估」同色。
+
+    两枚并排放在右上角，同色系会分不清哪个是哪个：
+      估 = 主题色（--accent，金）
+      胜 = 绿色系（--up 派生），深浅表示胜率高低
+    """
+    for tier in ("low", "mid", "hi"):
+        block = re.search(rf"\.winrate\.actual\.{tier} \{{([^}}]*)\}}", CSS)
+        assert block, f"缺少 .winrate.actual.{tier} 的绿色样式"
+        body = block.group(1)
+        assert "var(--up)" in body, f"{tier} 档没有用 --up 绿系"
+        assert "var(--accent)" not in body, f"{tier} 档不该再用主题色"
+    # JSX 里第二枚要带 actual 修饰类
+    assert "styles.actual" in JSX
 
 
 def test_winrate_tier_thresholds_match_pattern_cards():

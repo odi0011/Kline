@@ -169,7 +169,7 @@ const PaperCard = memo(function PaperCard({ pos, onRefresh, busy, price, total }
             title={`这一仓的估算胜率 ${pos.winrate ?? "--"}%（按 SL/TP 距离、信号分、形态历史推算，是前瞻概率）`}>
             估{winPct == null ? "--" : winPct}%
           </span>
-          <span className={`${styles.winrate} ${styles[totalTier] || ""}`}
+          <span className={`${styles.winrate} ${styles.actual} ${styles[totalTier] || ""}`}
             data-muted={totalPct == null || undefined}
             title={totalPct == null
               ? "这个币还没有平过仓，暂时没有实际胜率"

@@ -159,6 +159,12 @@ export default function App() {
     document.documentElement.style.setProperty('--accent', ui.themeColor)
     document.documentElement.style.setProperty('--accent-hue', String(hexHue(ui.themeColor).toFixed(1)))
   }, [ui.themeColor])
+  // 涨跌色同步成 CSS 变量：徽标/文字要用 var(--up)/var(--down) 着色，
+  // 用户切了"红涨绿跌"或自定义颜色时这里不写的话，CSS 里还是默认的绿涨。
+  useEffect(() => {
+    document.documentElement.style.setProperty('--up', chartColors.up)
+    document.documentElement.style.setProperty('--down', chartColors.down)
+  }, [chartColors])
   useEffect(() => {
     const fonts = {
       douyin: '"Douyin Sans", "Microsoft YaHei", system-ui, sans-serif',

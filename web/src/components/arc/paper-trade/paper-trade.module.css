@@ -52,9 +52,11 @@
 .chart { display: block; width: 100%; height: 100%; }
 .chartEmpty { height: 100%; background: rgba(28, 35, 51, 0.03); border-radius: 6px; }
 
-/* 胜率徽标：右上角两枚并排，版式对齐 K 线形态卡片（.badges / .win-badge）：
-   「估XX%」= 这一仓的估算胜率（前瞻），「胜XX%」= 这个币累计实际胜率（后验）。
-   配色复用形态卡片那套 --accent 三档，不自己做玻璃底。 */
+/* 胜率徽标：右上角两枚并排，版式对齐 K 线形态卡片（.badges / .win-badge）。
+   两枚刻意用**不同色系**，否则并排放在一起分不清哪个是哪个：
+     「估XX%」= 这一仓的估算胜率（前瞻）→ 主题色 --accent（金）
+     「胜XX%」= 这个币累计实际胜率（后验）→ 绿色系，按胜率深浅递进
+   绿色用 --up（涨色）衍生，和 K 线的"涨"是同一套语义。 */
 .badges {
   position: absolute;
   top: 3px;
@@ -75,9 +77,28 @@
   background: rgba(28, 35, 51, 0.08);
   color: rgba(28, 35, 51, 0.55);
 }
-.winrate.low { background: color-mix(in srgb, var(--accent) 25%, transparent); color: #6a4a00; }
-.winrate.mid { background: color-mix(in srgb, var(--accent) 65%, transparent); color: #332600; }
-.winrate.hi { background: color-mix(in srgb, var(--accent) 55%, #201200); color: #ffedb0; }
+
+/* 估算胜率（前瞻）：主题色。和形态卡片完全一致 */
+.winrate.low  { background: color-mix(in srgb, var(--accent) 25%, transparent); color: #6a4a00; }
+.winrate.mid  { background: color-mix(in srgb, var(--accent) 65%, transparent); color: #332600; }
+.winrate.hi   { background: color-mix(in srgb, var(--accent) 55%, #201200); color: #ffedb0; }
+
+/* 累计实际胜率（后验）：绿色系，深浅表示胜率高低。
+   用 .actual 这个修饰类覆盖上面三档，避免和"估"同色。 */
+.winrate.actual.low {
+  background: color-mix(in srgb, var(--up) 20%, transparent);
+  color: #15803d;
+}
+.winrate.actual.mid {
+  background: color-mix(in srgb, var(--up) 62%, transparent);
+  color: #f0fdf4;
+}
+.winrate.actual.hi {
+  background: var(--up);
+  color: #fff;
+}
+/* 没有历史数据的那枚压暗，避免和真实 0% 混淆 */
+.winrate[data-muted] { background: rgba(28, 35, 51, 0.05); color: rgba(28, 35, 51, 0.32); }
 /* 没有历史数据的那枚压暗，避免和真实 0% 混淆 */
 .winrate[data-muted] { background: rgba(28, 35, 51, 0.05); color: rgba(28, 35, 51, 0.32); }
 
