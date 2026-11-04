@@ -1204,6 +1204,9 @@ class QuantEngine:
             "trades": len(rows),
             "wins": wins,
             "losses": losses,
+            # 平局笔数：有成交但没分出输赢。前端要能区分"没交易"和
+            # "交易了但都是平局"——后者显示"无交易"是错的。
+            "draws": len(rows) - decided,
             "winrate": round(wins / decided * 100, 1) if decided else None,
             "pnl": round(sum(pnls), 2),
             "maxDrawdown": round(max_dd, 2),

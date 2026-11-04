@@ -43,22 +43,29 @@ function Stat({ label, value, hint, tone, title }) {
 function WindowBlock({ title, stats }) {
   const s = stats || {}
   const trades = num(s.trades) ?? 0
+  const wins = num(s.wins) ?? 0
+  const losses = num(s.losses) ?? 0
+  const draws = num(s.draws) ?? 0
   const empty = trades === 0
   const winrate = num(s.winrate)
   const pnl = num(s.pnl)
   const dd = num(s.maxDrawdown)
   const sharpe = num(s.sharpe)
+  // 有成交但全平局：胜率算不出来（分母是 0），但说"无交易"是错的
+  const onlyDraws = !empty && wins + losses === 0
   return (
     <div className={styles.block}>
       <span className={styles.blockTitle}>{title}</span>
       {empty ? (
         <span className={styles.blockEmpty}>无交易</span>
+      ) : onlyDraws ? (
+        <span className={styles.blockEmpty}>{draws} 笔平局</span>
       ) : (
         <div className={styles.blockStats}>
           <Stat label="胜率" value={winrate == null ? "--" : `${winrate}%`}
-            hint={`${trades} 笔`}
+            hint={draws > 0 ? `${wins}胜${losses}负${draws}平` : `${trades} 笔`}
             tone={winrate == null ? "flat" : winrate >= 50 ? "up" : "down"}
-            title={`${s.wins || 0} 胜 / ${s.losses || 0} 负；平局不计入胜率分母`} />
+            title={`${wins} 胜 / ${losses} 负；平局不计入胜率分母`} />
           <Stat label="盈亏" value={fmtPnl(pnl)}
             tone={pnl == null ? "flat" : pnl > 0 ? "up" : pnl < 0 ? "down" : "flat"} />
           <Stat label="回撤" value={dd == null ? "--" : dd.toFixed(2)}

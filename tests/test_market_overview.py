@@ -189,3 +189,27 @@ def test_app_passes_overview_to_account_card():
     from pathlib import Path
     app = (Path(__file__).resolve().parent.parent / "web/src/App.jsx").read_text(encoding="utf-8")
     assert "overview={quantSnap?.analysis?.overview}" in app
+
+
+def test_window_stats_counts_draws(tmp_path):
+    """平局要能被区分出来：有成交但全平局 ≠ 没交易。
+
+    线上实测：今日 2 笔都是 0 盈亏，winrate=None，前端显示"无交易"——
+    其实交易了，只是没分出输赢。
+    """
+    eng = _engine(tmp_path)
+    s = eng._window_stats([{"pnl": 0.0, "movePct": 0.0},
+                           {"pnl": 0.0, "movePct": 0.0}])
+    assert s["trades"] == 2
+    assert s["wins"] == 0 and s["losses"] == 0
+    assert s["draws"] == 2
+    assert s["winrate"] is None
+
+
+def test_window_stats_draws_excluded_from_winrate(tmp_path):
+    eng = _engine(tmp_path)
+    s = eng._window_stats([{"pnl": 2.0, "movePct": 0.2},
+                           {"pnl": -1.0, "movePct": -0.1},
+                           {"pnl": 0.0, "movePct": 0.0}])
+    assert s["draws"] == 1
+    assert s["winrate"] == pytest.approx(50.0), "1/(1+1)，平局不进分母"
