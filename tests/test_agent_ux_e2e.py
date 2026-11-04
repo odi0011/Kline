@@ -841,3 +841,26 @@ def test_storage_ddl_fault_isolation_and_reserved_word_columns(monkeypatch):
     row = store.paper_trades()[0]
     assert row["trailing"] is True
     conn.db.close()
+
+
+def test_position_history_matches_unified_stream_behaviour():
+    """仓位历史要和其它流式板块统一：正序、最新在底部、上滑出「最新」。
+
+    早先是倒序 + 默认停在新上面，和计算流水/决策流水/新闻都不一致，
+    看起来像"记录被删了"，往上翻也找不到「最新」按钮。
+    """
+    jsx = (REPO / "web/src/components/arc/position-history/position-history.jsx").read_text(
+        encoding="utf-8")
+    # 统一用 ScrollArea + JumpLatest
+    assert "ScrollArea" in jsx and "JumpLatest" in jsx
+    # 正序：追加到末尾，而不是 unshift 到最前
+    assert "list.push(t)" in jsx
+    assert ".unshift(" not in jsx
+    assert "slice(-500)" in jsx
+    # 贴底跟随 + 用户上翻不拽回 + 「最新」按钮
+    assert "followRef" in jsx and "atLatest" in jsx
+    assert "!atLatest" in jsx
+    assert "el.scrollTop = el.scrollHeight" in jsx
+    assert "userScrollAt" in jsx
+    # 程序滚动回响要忽略，否则跟随会被自己关掉
+    assert "autoScrollAt" in jsx

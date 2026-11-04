@@ -81,9 +81,15 @@ export default function PositionHistory({ trades: pushed, chartColors, streamRef
   const [trades, setTrades] = useState(() => pushed || [])
   const [scrollTop, setScrollTop] = useState(0)
   const [viewH, setViewH] = useState(0)
-  const [follow, setFollow] = useState(false)   // 历史默认停在新（最新在上）
+  // 和其它流式板块（计算流水、决策流水、新闻）统一：正序、最新在底部，
+  // 默认贴底跟随；用户往上翻就不再拽他，并露出「最新」按钮。
+  // 早先是倒序 + 默认停在新上面，和别处不一致。
+  const [atLatest, setAtLatest] = useState(true)
   const viewportRef = useRef(null)
   const seenRef = useRef(new Set())
+  const followRef = useRef(true)
+  const autoScrollAt = useRef(0)
+  const userScrollAt = useRef(0)
 
   useLayoutEffect(() => {
     const el = viewportRef.current
@@ -96,14 +102,17 @@ export default function PositionHistory({ trades: pushed, chartColors, streamRef
     return () => ro.disconnect()
   }, [])
 
-  // 服务端下发的历史（时间倒序，最新在上）
+  // 服务端下发的历史：统一成正序（最早 → 最新），最新在底部。
+  // 后端按 closed_ts DESC 返回，这里反转一次；排序按 ts 兜底，
+  // 保证实时插入的记录不会因为时间戳抖动而错位。
   useEffect(() => {
     if (!pushed) return
-    setTrades(pushed)
-    seenRef.current = new Set(pushed.map((t) => t.id ?? `${t.ts}-${t.symbol}`))
+    const sorted = pushed.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0))
+    setTrades(sorted)
+    seenRef.current = new Set(sorted.map((t) => t.id ?? `${t.ts}-${t.symbol}`))
   }, [pushed])
 
-  // 实时新增：插到最前面（列表是倒序）
+  // 实时新增：追加到末尾（列表是正序）
   useEffect(() => {
     if (!pushed) return
     setTrades((cur) => {
@@ -113,10 +122,11 @@ export default function PositionHistory({ trades: pushed, chartColors, streamRef
         const key = t.id ?? `${t.ts}-${t.symbol}`
         if (seenRef.current.has(key)) continue
         seenRef.current.add(key)
-        list.unshift(t)
+        list.push(t)
         added = true
       }
-      return added ? list.slice(0, 500) : cur
+      // 只留最近 500 条（内存保护；服务端保留 365 天，翻历史靠查询）
+      return added ? list.slice(-500) : cur
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pushed])
@@ -128,15 +138,49 @@ export default function PositionHistory({ trades: pushed, chartColors, streamRef
       const key = t.id ?? `${t.ts}-${t.symbol}`
       if (seenRef.current.has(key)) return
       seenRef.current.add(key)
-      setTrades((cur) => [t, ...cur].slice(0, 500))
+      // 正序列表：新记录追加到末尾
+      setTrades((cur) => [...cur, t].slice(-500))
     } }
   }, [streamRef])
+
+  /** 贴底跟随：新增记录或首次渲染时，只有在"本来就在底部"才跟。
+      写 scrollTop 用 rAF 合并，避免连续插入时一格一格地抖。 */
+  useLayoutEffect(() => {
+    const el = viewportRef.current
+    if (!el || !followRef.current) return
+    // 用户刚动过（1 秒内）：这一轮不贴底，尊重他的位置
+    if (Date.now() - userScrollAt.current < 1000) return
+    const target = el.scrollHeight - el.clientHeight
+    if (Math.abs(el.scrollTop - target) < 2) return
+    autoScrollAt.current = Date.now()
+    el.scrollTop = target
+    setScrollTop(target)
+  }, [trades])
+
+  const markUserScroll = () => { userScrollAt.current = Date.now() }
 
   const onScroll = () => {
     const el = viewportRef.current
     if (!el) return
     setScrollTop(el.scrollTop)
-    setFollow(el.scrollTop > 24)
+    // 程序滚动的回响：忽略，但**不改 followRef**
+    if (Date.now() - autoScrollAt.current < 80) return
+    // 容差 40px：行高 22px，两行以内都算"还在底部"，
+    // 轻微滚轮抖动不该把跟随关掉（与计算流水一致）
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+    followRef.current = near
+    setAtLatest(near)
+  }
+
+  const jump = () => {
+    const el = viewportRef.current
+    if (!el) return
+    followRef.current = true
+    setAtLatest(true)
+    userScrollAt.current = 0
+    autoScrollAt.current = Date.now()
+    el.scrollTop = el.scrollHeight
+    setScrollTop(el.scrollTop)
   }
 
   const total = trades.length
@@ -152,7 +196,8 @@ export default function PositionHistory({ trades: pushed, chartColors, streamRef
     <section className={styles.wrap} aria-label="仓位历史">
       <ScrollArea viewportRef={viewportRef} orientation="vertical" fade={18} scrollbars="auto"
         className={styles.stream} viewportClassName={styles.streamViewport}
-        label="仓位历史" onScroll={onScroll}>
+        label="仓位历史" onScroll={onScroll}
+        onWheel={markUserScroll} onTouchMove={markUserScroll}>
         {total === 0 ? (
           <div className={styles.empty}>暂无平仓记录</div>
         ) : (
@@ -170,12 +215,7 @@ export default function PositionHistory({ trades: pushed, chartColors, streamRef
           </div>
         )}
       </ScrollArea>
-      {follow && (
-        <JumpLatest onClick={() => {
-          const el = viewportRef.current
-          if (el) { el.scrollTo({ top: 0, behavior: "smooth" }); setFollow(false) }
-        }} />
-      )}
+      {!atLatest && <JumpLatest onClick={jump} />}
     </section>
   )
 }
