@@ -20,6 +20,7 @@ from ai import pricing, sandbox
 from ai.agent_tools import (TOOLS, TOOL_NAMES, PREFERENCE_KEYS, STICKER_NAMES,
                             bounded, clean, preference_update, read_snapshot,
                             validate_preference)
+from ai.proactive import ProactiveEvent, ProactiveGate
 from ai.provider import chat_completion
 
 # 回复长度硬限制：默认一句话说完，只有用户明确要求分析才允许多句。
@@ -593,26 +594,40 @@ liquidation / sentiment / oi / funding。
    例：用户「BTC 能做吗」→「能，空。」|||「79500 止损，20 倍。」
    例：用户「又亏了草」→「这波确实难受。」|||「不过仓位不大，扛得住。」
 
-【后台任务：没什么可说的时候就别说】
-后台监控每轮跑完都会把结论送进聊天。**判断"这轮值不值得开口"是你的责任**，
-不是把所有检查结果都念一遍。
- · **什么都没发生 → 只回 `{{SILENT}}` 这一个标记，不要别的字。**
-   系统看到它就不往聊天里发任何东西，用户什么都看不到。
- · 什么时候该静默：条件没触发、距离还很远、和上一轮结论一样、只是例行确认。
- · 什么时候该开口：条件真的触发了；出现了新的、用户需要立刻知道的事；
-   数值发生了用户会关心的实质变化。
- · 一句话说完，别写成报告。不要加【】标题、不要复述任务名字、
-   不要写"不打扰""继续保持关注""已为你监控"这类客服话。
- · 不要为了显得有用而汇报。**没消息就是最好的消息。**
+【主动说话：说什么、怎么说，全由你定】
+有两种情况你会主动开口：定时任务跑完一轮，或者系统推给你一条实时事件
+（形态命中 / 开仓平仓 / 数据异常 / 风控触发）。这两种都遵循同一条原则：
 
-  反例（真人不会这么说话）：
+**系统只告诉你"发生了什么事"，开口说什么、说不说、说几句、什么语气，都是你的判断。**
+
+ · 没什么值得说 → 只回 `{{SILENT}}`，系统不会往聊天里发任何东西。
+ · 值得说 → 按你自己的性子说。不用固定版式，不要【】开头，
+   不要复述任务名，不要"不打扰/已为你监控/继续保持关注"这种客服话。
+
+**语气标准：像一个盯盘的朋友在微信上跟你说话。**
+他是一个真的在交易、会兴奋也会骂人的人，不是客服机器人。
+
+ · 开了一笔大单，他会炫耀、会放狠话、会连发几条：
+     「老子又开一笔雷霆大单」|||「78.3k 空进去的，止损就在上面」
+     |||「这波不赚我吃屎」|||（配个表情包）
+ · 形态命中，他会指给你看：「BTC 3 分钟收了个吞没」|||「看这根，实体把前面全吃了」
+ · 止损被打，他会认，但不会写报告：「被扫了。0.4% 都没扛住。」
+ · 数据出问题，他会直接骂：「交易所接口又抽了，止损没挂上，我盯着。」
+ · 闲的时候他会自己找话：翻新闻、说币圈八卦、聊刚才那笔为什么走得漂亮。
+   想聊就聊，不用等用户开口。
+
+ · **不要每次都说话。** 大部分事件都不值得打断用户——形态天天有、
+   报价每秒都在变。真正的判断力体现在"知道什么时候闭嘴"。
+ · 一次最多 3 条气泡。可以是"结论 + 补一句 + 表情包"这种自然组合。
+ · 不需要每句都带数字。人说话不会每句都报一遍价格。
+
+  反例（客服腔，真人绝不这么说话）：
     「【BTC 盯 76000】没跌破，78552，离 76000 还有 3.2%，不打扰。」
-  正例（条件没满足时根本不该发）：
-    `{{SILENT}}`
-  正例（真跌破了）：
-    「破 76000 了，现在 75980。」
-  正例（接近但没破）：
-    「BTC 差 0.4% 到 76000 了，75970。」
+    「【持仓提醒】已开仓 BTCUSDT，方向做多，杠杆 20 倍，请注意风险。」
+  正例（同样的事实，人话）：
+    「BTC 还没破 76000，差 3 个点」|||「不急」
+    「开了，BTC 多，20 倍」|||「刚那根吞没挺漂亮」
+    「破 76000 了，75980」
 """
 
 
@@ -1065,6 +1080,13 @@ class AgentManager:
         self._chat_slots = asyncio.Semaphore(MAX_CHAT_CONCURRENT)
         self._action_lock = asyncio.Lock()
         self._chat_id = None
+        # 主动说话的闸门：决定"这条事件值不值得打断用户"。
+        # 与定时任务不同——这里由**系统事件**驱动（形态命中/开平仓/数据异常），
+        # 所以需要冷却、去重、每小时预算和概率，否则行情一剧烈就刷屏。
+        self.proactive_gate = ProactiveGate()
+        # 正在处理的主动事件（防重入：同一时刻只跑一轮主动发言）
+        self._proactive_busy = False
+        self._proactive_last_ts = 0
         # 最近几次"真的贴了表情"的时刻（毫秒）。冷却不能看 self.chat：
         # 并发 2 轮时，前一条回复还在 running、content 还是空字符串，
         # 下一条就已经进入组装阶段了，检查 chat 永远看不到上一张图。
@@ -3249,6 +3271,137 @@ class AgentManager:
                                             "usage": task.get("usage", {}), "ms": task["ms"]})
         task["runs"] = task["runs"][-10:]
         task.setdefault("progress", {})["phase"] = status
+
+    async def proactive(self, event: ProactiveEvent) -> bool:
+        """系统事件触发的主动发言：值不值得说由闸门判，说什么由模型定。
+
+        与定时任务的区别：
+          · 定时任务按固定 prompt 汇报 → 版式固定、只有时间触发
+          · 这里是**事件**驱动（形态命中/开平仓/数据异常），且不预设文案，
+            模型自己决定说什么、说几句、要不要配表情
+
+        返回 True 表示真的发出了一条消息。
+        """
+        if self._closing or self.persistence_error or not self._writable_ok():
+            return False
+        gate = self.proactive_gate
+        if not gate.should_speak(event):
+            return False
+        if self._proactive_busy:
+            # 上一轮还在跑：这条事件放弃（闸门已经记了"说过"，
+            # 避免堆积后一次性补发一串过时消息）
+            return False
+        self._proactive_busy = True
+        try:
+            return await self._speak(event)
+        except Exception:
+            _LOG.exception("proactive speak failed")
+            return False
+        finally:
+            self._proactive_busy = False
+            self._proactive_last_ts = now_ms()
+
+    def _writable_ok(self) -> bool:
+        try:
+            self._writable()
+            return True
+        except Exception:
+            return False
+
+    async def _speak(self, event: ProactiveEvent) -> bool:
+        """让模型基于这条事件自己组织一条消息。"""
+        detail = ""
+        if event.detail:
+            try:
+                detail = json.dumps(clean(event.detail), ensure_ascii=False)[:1200]
+            except (TypeError, ValueError):
+                detail = ""
+        prompt = (
+            "【系统事件，不是用户提问】\n"
+            f"类型：{event.kind}\n"
+            f"发生了什么：{event.summary}\n"
+            + (f"币种：{event.symbol}\n" if event.symbol else "")
+            + (f"细节：{detail}\n" if detail else "")
+            + "\n现在决定要不要说话、说什么。"
+              "不想说就只回" + SILENT_TOKEN + "；"
+              "想说就按你自己的语气说，别写成通知/报告，不要【】开头。"
+              "需要更多上下文就自己调工具查（行情、持仓、新闻都行）。"
+        )
+        # 走和普通对话一样的链路：这样它能用工具、能发多条气泡、能贴表情。
+        # 区别只是这次没有 user 消息——事件本身就是上下文。
+        message_id = await self._spawn_event_chat(prompt)
+        if not message_id:
+            return False
+        return True
+
+    async def _spawn_event_chat(self, prompt: str) -> str | None:
+        """起一轮对话式回复（不显示 user 气泡），返回消息 id 或 None。"""
+        _, selected = self._model("")
+        message_id = uuid.uuid4().hex[:12]
+        self._reserve(message_id)
+        message = {"id": message_id, "role": "assistant", "content": None,
+                   "status": "queued", "ts": now_ms(), "model": selected["id"],
+                   "kind": "proactive", "steps": [],
+                   "progress": {"phase": "queued", "round": 0, "maxRounds": MAX_ROUNDS}}
+        self.chat = (self.chat + [message])[-40:]
+        await self._emit()
+        runner = asyncio.create_task(
+            self._run_event_chat(message_id, prompt, selected["id"]))
+        self.chat_runners.add(runner)
+        runner.add_done_callback(self.chat_runners.discard)
+        return message_id
+
+    async def _run_event_chat(self, message_id: str, prompt: str, model: str) -> None:
+        """主动发言的一轮：跑完发现是静默标记/空内容就把这条消息删掉。"""
+        message = next((m for m in self.chat if m["id"] == message_id), None)
+        if message is None:
+            return
+        try:
+            await self._chat_slots.acquire()
+            try:
+                message.update(status="running", startedAt=now_ms())
+                await self._emit()
+                result = await asyncio.wait_for(
+                    self._agent_loop(message, prompt, model, None, None), TASK_TIMEOUT)
+            finally:
+                self._chat_slots.release()
+            reply = str(result.get("reply") or "")
+            # 模型判断"没什么可说" → 把这条占位消息整条删掉，用户什么都看不到
+            if _is_silent(reply) or (not reply.strip() and not message.get("pendingSticker")):
+                self.chat = [m for m in self.chat if m["id"] != message_id]
+                await self._emit()
+                return
+            pieces = split_reply(reply, detailed=True, identity=False)
+            sticker = message.get("pendingSticker")
+            if sticker:
+                pieces = _attach_sticker(pieces, sticker, reply)
+            message.pop("pendingSticker", None)
+            if not pieces:
+                self.chat = [m for m in self.chat if m["id"] != message_id]
+                await self._emit()
+                return
+            message.update(status="succeeded", content=pieces[0],
+                           usage=result.get("usage") or {},
+                           perf=result.get("perf") or {}, model=result.get("model"))
+            for idx, piece in enumerate(pieces[1:], start=2):
+                self.chat.append({
+                    "id": f"{message_id}-{idx}", "role": "assistant",
+                    "content": piece, "status": "succeeded", "ts": now_ms(),
+                    "kind": "proactive", "steps": [],
+                    "progress": {"phase": "succeeded", "round": 0,
+                                 "maxRounds": MAX_ROUNDS}})
+            self.chat = self.chat[-40:]
+            try:
+                self._save()
+            except PersistenceError:
+                pass
+            await self._emit()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _LOG.warning("event chat failed: %s", str(exc)[:200])
+            self.chat = [m for m in self.chat if m["id"] != message_id]
+            await self._emit()
 
     def _push_watch_notification(self, task, status="succeeded") -> bool:
         """后台任务跑完后把结果主动送进聊天（像工作机器人一样汇报）。

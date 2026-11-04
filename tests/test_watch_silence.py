@@ -33,17 +33,31 @@ def test_silent_does_not_swallow_real_content():
 
 
 def test_prompt_teaches_silence():
-    """提示词必须明确教：没什么可说就只回标记。
+    """提示词必须明确教：没什么可说就只回标记，且不要客服腔。
 
     SYSTEM_PROMPT 里是 {{SILENT}} 占位符，渲染后才变成真实标记——
     所以这里检查占位符，渲染结果由下一个测试单独验证。
     """
-    for phrase in ("{{SILENT}}", "没什么可说的时候就别说",
-                   "不要为了显得有用而汇报", "没消息就是最好的消息"):
+    for phrase in ("{{SILENT}}", "值得说", "不要每次都说话",
+                   "真正的判断力体现在", "客服"):
         assert phrase in SYSTEM_PROMPT, f"缺少: {phrase}"
     # 必须把"不打扰"这类客服话作为反例写出来
     assert "不打扰" in SYSTEM_PROMPT
     assert "反例" in SYSTEM_PROMPT
+
+
+def test_prompt_teaches_human_voice():
+    """要的是人情味：炫耀、骂人、闲聊、表情包，而不是固定版式。"""
+    for phrase in ("像一个盯盘的朋友在微信上跟你说话",
+                   "会兴奋也会骂人",
+                   "老子又开一笔雷霆大单",
+                   "炫耀",
+                   "币圈八卦",
+                   "由你定"):
+        assert phrase in SYSTEM_PROMPT, f"缺少: {phrase}"
+    # 明确禁止固定版式
+    assert "不要固定版式" in SYSTEM_PROMPT or "不用固定版式" in SYSTEM_PROMPT
+    assert "【】" in SYSTEM_PROMPT
 
 
 def test_prompt_renders_silent_token():

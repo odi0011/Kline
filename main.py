@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import random
 import re
 import sys
 import threading
@@ -185,6 +186,38 @@ def start_static(dist_dir: str, port: int) -> None:
 async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     notifier = Notifier(cfg.get("notify", {}), cfg.get("csv_log"))
 
+    # ---- 主动发言：把系统事件推给 Agent，由它决定说不说 ----
+    # agent 在下面才创建（它依赖 storage/quant）。这里放一个延迟绑定的
+    # 分发器：定义早、调用晚，中间用 `_proactive_box` 传引用。
+    _proactive_box: dict = {"agent": None, "loop": None}
+
+    def _proactive_dispatch(kind: str, summary: str, symbol: str = "",
+                            detail: dict | None = None, dedupe: str = "") -> None:
+        """把一条系统事件投给 Agent。没有 agent / 没在跑就静默丢弃。
+
+        必须用 call_soon_threadsafe：调用方可能在量化线程池里，
+        直接 await 会跨线程操作事件循环。
+        """
+        agent_obj = _proactive_box.get("agent")
+        loop = _proactive_box.get("loop")
+        if agent_obj is None or loop is None or loop.is_closed():
+            return
+        try:
+            from ai.proactive import ProactiveEvent
+            event = ProactiveEvent(kind=kind, summary=summary, symbol=symbol,
+                                   detail=detail or {}, dedupe_key=dedupe)
+
+            def _fire():
+                try:
+                    asyncio.create_task(agent_obj.proactive(event))
+                except Exception:
+                    pass
+
+            loop.call_soon_threadsafe(_fire)
+        except Exception:
+            pass
+
+
     pcfg = cfg.get("patterns", {})
     pbase.TREND_BARS = int(pcfg.get("trend_bars", 10))
     pbase.TREND_THRESHOLD = float(pcfg.get("trend_threshold", 0.002))
@@ -264,6 +297,19 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                                  {"symbol": hit.symbol, "direction": hit.direction,
                                   "pattern": hit.pattern, "name_zh": hit.name_zh,
                                   "geometry": hit.geometry})
+            # 形态命中也是"可能值得主动说一句"的事件。
+            # 方向和强度交给 Agent 自己判断要不要开口（闸门会给低概率），
+            # 这里只如实把命中内容推过去。
+            _proactive_dispatch(
+                "pattern",
+                f"{hit.symbol.upper()} {hit.interval} 命中{hit.name_zh or hit.pattern}"
+                f"（{'看涨' if hit.direction == 'bullish' else '看跌' if hit.direction == 'bearish' else '中性'}）"
+                f" @ {hit.price}",
+                symbol=hit.symbol,
+                detail={"pattern": hit.pattern, "nameZh": hit.name_zh,
+                        "direction": hit.direction, "price": hit.price,
+                        "interval": hit.interval},
+                dedupe=f"pattern:{hit.symbol}:{hit.pattern}")
 
     engine = PatternEngine(enabled, notify_with_lag,
                            live_preview=bool(pcfg.get("live_preview", True)))
@@ -986,6 +1032,37 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     agent.data_fns = {"orders": _agent_orders, "equity": _agent_equity,
                       "trades": _agent_trades}
+    # 主动发言的分发器现在有了真实的 agent 与事件循环
+    _proactive_box["agent"] = agent
+    try:
+        _proactive_box["loop"] = asyncio.get_running_loop()
+    except RuntimeError:
+        _proactive_box["loop"] = None
+    # 量化引擎的事件流（开仓/平仓/风控/异常）→ 主动发言候选。
+    # 只挑**值得打扰用户**的那几类：审计/系统心跳之类的杂音不推。
+    _PROACTIVE_KINDS = {"open", "close", "error", "slippage", "protection"}
+    _orig_broadcast = quant.broadcast_fn
+
+    def _broadcast_with_proactive(obj):
+        try:
+            if isinstance(obj, dict) and obj.get("type") == "quant_event":
+                ev = obj.get("event") or {}
+                kind = str(ev.get("kind") or "")
+                if kind in _PROACTIVE_KINDS:
+                    _proactive_dispatch(
+                        "risk" if kind in ("error", "slippage", "protection") else "position",
+                        str(ev.get("reason") or "")[:160],
+                        symbol=str(ev.get("symbol") or ""),
+                        detail={k: ev.get(k) for k in
+                                ("pnl", "side", "qty", "entry", "exit",
+                                 "slippageAtr", "apiCode") if ev.get(k) is not None},
+                        dedupe=f"{kind}:{ev.get('symbol') or ''}:{str(ev.get('reason'))[:40]}")
+        except Exception:
+            pass
+        return _orig_broadcast(obj)
+
+    if _orig_broadcast is not None:
+        quant.broadcast_fn = _broadcast_with_proactive
     hub.agent_state_fn = agent.state
     hub.agent_fn = agent.handle
 
@@ -1544,11 +1621,35 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 print(f"[market] 衍生品快照刷新失败: {e}")
             await asyncio.sleep(60)
 
+    async def chatter_poller():
+        """他自己找话说的节奏：不是固定间隔，而是带抖动的随机浮动。
+
+        用户原话："定时太死板了，要的是随机性"。
+        固定 60 分钟 会让每条消息都在整点附近出现，一眼看出是机器；
+        这里每次醒来后重新抽一个 35~95 分钟的间隔，再叠加概率闸门
+        （chatter 类事件基础概率 0.35），所以真正开口的时刻不可预测。
+
+        要不要说、说什么全交给 Agent：可能去查新闻聊币圈八卦，
+        可能拿今天那笔交易出来炫耀，也可能什么都不说。
+        """
+        await asyncio.sleep(300)          # 启动先别急着说话
+        while True:
+            interval = random.uniform(35 * 60, 95 * 60)
+            await asyncio.sleep(interval)
+            try:
+                _proactive_dispatch(
+                    "chatter",
+                    "你自己想聊点什么（可以查新闻、聊币圈八卦、聊今天的交易），"
+                    "不想说就不说",
+                    dedupe=f"chatter:{int(KlineAggregator.now_ms() // 3600_000)}")
+            except Exception:
+                pass
+
     try:
         await asyncio.gather(supervisor(), sweep(), accounts_poller(),
                              news_poller(), article_prefetcher(), news_ai_poller(),
                              telegram_supervisor(),
-                             backfill_retry(), pool_auditor(),
+                             backfill_retry(), pool_auditor(), chatter_poller(),
                              market_list_poller(), leverage_poller(),
                              derivatives_poller(), market_feature_poller())
     finally:
