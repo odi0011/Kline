@@ -148,6 +148,10 @@ def split_reply(text, detailed: bool = True, identity: bool = False) -> list[str
         # 身份回答保持完整
         return [_trim_bubble(raw)]
     if not detailed:
+        # 拒绝/失败类回答要保留完整理由：这类回复的价值全在"为什么"，
+        # 只留第一句会把原因砍光（线上出现过只剩"但不行。"）。
+        if _MUST_EXPLAIN.search(raw):
+            return _split_by_sentences(raw)
         # 没分段 + 没要求分析：真正的"只留第一句"
         # 注意：不能用 _split_by_sentences 取 [0]——那是"每 3 句一组"，
         # 首组就是 3 句，等于没裁。
@@ -158,6 +162,14 @@ def split_reply(text, detailed: bool = True, identity: bool = False) -> list[str
 
 
 _STICKER_TOKEN = re.compile(r"\[sticker[:：][^\]]*\]")
+
+# 拒绝/失败类回答不能砍：这类回复的价值全在"为什么"，只留第一句
+# 会把理由全丢掉。线上实测：模型写了"5000U×150 倍，名义 75 万，远超单笔上限…"
+# 被截成"但不行。"，用户完全不知道发生了什么。
+_MUST_EXPLAIN = re.compile(
+    r"不行|不能|拒绝|超[过限]|上限|不足|取不到|算不出|无法|失败|不支持|"
+    r"风控|拦截|没权限|不允许|至少要|最多|太少|太大|爆仓|"
+    r"error|failed|cannot|reject", re.I)
 
 
 def _trim_bubble(text: str) -> str:
@@ -314,6 +326,15 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
  · 用户已经明确说过"直接下，不用问"时才可以跳过一次确认
  · 风控闸是硬的：超过单笔上限、可用保证金不足、算不出止损，一律拒绝并如实说明，
    不要把拒绝包装成"已经帮你下了"
+ · **拒绝时必须说清楚三件事**（这比"不行"重要得多）：
+   ① 为什么不行（哪个条件不满足）
+   ② 上限是多少（工具返回的 limits 里有 maxNotional / available / maxLeverage，
+      用真实数字，不许自己猜"最多 10 万 U"这类数）
+   ③ 怎么才能下（suggest 字段给的就是这句话，按它说）
+   例：用户「BTC 开空 150X，5000U」→ 工具返回"名义 75 万超上限 20 万"，
+     你回：「150 倍全仓不行。75 万名义超上限 20 万，而且一次 0.7% 的反向插针
+     就会爆仓。真要开就 125 倍、2000U 以内。」
+   不要把这种回答压成一句话——理由被砍掉等于没回答。
  · 下单成功后要说清楚成交价、数量和挂上的止损止盈；没成交/被交易所拒绝要原样报错
  · 你依然不能执行任意 shell、读任意文件、改风控或系统参数，不得声称做过这些操作。
 

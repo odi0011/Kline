@@ -213,3 +213,26 @@ def test_prompt_teaches_when_to_split():
     from ai.agent import SYSTEM_PROMPT
     assert "分多条气泡" in SYSTEM_PROMPT
     assert "最多 3 个气泡" in SYSTEM_PROMPT
+
+
+def test_refusal_keeps_full_reason():
+    """拒绝/失败类回答不能只留第一句。
+
+    线上实测：用户说"BTC开空150X，5000U"，模型写了完整解释
+    （"名义 75 万，远超单笔上限…"），被短答规则截成"但不行。"，
+    用户完全不知道发生了什么。
+    """
+    reply = ("150 倍全仓不行，一次 0.7% 的反向插针就会直接爆仓。"
+             "75 万名义也超了单笔上限 20 万。真要开就 125 倍、2000U 以内。")
+    out = split_reply(reply, detailed=False)
+    assert len(out) >= 1
+    joined = "".join(out)
+    assert "爆仓" in joined, f"理由被截掉了: {out}"
+    assert "上限" in joined
+    assert "2000U" in joined
+
+
+def test_plain_answer_still_shortened():
+    """普通回答还是短答：这条规则只对拒绝/失败类放宽。"""
+    text = "空。79500 止损，77800 止盈，20 倍。评分 61.5，RSI 偏高。结构还没转。"
+    assert split_reply(text, detailed=False) == ["空。"]
