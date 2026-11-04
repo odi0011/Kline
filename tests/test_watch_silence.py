@@ -146,3 +146,17 @@ def test_silent_does_not_resurrect_old_notification(tmp_path, monkeypatch):
         assert manager._push_watch_notification(task, "succeeded") is False
         await manager.stop()
     asyncio.run(scenario())
+
+
+def test_prompt_forbids_report_style():
+    """主动开口不能写成风控校验报告。
+
+    线上实测（真实开仓事件触发的主动发言）：
+      「78U 的小多单，止损…止盈…都已挂上，不算裸奔。」
+      「不过系统这会儿偏空…你手动做多跟它对着干。」
+      「另外还有四条老的条件单没清，回头记得扫一下。」
+    信息都对，但那是巡检结论，不是朋友在说话。
+    """
+    for phrase in ("别写成校验报告", "不算裸奔", "回头记得",
+                   "校验式措辞清单", "真人不会这么讲话"):
+        assert phrase in SYSTEM_PROMPT, f"缺少: {phrase}"
