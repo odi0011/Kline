@@ -580,6 +580,15 @@ class PaperBook:
         """
         with self._lock:
             rows = [r for r in self.history if isinstance(r, dict)]
+        # 内存只有最近 MAX_HISTORY 条；接了库时用全量，否则统计会在
+        # 重启归零、或只覆盖最近 200 条（线上实测：内存空时 curve 全是 0、
+        # maxDrawdown 也是 0，看着像"从来没亏过"）。
+        if self.store is not None and not self._store_suspended:
+            with self._lock:
+                self._flush_pending()
+            db_rows = self._read("读取模拟仓自检流水", self.store.paper_trades, 2000)
+            if isinstance(db_rows, list) and db_rows:
+                rows = [r for r in db_rows if isinstance(r, dict)]
         wins = losses = flips = holds = 0
         for r in rows:
             verdict = str(r.get("checkVerdict") or "")

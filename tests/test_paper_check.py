@@ -250,3 +250,47 @@ def test_thresholds_are_in_ratio_units():
     assert -0.005 <= CHECK_LOSS_RATIO
     # 0.6% 的上涨必须能触发胜利判定
     assert 0.006 >= CHECK_WIN_RATIO
+
+
+def test_check_stats_reads_db_not_just_memory():
+    """接了库时必须用全量流水算，不能只看内存里的 200 条。
+
+    线上实测：进程刚启动、内存 history 为空，但库里有历史 →
+    curve 全是 0、maxDrawdown 也是 0，看着像"从来没亏过"。
+    """
+    class FakeStore:
+        enabled = True
+
+        def paper_positions(self):
+            return []
+
+        def paper_trades(self, limit=200, symbol=""):
+            return [
+                {"symbol": "btcusdt", "pnl": 5.0, "closedAt": 1, "checkVerdict": "win"},
+                {"symbol": "btcusdt", "pnl": -8.0, "closedAt": 2, "checkVerdict": "loss"},
+            ]
+
+        def save_paper_position(self, pos):
+            pass
+
+        def delete_paper_position(self, symbol):
+            pass
+
+        def save_paper_trade(self, trade):
+            pass
+
+        def paper_trade_stats(self, days=0):
+            return {"count": 2, "wins": 1, "losses": 1, "timeouts": 0, "pnl": -3.0}
+
+        def paper_symbol_stats(self, days=0):
+            return []
+
+    book = PaperBook(store=FakeStore())
+    stats = book.check_stats()
+    assert stats["samples"] == 2, "必须读到库里的流水"
+    assert stats["winChecks"] == 1 and stats["lossChecks"] == 1
+    assert stats["netPnl"] == -3.0
+    # 先赚 5 再亏 8：峰值 5、当前 -3、最大回撤 -8
+    assert stats["peakPnl"] == 5.0
+    assert stats["maxDrawdown"] == -8.0
+    assert stats["curve"] == [5.0, -3.0]
