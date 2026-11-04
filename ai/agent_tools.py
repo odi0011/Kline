@@ -78,13 +78,16 @@ TOOLS = [
           "账户就是系统真正下单的那一个——问'我持仓怎么样''赚了多少'用它。"
           "模拟仓（纸上交易）是另一套数据，用 read_paper，不要把两者混为一谈。"),
     _tool("read_paper", "读取**模拟仓**（15 分钟纸上交易，只记录不下单）："
-          "当前未平仓的模拟仓位、按币种汇总的**已实现**胜率与盈亏、最近平仓记录。"
-          "用户问'模拟仓''纸上交易''哪个模拟仓胜率最高'时必须用它；"
+          "当前未平仓的模拟仓位、按币种汇总的**已实现**胜率与盈亏、最近的平仓明细。"
+          "用户问'模拟仓''纸上交易''哪个模拟仓胜率最高''最近平仓'时必须用它；"
           "不要拿账户名、真实持仓或账户成交来回答模拟仓的问题。"
           "best 就是'哪个模拟仓胜率高'的直接答案，注意它的 basis："
           "realized=已平仓实际胜率，estimated=未平仓仓位的估算概率（不是历史战绩）。"
-          "单个仓位的 estimatedWinrate 只是估算概率，历史胜率看 realized.bySymbol。",
-          {"symbol": {"type": "string", "maxLength": 24}}),
+          "单个仓位的 estimatedWinrate 只是估算概率，历史胜率看 realized.bySymbol。"
+          "recentClosed 是平仓明细：查库时按 symbol 精确筛选、按 limit 取条数"
+          "（默认 10，最多 100）；recentClosedMeta 会说明顺序与总笔数。",
+          {"symbol": {"type": "string", "maxLength": 24},
+           "limit": {"type": "integer", "minimum": 1, "maximum": 100}}),
     _tool("read_risk", "只读风险、回撤、漂移、参数与 health 快照；不可修改。"),
     _tool("place_order", "在交易账户上**真实下单**（市价），并自动挂交易所侧止损止盈。"
           "严格两步：\n"
@@ -388,11 +391,15 @@ def _situation_hint(tone: str, volatile: bool, losing: int, held: int,
     return "正常状态，按用户情绪决定语气即可。"
 
 
-def _paper_view(snapshot, symbol: str = "") -> dict:
+def _paper_view(snapshot, symbol: str = "", history=None) -> dict:
     """把模拟仓投影成「未平仓 / 已实现战绩 / 最近平仓」三块。
 
     模拟仓是纸上交易，与账户实盘完全无关。两块数据必须分开命名：
     未平仓仓位上的 estimatedWinrate 是估算概率，realized 里才是实际胜率。
+
+    history 是 PaperBook.recent_trades() 的结果（按币、按条数直接查库）。
+    不给时退回快照里的 paperHistory——那只是全市场最近 12 条的切片，
+    按币筛会漏（线上实测：问 BTC 最近 5 笔，窗口里只剩 3 笔）。
     """
     symbol = str(symbol or "").upper()
 
@@ -464,11 +471,24 @@ def _paper_view(snapshot, symbol: str = "") -> dict:
         if "window" in summary:
             realized["window"] = summary["window"]
     recent = []
-    for rec in (snapshot.get("paperHistory") or [])[-12:]:
-        if isinstance(rec, dict) and hit(rec.get("symbol")):
-            recent.append({k: rec.get(k) for k in
-                           ("symbol", "direction", "entry", "exit", "pnl", "pnlPct",
-                            "reason", "score", "grade", "closedAt")})
+    history = history if isinstance(history, dict) else {}
+    if history.get("rows"):
+        recent = [{k: rec.get(k) for k in
+                   ("symbol", "direction", "entry", "exit", "pnl", "pnlPct",
+                    "reason", "score", "grade", "closedAt", "heldMs")}
+                  for rec in history["rows"] if isinstance(rec, dict)]
+    else:
+        for rec in (snapshot.get("paperHistory") or [])[-12:]:
+            if isinstance(rec, dict) and hit(rec.get("symbol")):
+                recent.append({k: rec.get(k) for k in
+                               ("symbol", "direction", "entry", "exit", "pnl", "pnlPct",
+                                "reason", "score", "grade", "closedAt")})
+    # 查库结果是最新在前；快照回退路径是时间升序。标注清楚，别让模型自己猜。
+    recent_meta = {
+        "order": "newestFirst" if history.get("rows") else "oldestFirst",
+        "source": history.get("source") or "snapshotWindow",
+        "total": history.get("total"),
+    }
     # 直接给"哪个最高"的答案，省得模型自己排序排错：
     # 先看已平仓的实际胜率；一条都没平过时退回未平仓仓位的估算概率，
     # 并且标明 basis——两者不是一回事，不能混着说。
@@ -506,6 +526,7 @@ def _paper_view(snapshot, symbol: str = "") -> dict:
         # 挤掉过一次，Agent 就答"查不到明细"。
         "realized": {**realized, "bySymbol": by_symbol[:40]},
         "recentClosed": recent,
+        "recentClosedMeta": recent_meta,
         # 未平仓明细放最后，条数和字段都收紧——它是"现在开着什么"，
         # 不需要历史那样的细节。
         "openPositions": open_rows[:12],
@@ -514,15 +535,22 @@ def _paper_view(snapshot, symbol: str = "") -> dict:
     }
 
 
-def read_snapshot(name, arguments, snapshot):
+def read_snapshot(name, arguments, snapshot, history_fn=None):
     if not isinstance(snapshot, dict):
         raise ValueError("context 快照必须为对象")
-    allowed = {"symbol"} if name in ("read_market", "read_paper") else set()
+    allowed = ({"symbol", "limit"} if name == "read_paper"
+               else {"symbol"} if name == "read_market" else set())
     if set(arguments) - allowed:
         raise ValueError("工具包含不支持的参数")
     symbol = arguments.get("symbol")
     if symbol is not None and (not isinstance(symbol, str) or not re.fullmatch(r"[a-zA-Z0-9]{2,24}", symbol)):
         raise ValueError("symbol 需为 2–24 位字母或数字")
+    if name == "read_paper" and "limit" in arguments:
+        limit = arguments.get("limit")
+        # 上限 100 与 clean() 的列表裁剪一致：再大也会被悄悄砍到 100 条，
+        # 不如直接说清上限，模型就不会以为拿到了 200 条。
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit 需为 1–100 的整数")
     if name == "read_situation":
         if arguments:
             raise ValueError("read_situation 不接受参数")
@@ -532,17 +560,35 @@ def read_snapshot(name, arguments, snapshot):
                 "available": bool(view["marketTone"] or view["positions"]["count"]),
                 "data": bounded(view)}
     if name == "read_paper":
-        view = _paper_view(snapshot, symbol or "")
+        # 明细要按币按条数现查：快照里那份是全市场最近 12 条切片，
+        # 按币筛会漏（线上实测：BTC 121 笔平仓只读到 3 笔）。
+        history = None
+        if history_fn is not None:
+            try:
+                history = history_fn(arguments.get("limit") or 10, symbol or "")
+            except Exception:
+                history = None     # 查库失败退回快照窗口，别让整次读失败
+        view = _paper_view(snapshot, symbol or "", history)
         # 有未平仓、有窗口战绩、或有进程累计的平仓数，都算有数据。
         session = view["realized"].get("sessionAllSymbols") or {}
         available = bool(view["openPositions"] or view["realized"]["bySymbol"]
-                         or session.get("closed"))
+                         or session.get("closed") or view["recentClosed"])
         # 这一段给足预算：里面有 recentClosed 明细，12000 字符不够，
         # 会被截成 excerpt（线上实测：Agent 因此答"查不到明细"）。
+        # 模型可以一次要 200 条，超预算时从**末尾**（最旧）截掉明细，
+        # 而不是让 bounded() 把整个 data 压成 excerpt——那样连汇总都读不到。
+        budget = 24000
+        fetched = len(view["recentClosed"])
+        while (len(json.dumps(clean(view), ensure_ascii=False)) > budget
+               and len(view["recentClosed"]) > 1):
+            view["recentClosed"] = view["recentClosed"][:-1]
+        kept = len(view["recentClosed"])
+        if kept < fetched:
+            view["recentClosedMeta"]["omitted"] = fetched - kept
         return {"untrusted": True, "source": "event-loop context snapshot",
                 "ts": snapshot.get("ts"), "available": available,
                 "symbol": symbol.upper() if symbol else None,
-                "data": bounded(view, 24000)}
+                "data": bounded(view, budget)}
     fields = {
         "read_market": ("market", "symbols", "stats", "evaluations", "positionPlans"),
         "read_accounts": ("accounts", "positions", "trades"),

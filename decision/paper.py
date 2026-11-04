@@ -44,6 +44,7 @@
 from __future__ import annotations
 
 import math
+import re
 import threading
 import time
 from dataclasses import asdict, dataclass, field, fields
@@ -416,6 +417,45 @@ class PaperBook:
     def history_list(self) -> list[dict]:
         with self._lock:
             return list(self.history[-MAX_HISTORY:])
+
+    def recent_trades(self, limit: int = 20, symbol: str = "") -> dict:
+        """按需查平仓流水（时间倒序），给 Agent 的 read_paper 用。
+
+        为什么不复用 snapshot 里的 paperHistory：那份是全市场最近 12 条的切片，
+        再按币筛只剩零星几条——问"BTC 最近 5 笔"时 BTC 早被别的币挤出窗口了
+        （线上实测：121 笔 BTC 平仓只读出 3 笔）。这里直接按币查库，
+        数据库不可用时退回内存全量（内存最多 MAX_HISTORY 条）。
+
+        返回 {"rows": [...], "source": "mysql"|"memory", "total": 库里该币总笔数}。
+        """
+        limit = max(1, min(200, int(limit or 20)))
+        # 模型会写 "BTC" / "BTC-USDT" / "btc"；库里存的都是 "btcusdt"。
+        # 不归一会查成空结果，Agent 又答"查不到"。
+        symbol = re.sub(r"[^a-z0-9]", "", str(symbol or "").lower())
+        if symbol and not symbol.endswith("usdt"):
+            symbol += "usdt"
+        if self.store is not None and not self._store_suspended:
+            with self._lock:
+                # 先把挂起的流水补写掉，否则刚平的仓查不到
+                self._flush_pending()
+            rows = self._read("读取模拟仓平仓流水",
+                              self.store.paper_trades, limit, symbol)
+            if rows is not None:
+                if not symbol:
+                    return {"rows": rows, "source": "mysql", "total": None}
+                stats = self._read("读取模拟仓分币统计",
+                                   self.store.paper_symbol_stats, 0) or []
+                total = next((int(r.get("closed") or 0) for r in stats
+                              if str(r.get("symbol") or "").lower() == symbol), None)
+                return {"rows": rows, "source": "mysql", "total": total}
+        with self._lock:
+            rows = [r for r in self.history if isinstance(r, dict)]
+        if symbol:
+            rows = [r for r in rows if str(r.get("symbol") or "") == symbol]
+        total = len(rows)
+        # 内存是时间升序；对外统一最新在前
+        rows = list(reversed(rows))[:limit]
+        return {"rows": rows, "source": "memory", "total": total}
 
     def summary(self) -> dict:
         """按币种汇总模拟仓战绩（只统计已平仓）。

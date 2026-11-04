@@ -264,6 +264,126 @@ def test_paper_payload_order_is_summary_first():
     assert keys.index("recentClosed") < keys.index("openPositions")
 
 
+# ---------- "最近 N 笔"必须按币查，不能靠全市场窗口 ----------
+
+def _stored_book():
+    """造 6 笔 BTC + 10 笔 ETH 的平仓流水，顺序打乱（ETH 更新）。"""
+    book = PaperBook()
+    now = int(time.time() * 1000)
+    for i in range(6):
+        book.history.append({"symbol": "btcusdt", "direction": "long", "entry": 100.0 - i,
+                             "exit": 101.0 - i, "pnl": 1.0, "pnlPct": 1.0,
+                             "reason": "tp", "closedAt": now - (100 - i) * 1000})
+    for i in range(10):
+        book.history.append({"symbol": "ethusdt", "direction": "short", "entry": 10.0,
+                             "exit": 9.9, "pnl": 0.5, "pnlPct": 0.5,
+                             "reason": "sl", "closedAt": now - i * 1000})
+    book.history.sort(key=lambda r: r["closedAt"])    # 内存里保持时间升序
+    return book
+
+
+def test_recent_trades_filters_by_symbol():
+    book = _stored_book()
+    got = book.recent_trades(5, "BTC")
+    assert got["source"] == "memory"
+    assert len(got["rows"]) == 5, "BTC 有 6 笔，limit=5 应给 5 笔"
+    assert {r["symbol"] for r in got["rows"]} == {"btcusdt"}
+    # 最新在前：closedAt 降序
+    stamps = [r["closedAt"] for r in got["rows"]]
+    assert stamps == sorted(stamps, reverse=True)
+    # 不传 symbol 就是全市场
+    assert len(book.recent_trades(3, "")["rows"]) == 3
+
+
+def test_recent_trades_normalizes_symbol_forms():
+    """模型会写 BTC / btc-usdt / BTCUSDT，都要命中库里的 btcusdt。"""
+    book = _stored_book()
+    for form in ("BTC", "btc", "BTC-USDT", "btcusdt", "BTCUSDT"):
+        assert len(book.recent_trades(10, form)["rows"]) == 6, form
+
+
+def test_read_paper_uses_history_fn_for_symbol_and_limit():
+    """read_paper 带 symbol/limit 时要走现查，而不是快照里的 12 条窗口。"""
+    book = _stored_book()
+    snap = _snapshot(book)
+    # 快照窗口里只有 ETH（模拟"BTC 被别的币挤出窗口"）
+    snap["paperHistory"] = [
+        {"symbol": "ethusdt", "pnl": 0.1, "reason": "sl", "closedAt": 1},
+    ]
+    seen = {}
+
+    def history_fn(limit, symbol):
+        seen["args"] = (limit, symbol)
+        return book.recent_trades(limit, symbol)
+
+    out = read_snapshot("read_paper", {"symbol": "BTC", "limit": 5}, snap, history_fn)
+    data = out["data"]
+    assert seen["args"] == (5, "BTC")
+    assert len(data["recentClosed"]) == 5, "必须按币现查到 5 笔 BTC"
+    assert {r["symbol"] for r in data["recentClosed"]} == {"btcusdt"}
+    assert data["recentClosedMeta"] == {"order": "newestFirst", "source": "memory",
+                                       "total": 6}
+
+
+def test_read_paper_falls_back_when_history_fn_fails():
+    """查库失败不能把整次读取打断，退回快照窗口。"""
+    book = _book_with_history()
+    snap = _snapshot(book)
+
+    def boom(limit, symbol):
+        raise RuntimeError("db down")
+
+    out = read_snapshot("read_paper", {"symbol": "BTC"}, snap, boom)
+    assert out["available"] is True
+    assert out["data"]["recentClosedMeta"]["source"] == "snapshotWindow"
+
+
+def test_read_paper_rejects_bad_limit():
+    book = _book_with_history()
+    for bad in (0, 101, "5", True, 2.5):
+        try:
+            read_snapshot("read_paper", {"limit": bad}, _snapshot(book))
+        except ValueError:
+            continue
+        raise AssertionError(f"limit={bad!r} 应该被拒绝")
+
+
+def test_read_market_rejects_limit():
+    """limit 只属于 read_paper，别让它悄悄变成 read_market 的参数。"""
+    try:
+        read_snapshot("read_market", {"limit": 5}, {"market": {}})
+    except ValueError:
+        return
+    raise AssertionError("read_market 不该接受 limit")
+
+
+def test_large_history_trims_tail_not_summary():
+    """明细太多时从**最旧**截掉，汇总必须完整可读。
+
+    不能像以前那样整段变成 {"truncated": true, "excerpt": "..."}——
+    那等于什么都读不到。limit 上限 100（clean 的列表裁剪也是 100）。
+    """
+    book = _stored_book()
+    snap = _snapshot(book)
+    now = int(time.time() * 1000)
+    # 用长 reason 把 payload 撑过 24000 字符预算
+    rows = [{"symbol": "btcusdt", "direction": "long", "entry": 100.0, "exit": 101.0,
+             "pnl": 1.0, "pnlPct": 1.0, "reason": "tp:" + "x" * 400,
+             "score": 70, "grade": "medium", "closedAt": now - i * 1000}
+            for i in range(100)]
+
+    out = read_snapshot("read_paper", {"symbol": "BTC", "limit": 100}, snap,
+                        lambda limit, symbol: {"rows": rows, "source": "mysql", "total": 100})
+    data = out["data"]
+    assert "truncated" not in data, "不能整段被截成 excerpt"
+    assert data["realized"]["bySymbol"], "汇总必须在"
+    assert data["recentClosed"], "明细至少留得下最新的几条"
+    assert data["recentClosed"][0]["closedAt"] == now, "留下的是最新的那些"
+    meta = data["recentClosedMeta"]
+    assert meta["omitted"] == 100 - len(data["recentClosed"]) > 0
+    assert meta["total"] == 100
+
+
 def test_prompt_requires_fresh_state_lookup():
     """提示词要禁止拿聊天历史当现状。
 

@@ -909,6 +909,9 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     # 否则模型会一步下完（真实资金操作必须先让用户看到那张单）。
     agent.order_plan_fn = quant.manual_order_plan
     agent.order_exec_fn = quant.manual_order_execute
+    # 模拟仓平仓明细现查：快照里那份是全市场最近 12 条，问"BTC 最近 5 笔"
+    # 会被别的币挤掉（线上实测 121 笔只读出 3 笔）。这里按币查库。
+    agent.paper_history_fn = quant.paper.recent_trades
     hub.agent_state_fn = agent.state
     hub.agent_fn = agent.handle
 

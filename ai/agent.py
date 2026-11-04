@@ -318,6 +318,10 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
  · 模拟仓已平仓记录默认落 MySQL（paper_trades）：read_paper 的 session/bySymbol
    是数据库全量累计口径、重启不清零；若数据库不可用，工具 note 会标注
    "纯内存降级模式"，此时重启清零、样本最多 200 条，引用时要说明。
+ · 问"某币最近 N 笔平仓"→ read_paper 传 symbol 和 limit（如 {"symbol":"BTC","limit":5}）。
+   这两个参数会直接按币查库；不传就只能看到全市场一小段窗口，别的币会把目标币挤掉，
+   你就会误答"只查到几笔"。recentClosedMeta.total 是该币的累计平仓笔数，
+   如果 limit 小于 total，要说明"只列了最近 N 笔，共 X 笔"。
  · 账户里没有模拟仓的仓位，模拟仓也不能解释账户的盈亏——两者绝不能互相引用。
 
 【现状类问题必须现查，不能引用聊天历史】
@@ -894,6 +898,9 @@ class AgentManager:
         #   order_exec_fn(plan) -> dict（真下单）
         self.order_plan_fn = None
         self.order_exec_fn = None
+        # 模拟仓平仓流水现查：(limit, symbol) -> {"rows","source","total"}。
+        # 快照里只带全市场最近 12 条，按币筛会漏，必须能按币直接查库。
+        self.paper_history_fn = None
         # 模型没给 count 时的默认条数，main 从 config.search.count 注入；仍按 1..10 校验
         self.search_default_count = 5
         self.state_path = state_path
@@ -2889,7 +2896,7 @@ class AgentManager:
                     else:
                         if snapshot_error:
                             raise ValueError(snapshot_error)
-                        output = read_snapshot(name, arguments, snapshot)
+                        output = read_snapshot(name, arguments, snapshot, self.paper_history_fn)
                     step.update(status="succeeded", result=bounded(output, STEP_PREVIEW))
                 except PersistenceError:
                     raise

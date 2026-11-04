@@ -880,15 +880,30 @@ class Storage:
              _safe_int(trade.get("settleApprox"), 0),
              trade_key))
 
-    def paper_trades(self, limit: int = 200) -> list[dict]:
-        """最近 limit 笔已平仓记录（时间倒序），字段与 PaperBook 平仓记录一致。"""
+    def paper_trades(self, limit: int = 200, symbol: str = "") -> list[dict]:
+        """最近 limit 笔已平仓记录（时间倒序），字段与 PaperBook 平仓记录一致。
+
+        symbol 非空时只查该币。Agent 被问"BTC 最近 5 笔"必须按币查库：
+        先取全市场最近 N 条再筛币，BTC 会被别的币挤掉，只剩零星几条
+        （线上实测：全市场窗口 12 条里只剩 3 条 BTC，Agent 答"查不到"）。
+        """
         limit = max(1, min(2000, _safe_int(limit, 200)))
-        rows = self._qall(
-            "SELECT id,symbol,direction,entry,exit_price,sl,tp,leverage,margin,qty,"
-            "pnl,pnl_pct,reason,winrate,score,gap,grade,pattern,regime,atr_at_entry,"
-            "held_ms,closed_ts,entry_ts,`trailing`,recovered,winrate_parts,"
-            "open_seq,settle_bars,settle_approx "
-            "FROM paper_trades ORDER BY closed_ts DESC, id DESC LIMIT %s", (limit,))
+        sql = ("SELECT id,symbol,direction,entry,exit_price,sl,tp,leverage,margin,qty,"
+               "pnl,pnl_pct,reason,winrate,score,gap,grade,pattern,regime,atr_at_entry,"
+               "held_ms,closed_ts,entry_ts,`trailing`,recovered,winrate_parts,"
+               "open_seq,settle_bars,settle_approx "
+               "FROM paper_trades")
+        params: list = []
+        symbol = str(symbol or "").strip()
+        if symbol:
+            # 库里 symbol 大小写不统一（PaperBook 写小写，手工/老数据可能是大写），
+            # 用 IN 同时给两种写法：MySQL 默认排序规则本就大小写不敏感，
+            # SQLite（测试）敏感，两种都给才能都命中，也不至于让索引失效。
+            sql += " WHERE symbol IN (%s, %s)"
+            params.extend([symbol.lower(), symbol.upper()])
+        sql += " ORDER BY closed_ts DESC, id DESC LIMIT %s"
+        params.append(limit)
+        rows = self._qall(sql, tuple(params))
         out = []
         for r in rows:
             item = {

@@ -362,6 +362,30 @@ def test_trade_insert_is_idempotent_per_position(make_store):
     assert len(s.paper_trades()) == 2
 
 
+def test_paper_trades_filter_by_symbol(make_store):
+    """按币查库必须只返回该币，且最新在前。
+
+    线上实测：先取全市场最近 12 条再按币筛，BTC 121 笔里只剩 3 笔，
+    Agent 于是答"查不到 5 笔记录"。
+    """
+    s = make_store()
+    # 10 条 ETH 夹在中间，把 BTC 挤出任何"全市场最近 N 条"的窗口
+    for i in range(10):
+        s.save_paper_trade({"symbol": "ETHUSDT", "pnl": 1, "closedAt": NOW - i * 1000})
+    for i in range(6):
+        s.save_paper_trade({"symbol": "BTCUSDT", "pnl": i, "closedAt": NOW - (20 + i) * 1000})
+    rows = s.paper_trades(5, "btcusdt")
+    assert len(rows) == 5
+    assert {r["symbol"] for r in rows} == {"BTCUSDT"}
+    # 时间倒序：closedAt 越新越靠前
+    stamps = [r["closedAt"] for r in rows]
+    assert stamps == sorted(stamps, reverse=True)
+    # 全量查不受 symbol 影响
+    assert len(s.paper_trades(200)) == 16
+    # 查不到就是空，不能退化成"所有币"
+    assert s.paper_trades(5, "solusdt") == []
+
+
 # ---- 6. 保留期清理 ----
 
 def test_prune_deletes_old_paper_trades_but_keeps_open_positions(make_store):
