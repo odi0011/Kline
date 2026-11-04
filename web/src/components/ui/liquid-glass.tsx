@@ -47,7 +47,6 @@ export function LiquidGlass({
 }: LiquidGlassProps) {
   const reactId = useId().replace(/:/g, "");
   const rootRef = useRef<HTMLDivElement>(null);
-  const blobRef = useRef<string | null>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [filter, setFilter] = useState<{ id: string; svg: string } | null>(
     null,
@@ -68,10 +67,13 @@ export function LiquidGlass({
       const box = entry.borderBoxSize?.[0];
       const width = box?.inlineSize ?? entry.contentRect.width;
       const height = box?.blockSize ?? entry.contentRect.height;
-      setSize({
-        w: Math.max(1, Math.round(width)),
-        h: Math.max(1, Math.round(height)),
-      });
+      const w = Math.max(1, Math.round(width));
+      const h = Math.max(1, Math.round(height));
+      // 尺寸没变就不要 setState：ResizeObserver 会因布局微调反复回调，
+      // 每次 setSize 都新建一个对象，让下面的重建 effect 白跑一遍。
+      // 而一次重建要在 JS 里逐像素算位移贴图 + toBlob，实测 1 秒以上——
+      // 同样 248×149 重建四次就是 4 秒卡顿（线上量到的 7 秒就来自这里）。
+      setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -96,12 +98,10 @@ export function LiquidGlass({
         img.onload = img.onerror = () => resolve();
         img.src = mapUrl;
       });
-      if (cancelled) {
-        URL.revokeObjectURL(mapUrl);
-        return;
-      }
-      if (blobRef.current) URL.revokeObjectURL(blobRef.current);
-      blobRef.current = mapUrl;
+      if (cancelled) return;
+      // 注意：**不要 revoke** 这个 URL。贴图按参数全局共享，
+      // 一个组件卸载时 revoke 会把其它正在用同一张图的玻璃全部弄坏
+      // （表现为滤镜消失、背景变黑）。这点内存由浏览器按 blob 生命周期管理。
 
       // Fresh id each rebuild, because browsers cache filter output by id.
       const id = `lg-${reactId}-${size.w}x${size.h}-${Date.now().toString(36)}`;
@@ -129,13 +129,6 @@ export function LiquidGlass({
       cancelled = true;
     };
   }, [mode, size.w, size.h, radius, bevelDepth, scale, aberration, frost, reactId]);
-
-  useEffect(
-    () => () => {
-      if (blobRef.current) URL.revokeObjectURL(blobRef.current);
-    },
-    [],
-  );
 
   const backdrop =
     mode === "opaque"
@@ -336,20 +329,47 @@ function computeDisplacementData(opts: DisplacementOptions) {
   return { data, width: W, height: H };
 }
 
-/** PNG blob URL for feImage (WebKit rejects data: URIs inside feImage). */
+/** PNG blob URL for feImage (WebKit rejects data: URIs inside feImage).
+ *
+ *  **按参数缓存**：位移贴图只取决于 宽/高/圆角/倒角/DPR，同一页面上多处
+ *  同样尺寸的玻璃（导航钮、按钮组）完全可以共用同一张。
+ *  一次生成要逐像素算两次 SDF + toBlob，实测 248×149 约 1 秒；
+ *  不做缓存时同尺寸反复重建（线上量到 8 秒内重建 9 次、累计 7 秒），
+ *  整个页面就卡死了。
+ */
+const _displacementCache = new Map<string, Promise<string>>();
+
+function displacementCacheKey(opts: DisplacementOptions) {
+  const dpr = opts.dpr ?? 1;
+  return [opts.width, opts.height, opts.radius, opts.bevelDepth, dpr].join("x");
+}
+
 async function generateDisplacementBlobUrl(opts: DisplacementOptions) {
-  const { data, width, height } = computeDisplacementData(opts);
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("2d context unavailable");
-  ctx.putImageData(new ImageData(data, width, height), 0, 0);
-  const blob = await new Promise<Blob | null>((resolve) =>
-    canvas.toBlob(resolve, "image/png"),
-  );
-  if (!blob) throw new Error("Failed to encode displacement map");
-  return URL.createObjectURL(blob);
+  const key = displacementCacheKey(opts);
+  const hit = _displacementCache.get(key);
+  if (hit) return hit;
+  const task = (async () => {
+    const { data, width, height } = computeDisplacementData(opts);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("2d context unavailable");
+    ctx.putImageData(new ImageData(data, width, height), 0, 0);
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/png"),
+    );
+    if (!blob) throw new Error("Failed to encode displacement map");
+    return URL.createObjectURL(blob);
+  })();
+  _displacementCache.set(key, task);
+  try {
+    return await task;
+  } catch (err) {
+    // 失败不要留在缓存里，否则以后同样尺寸永远拿不到
+    _displacementCache.delete(key);
+    throw err;
+  }
 }
 
 /* ---------------------------------------------------------------------------
