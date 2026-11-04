@@ -826,6 +826,22 @@ def _says_no_tools(text: str) -> bool:
     return bool(_NO_TOOL_CLAIM.search(str(text or "")))
 
 
+# 模型声称"数据读不到"却没调任何工具。首轮 tool_choice=required，
+# 出现这种情况说明它擅自跳过了查数据这一步——直接采信等于把"没查"
+# 当成"查不到"（线上实测：问"这周赚了多少"，它一次工具都没调，
+# 回了句"数据线断了"）。
+_CLAIMS_NO_DATA = re.compile(
+    r"读不到|查不到|取不到|拿不到|获取不到|没有(?:这个|该|相应)?数据(?:源)?"
+    r"|数据源(?:没有|缺失|不可用)|数据线断|接口(?:挂了|不可用|异常)"
+    r"|无法(?:读取|查询|获取)|no\s+(?:access\s+to\s+)?(?:such\s+)?data",
+    re.I,
+)
+
+
+def _says_no_data(text: str) -> bool:
+    return bool(_CLAIMS_NO_DATA.search(str(text or "")))
+
+
 # 模型把工具调用"写"成正文（DeepSeek 的 DSML 标记、其他服务商的 XML 风格）。
 # 这不是可展示的回答：轻则用户看到一堆尖括号，重则把本该执行的调用当结论。
 _TOOL_MARKUP = re.compile(
@@ -2841,6 +2857,20 @@ class AgentManager:
                           # 工具调用被写成正文（"<｜｜DSML｜｜ invoke ...>"）：
                           # 那是没执行成的调用，绝不能当回答发给用户
                           and not _is_tool_markup(reply))
+                if (usable and round_number == 1 and not target.get("steps")
+                        and _says_no_data(reply)):
+                    # 首轮 tool_choice=required，它却一个工具都没调，还说"读不到"。
+                    # 直接采信等于把"没查"当成"查不到"——线上实测：问"这周
+                    # 赚了多少"，模型一次工具都没调，回了句"数据线断了"。
+                    # 给一次明确指令再走一轮（只重试一次，不会死循环）。
+                    messages.append({"role": "assistant", "content": reply[:4000]})
+                    messages.append({"role": "user", "content": (
+                        "你还没有调用任何工具就下了'读不到'的结论。这些数据都有工具："
+                        "权益/逐日盈亏 read_equity，成交历史 read_trades，"
+                        "持仓与挂单 read_accounts/read_orders，行情与指标 read_market，"
+                        "模拟仓 read_paper，衍生品 read_derivatives，"
+                        "风控与拦截 read_risk。现在先调用合适的工具，再基于返回值回答。")})
+                    continue
                 if usable:
                     return {"reply": reply[:20000], "usage": usage, "perf": perf, "model": selected["id"]}
                 # 只调了 send_sticker、没写正文：表情包本身就是一条合法回复。
