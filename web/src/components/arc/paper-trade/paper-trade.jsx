@@ -135,18 +135,30 @@ const PaperCard = memo(function PaperCard({ pos, onRefresh, busy, price }) {
   // 目标盈 / 止损亏：按名义价值算的绝对值
   const target = pos.notional * (Number(pos.tp_pct) || 0) / 100
   const risk = pos.notional * (Number(pos.sl_pct) || 0) / 100
+  // 胜率徽标档位：与 K 线形态卡片的「胜XX%」同一套分档（>=50 hi / >=10 mid / 其余 low），
+  // 颜色也从 --accent 派生，两边一眼能对上。
+  const winPct = Number.isFinite(Number(pos.winrate)) ? Number(pos.winrate) : null
+  const winTier = winPct == null ? "" : winPct >= 50 ? "hi" : winPct >= 10 ? "mid" : "low"
 
   return (
     <article className={styles.card} data-tone={long ? "long" : "short"}>
       <div className={styles.chartWrap}>
         <MiniCandles candles={pos.candles} pos={pos} />
-        {/* 左上角「模拟」标：这些仓位不是真实委托，不能和账户卡的真实持仓混淆 */}
-        <span className={styles.paperTag} title="纸上交易，不产生任何真实委托">模拟</span>
-        {/* 右上角胜率徽标：这是这张卡最该先看到的信息。先写「估算」两个字，
-            避免被当成已实现的历史胜率。 */}
-        <span className={styles.winrate} data-hi={pos.winrate >= 60 || undefined}
-          title={`估算胜率 ${pos.winrate ?? "--"}%（含 SL/TP 距离、信号分、形态历史），不是已平仓的历史胜率`}>
-          估 {pos.winrate == null ? "--" : `${Math.round(pos.winrate)}%`}
+        {/* 左上角：刷新（平掉当前仓、按最新数据重开）。
+            原来这里是个"模拟"字标——卡片标题已经写了模拟仓，重复标注没意义，
+            这个位置留给操作。 */}
+        <button type="button" className={styles.refresh} aria-label="按当前数据刷新仓位"
+          title="平掉当前模拟仓，立刻按最新数据重开" disabled={busy}
+          onClick={() => onRefresh?.(pos.symbol)}>
+          <RefreshCw size={11} strokeWidth={2.4} data-spin={busy || undefined} />
+        </button>
+        {/* 右上角：这张仓位（该币全部模拟仓）的总预估胜率。
+            样式对齐 K 线形态卡片的「胜XX%」徽标——按档位取色，
+            不是自己画一块玻璃。 */}
+        <span className={`${styles.winrate} ${styles[winTier] || ""}`}
+          data-hi={winTier === "hi" || undefined}
+          title={`这张模拟仓的估算胜率 ${pos.winrate ?? "--"}%（含 SL/TP 距离、信号分、形态历史），不是已平仓的历史胜率`}>
+          胜{pos.winrate == null ? "--" : Math.round(pos.winrate)}%
         </span>
       </div>
 
@@ -157,11 +169,6 @@ const PaperCard = memo(function PaperCard({ pos, onRefresh, busy, price }) {
           {long ? "多" : "空"}
         </span>
         <span className={styles.lev}>{pos.leverage}x</span>
-        <button type="button" className={styles.refresh} aria-label="按当前数据刷新仓位"
-          title="平掉当前模拟仓，立刻按最新数据重开" disabled={busy}
-          onClick={() => onRefresh?.(pos.symbol)}>
-          <RefreshCw size={10} strokeWidth={2.4} data-spin={busy || undefined} />
-        </button>
       </header>
 
       <div className={styles.grid}>
