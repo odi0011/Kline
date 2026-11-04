@@ -801,15 +801,32 @@ class QuantEngine:
                         "liquidation": features.get("liquidation"),
                     }
                     if self.decision_cfg.scoring_enabled:
-                        # ---- 评分口径：每根K线只算一次 ----
-                        # cs 含未收盘的当前K线，盘中价一抖 RSI/Z/ADX 就跟着变，
-                        # 同一根 3m 里评分会被重算 36 次（线上实测 54→77 来回跳，
-                        # 开仓线 55，越线纯看运气）。平滑只能压低高频抖动，
-                        # 压不住"这根K线本身还没走完"这件事。
-                        # 所以评分改用**上一根已收盘K线**的指标：同一根K线内
-                        # 分数完全不动，跨根才更新。页面上的指标条仍用盘中值
-                        # （那是"现在"），但"结论"必须基于已完成的事实。
+                        # ---- 评分口径：一根K线只算一次 ----
+                        # 只换成"已收盘K线"还不够：_build_features 里还掺着
+                        # **实时**输入（盘口 OBI、持仓量 OI 变化、新闻情绪），
+                        # 这些每秒都变，所以同一根K线内分数照样会跳
+                        # （线上实测：bar 时间戳没变，20 秒内 82.78 → 72.07）。
+                        #
+                        # 正确做法：同一根已收盘K线内**直接复用上一轮结果**，
+                        # 跨根才重算。这样"结论"在一根K线内是恒定的，
+                        # 用户可以据此决策；盘中变化由页面指标条负责展示。
                         closed = [bar for bar in cs if getattr(bar, "closed", False)]
+                        bar_key = int(getattr((closed or cs)[-1], "open_time", 0) or 0)
+                        prev_eval_all = self.live_evaluations.get(sym) or {}
+                        reuse = (prev_eval_all.get("basis") == "closedBar"
+                                 and prev_eval_all.get("basisBarTime") == bar_key
+                                 and len(closed) >= 30)
+                        if reuse:
+                            # 同一根K线：沿用上一轮的方向/分数/档位，只刷新时间戳。
+                            # 不再推计算流水——算式没变，重复推只会刷屏。
+                            self.live_evaluations[sym] = {**prev_eval_all, "ts": _now_ms()}
+                            try:
+                                ctx = self._paper_context(sym)
+                                if ctx:
+                                    self.paper.tick(sym, ctx)
+                            except Exception:
+                                pass
+                            continue
                         if len(closed) >= 30:
                             score_state = IND.market_state(closed)
                             score_features = self._build_features(sym, closed, score_state, "bullish")

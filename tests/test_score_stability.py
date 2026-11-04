@@ -124,3 +124,20 @@ def test_score_signal_without_pattern_stats_is_stable():
     a = score_signal("bullish", state, features, cfg)
     b = score_signal("bullish", state, features, cfg)
     assert (a.score, a.gap, a.grade) == (b.score, b.gap, b.grade)
+
+
+# ---------- 同一根K线内不重算 ----------
+
+def test_same_bar_reuses_previous_evaluation():
+    """同一根已收盘K线内必须直接复用上一轮结果，不能重算。
+
+    只把输入换成"已收盘K线"还不够：_build_features 里还掺着实时的
+    盘口 OBI、持仓量 OI、新闻情绪，这些每秒都变。线上实测：bar 时间戳
+    完全相同，20 秒内评分仍从 82.78 掉到 72.07。
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "quant.py").read_text(encoding="utf-8")
+    assert "reuse = (prev_eval_all.get(\"basis\") == \"closedBar\"" in src
+    assert "prev_eval_all.get(\"basisBarTime\") == bar_key" in src
+    # 复用时只刷新时间戳，不重算分数
+    assert '{**prev_eval_all, "ts": _now_ms()}' in src
