@@ -1,4 +1,7 @@
-/* 模拟仓：每个监控币一个 15 分钟的纸上交易，用来验证策略而不是真下单。
+/* 模拟仓：每个监控币一个持续自检的纸上交易，用来验证策略而不是真下单。
+   每 3 分钟按方向性涨跌幅自检：跌 0.15% 判亏、涨 0.20% 判赢、
+   中间地带默认继续持有，只有信号强烈反向才反手。
+   （旧的"15 分钟到期平仓"已废弃；expires_ts 现在是 4 小时保险丝。）
 
    卡片布局（自上而下）：
      ┌ 10 根K线（带止损/止盈/强平/入场四条参考线）　右上角胜率徽标 ┐
@@ -115,6 +118,11 @@ function MiniCandles({ candles, pos }) {
   )
 }
 
+// 3 分钟自检的判定阈值，与后端 decision/paper.py 的 CHECK_LOSS_RATIO /
+// CHECK_WIN_RATIO 保持同一口径（小数比率）。只用于 tooltip 文案。
+const CHECK_LOSS_DISPLAY = 0.15
+const CHECK_WIN_DISPLAY = 0.20
+
 const PaperCard = memo(function PaperCard({ pos, onRefresh, busy, price, total }) {
   if (!pos) return null
   const long = pos.direction === "long"
@@ -128,10 +136,19 @@ const PaperCard = memo(function PaperCard({ pos, onRefresh, busy, price, total }
   const margin = Number(pos.margin) || 0
   const pnlPct = margin ? (pnl / margin) * 100 : 0
   const tone = pnl > 0 ? "up" : pnl < 0 ? "down" : "flat"
-  // 剩余时间
-  const leftMs = Math.max(0, (Number(pos.expires_ts) || 0) - Date.now())
-  const leftMin = Math.floor(leftMs / 60000)
-  const leftSec = Math.floor((leftMs % 60000) / 1000)
+  // 距下一次 3 分钟自检还有多久（仓位不再按固定到期时间平仓，
+  // expires_ts 已改成 4 小时保险丝；这里显示的是"下次检查"的倒计时）
+  const nextCheckIn = (() => {
+    const interval = 3 * 60 * 1000
+    const anchor = Number(pos.last_check_ts) || Number(pos.entry_ts) || Date.now()
+    return Math.max(0, anchor + interval - Date.now())
+  })()
+  const checkMin = Math.floor(nextCheckIn / 60000)
+  const checkSec = Math.floor((nextCheckIn % 60000) / 1000)
+  // 上一次自检的结论：hold/win/loss/flip + 当时的方向性涨跌幅
+  const lastVerdict = String(pos.last_verdict || "")
+  const lastMove = Number.isFinite(Number(pos.last_move_pct)) ? Number(pos.last_move_pct) : null
+  const VERDICT_LABEL = { hold: "持有", win: "判赢", loss: "判亏", flip: "反手" }
   // 目标盈 / 止损亏：按名义价值算的绝对值
   const target = pos.notional * (Number(pos.tp_pct) || 0) / 100
   const risk = pos.notional * (Number(pos.sl_pct) || 0) / 100
@@ -209,8 +226,12 @@ const PaperCard = memo(function PaperCard({ pos, onRefresh, busy, price, total }
           {pnl >= 0 ? "+" : ""}{fmt(pnl)}
           <em>{pnlPct >= 0 ? "+" : ""}{fmt(pnlPct, 1)}%</em>
         </span>
-        <span className={styles.left} title="模拟仓到期后自动平仓并重开">
-          {leftMin}:{String(leftSec).padStart(2, "0")}
+        {/* 每 3 分钟自检一次：倒计时到下次检查，并显示上次判了什么 */}
+        <span className={styles.left}
+          title={`每 3 分钟自检：跌 ${Math.abs(CHECK_LOSS_DISPLAY)}% 判亏、涨 ${CHECK_WIN_DISPLAY}% 判赢、中间地带看信号决定持有或反手`}>
+          {lastVerdict && lastVerdict !== "hold"
+            ? `${VERDICT_LABEL[lastVerdict] || lastVerdict}${lastMove == null ? "" : ` ${lastMove > 0 ? "+" : ""}${lastMove.toFixed(2)}%`}`
+            : `检 ${checkMin}:${String(checkSec).padStart(2, "0")}`}
         </span>
         {pos.reason && <span className={styles.reason} title={pos.reason}>{pos.reason}</span>}
       </footer>
@@ -218,8 +239,10 @@ const PaperCard = memo(function PaperCard({ pos, onRefresh, busy, price, total }
   )
 })
 
-export default function PaperTrade({ rows, depths, onRefresh, busySymbol, bySymbol }) {
+export default function PaperTrade({ rows, depths, onRefresh, busySymbol, bySymbol, checks }) {
   const list = Array.isArray(rows) ? rows : []
+  const stats = checks || {}
+  const hasStats = Number(stats.checks) > 0
   // 订单簿中间价：bids/asks 都是真实挂单，取最优买一卖一的中点
   const midOf = (sym) => {
     const d = depths?.[sym]
@@ -233,6 +256,28 @@ export default function PaperTrade({ rows, depths, onRefresh, busySymbol, bySymb
   }
   return (
     <section className={styles.root} aria-label="模拟仓">
+      {/* 3 分钟自检的汇总：判赢/判亏/反手次数 + 累计盈亏回撤。
+          放在卡片上方一行，因为"这套自检判定准不准"是全局问题。 */}
+      {hasStats && (
+        <div className={styles.checkBar} role="group" aria-label="自检统计">
+          <span title="自检判赢 / 判亏次数（按 3 分钟窗口的价格涨跌幅判定）">
+            判赢 {stats.winChecks} · 判亏 {stats.lossChecks}
+          </span>
+          {Number(stats.flipChecks) > 0 && (
+            <span title="中间地带因信号强烈反向而反手的次数">反手 {stats.flipChecks}</span>
+          )}
+          <span title="按自检结论算的胜率（判赢 ÷（判赢+判亏））">
+            {stats.checkWinrate == null ? "--" : `${stats.checkWinrate}%`}
+          </span>
+          <span title="累计盈亏从峰值的最大回吐（金额）"
+            style={{ color: Number(stats.maxDrawdown) < 0 ? "var(--down)" : undefined }}>
+            回撤 {Number(stats.maxDrawdown || 0).toFixed(2)}
+          </span>
+          <span title="累计已实现盈亏（所有平仓之和）">
+            累计 {Number(stats.netPnl || 0) >= 0 ? "+" : ""}{Number(stats.netPnl || 0).toFixed(2)}
+          </span>
+        </div>
+      )}
       {/* 横向滚动沿用统一的 ScrollArea（右上角玻璃箭头翻页 + 边缘渐隐），
           和 K线形态图鉴、大户持仓是同一套，不自己写 overflow。 */}
       <ScrollArea orientation="horizontal" scrollbars="auto" scrollButtons fade={14}

@@ -102,7 +102,7 @@ TOOLS = [
           {"days": {"type": "integer", "minimum": 0, "maximum": 3650},
            "symbol": {"type": "string", "maxLength": 24},
            "limit": {"type": "integer", "minimum": 1, "maximum": 200}}),
-    _tool("read_paper", "读取**模拟仓**（15 分钟纸上交易，只记录不下单）："
+    _tool("read_paper", "读取**模拟仓**（纸上交易，**每 3 分钟自检一次**判亏/判赢/继续持有或反手，只记录不下单）："
           "当前未平仓的模拟仓位、按币种汇总的**已实现**胜率与盈亏、最近的平仓明细。"
           "用户问'模拟仓''纸上交易''哪个模拟仓胜率最高''最近平仓'时必须用它；"
           "不要拿账户名、真实持仓或账户成交来回答模拟仓的问题。"
@@ -500,7 +500,8 @@ def _paper_view(snapshot, symbol: str = "", history=None) -> dict:
     if history.get("rows"):
         recent = [{k: rec.get(k) for k in
                    ("symbol", "direction", "entry", "exit", "pnl", "pnlPct",
-                    "reason", "score", "grade", "closedAt", "heldMs", "trailing")}
+                    "reason", "score", "grade", "closedAt", "heldMs", "trailing",
+                    "checkVerdict", "checkMovePct", "checkNo")}
                   for rec in history["rows"] if isinstance(rec, dict)]
     else:
         for rec in (snapshot.get("paperHistory") or [])[-12:]:
@@ -541,11 +542,13 @@ def _paper_view(snapshot, symbol: str = "", history=None) -> dict:
                    "bySymbol 最多覆盖最近 200 条；引用时要说明这个限制。")
     return {
         "kind": "paper",
-        "note": "模拟仓=15 分钟纸上交易，不产生任何真实委托，与账户实盘持仓无关。"
+        "note": "模拟仓=纸上交易（不产生任何真实委托，与账户实盘持仓无关）："
+                "每 3 分钟按方向性涨跌幅自检一次——跌 0.15% 判亏平仓重开、涨 0.20% 判赢落袋、"
+                "中间地带默认继续持有，只有信号强烈反向才反手。"
                 "openPositions.estimatedWinrate 是按止损/止盈距离与信号分估算的概率，"
                 "不是历史胜率；realized.bySymbol.winrate 才是已平仓的实际胜率。"
                 "recentClosed.reason 是**出场方式**：sl=止损单触发、tp=止盈单触发、"
-                "timeout=15 分钟到期、recovered=停机后补算。"
+                "timeout=4 小时保险丝强制平（兜底，不是策略窗口）、recovered=停机后补算。"
                 "移动止损会把止损价推到成本之上，所以 reason=sl 也可能是盈利单"
                 "（trailing=true 就是这种情况），这是正常的，不是记录错误。"
                 + persist + "window 只是内存缓存条数，统计口径以 session/bySymbol 为准。",
@@ -561,6 +564,9 @@ def _paper_view(snapshot, symbol: str = "", history=None) -> dict:
         "openPositions": open_rows[:12],
         "openOmitted": max(0, len(open_rows) - 12),
         "sessionStats": snapshot.get("paperStats") or {},
+        # 3 分钟自检的专项统计：判赢/判亏/反手次数 + 累计盈亏回撤。
+        # 与 sessionStats 分开：那个答"赚没赚钱"，这个答"自检判得准不准"。
+        "checkStats": snapshot.get("paperChecks") or {},
     }
 
 

@@ -896,6 +896,7 @@ export default function App() {
         <div className="row3-stack">
           <PaperTrade rows={quantSnap?.analysis?.paper} depths={depths}
             bySymbol={quantSnap?.analysis?.paperBySymbol}
+            checks={quantSnap?.analysis?.paperChecks}
             onRefresh={refreshPaper} busySymbol={paperBusy} />
           <PositionHistory trades={quantTrades} chartColors={chartColors} />
         </div>

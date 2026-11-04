@@ -346,7 +346,9 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
  · **账户 = 实盘账户**：系统真正下单的那个交易账户。read_accounts 返回它的权益、
    真实持仓、真实成交。部署用的是测试网 key 只是运维细节，**账户身份始终是实盘**，
    不要说"这是测试盘/模拟盘账户"。
- · **模拟仓 = 纸上交易**：每个币一个 15 分钟周期，**永不产生委托**；
+ · **模拟仓 = 纸上交易**：每个币一个持续自检的仓位，**永不产生委托**；
+   每 3 分钟按方向性涨跌幅自检一次（跌 0.15% 判亏、涨 0.20% 判赢、
+   中间地带默认继续持有，只有信号强烈反向才反手）；
    仓位与平仓记录都落 MySQL（paper_positions / paper_trades），重启不清零。
    它跟账户的权益、持仓、成交完全无关。用 read_paper 读。
  · 问「我持仓/权益/赚多少」→ read_accounts；
@@ -2946,7 +2948,7 @@ class AgentManager:
                               # 衍生品与评分特征：页面上有、Agent 之前完全读不到
                               "liveFeatures", "derivatives", "gateLog", "decisionTraces",
                               # 模拟仓是另一套数据：未平仓、已实现战绩、最近平仓
-                              "paper", "paperStats", "paperHistory", "paperSummary")
+                              "paper", "paperStats", "paperChecks", "paperHistory", "paperSummary")
                     snapshot = copy.deepcopy(clean({k: raw[k] for k in fields if k in raw}))
                 except Exception:
                     snapshot_error = "无法采集 context 快照"

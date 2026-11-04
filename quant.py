@@ -2905,11 +2905,15 @@ class QuantEngine:
                 },
                 # 每币一句话建议（K线图右上角胶囊）：方向 / 杠杆 / 时长 / 止损止盈
                 "advice": self._advice_map(),
-                # 模拟仓：每个监控币一个 15 分钟的纸上交易，附最近 10 根K线
+                # 模拟仓：每 3 分钟自检一次（判亏/判赢/继续持有或反手），
+                # 附最近 10 根K线
                 "paper": self.paper.snapshot(
                     list(self.symbol_filter or self.indicators.keys()),
                     lambda s: self.bars_fn(s) if self.bars_fn else []),
                 "paperStats": dict(self.paper.stats),
+                # 3 分钟自检的专项统计：判赢/判亏/反手各多少 + 累计盈亏回撤。
+                # 和 paperStats 分开：那个是"赚没赚钱"，这个是"自检判得准不准"。
+                "paperChecks": self.paper.check_stats(),
                 "paperHistory": self.paper.history_list()[-30:],
                 # 按币种的累计战绩（closed/wins/losses/winrate/netPnl）。
                 # 前端模拟仓卡片的第二个徽标要显示"这个币历史上赢了多少"，

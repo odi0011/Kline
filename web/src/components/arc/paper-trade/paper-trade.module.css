@@ -233,3 +233,18 @@
 @media (prefers-reduced-motion: reduce) {
   .refresh svg[data-spin] { animation: none; }
 }
+
+/* 3 分钟自检的汇总条：判赢/判亏/反手 + 胜率 + 回撤 + 累计。
+   放在卡片上方一行——"自检判定准不准"是全局问题，不属于某个币。 */
+.checkBar {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 2px 8px 4px;
+  font-size: 9px;
+  color: var(--text-muted, #8b949e);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+}

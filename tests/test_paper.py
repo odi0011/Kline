@@ -5,8 +5,9 @@
 """
 import time
 
-from decision.paper import (HOLD_MS, MAX_PAPER_LEV, NOTIONAL, PaperBook,
-                            _liq_price, estimate_winrate)
+from decision.paper import (CHECK_LOSS_PCT, CHECK_WIN_PCT, MAX_PAPER_LEV,
+                            NOTIONAL, SAFETY_HOLD_MS, PaperBook, _liq_price,
+                            estimate_winrate)
 
 
 def ctx(price=100.0, atr=2.0, direction="bullish", score=70, gap=20,
@@ -90,8 +91,11 @@ def test_opens_position_with_all_fields():
     assert pos["sl"] < pos["entry"] < pos["tp"]
     assert pos["liq"] < pos["entry"]
     assert pos["winrate"] is not None
-    # 15 分钟周期
-    assert pos["expires_ts"] - pos["entry_ts"] == HOLD_MS
+    # expires_ts 现在是**保险丝**，不是策略窗口：仓位由 3 分钟自检判胜负，
+    # 只有数据断流/死寂时才会被这条兜底平掉
+    assert pos["expires_ts"] - pos["entry_ts"] == SAFETY_HOLD_MS
+    # 新开的仓位还没做过自检
+    assert pos["checks"] == 0 and pos["last_check_ts"] == 0
 
 
 def test_short_position_levels_are_mirrored():
@@ -145,12 +149,18 @@ def test_direction_flip_does_not_close():
     assert book.positions["btcusdt"].direction == "long"
 
 
-def test_timeout_closes():
+def test_safety_fuse_closes_position():
+    """保险丝：中间地带可以一直持有，但不能永远挂着。
+
+    3 分钟自检判不出胜负时仓位会持续持有，所以旧版"到期就平"
+    改成了 4 小时的兜底。这里验证兜底确实存在。
+    """
     book = PaperBook()
-    pos = book.tick("btcusdt", ctx(price=100.0))
-    # 手动把到期时间拨到过去
-    book.positions["btcusdt"].expires_ts = int(time.time() * 1000) - 1
-    book.tick("btcusdt", ctx(price=100.5))
+    book.tick("btcusdt", ctx(price=100.0))
+    # 把开仓时刻拨到 4 小时之前（保险丝按持有时间算）
+    book.positions["btcusdt"].entry_ts = int(time.time() * 1000) - SAFETY_HOLD_MS - 1000
+    # 价格动一点点（不足以触发止损/止盈，也不够自检判胜负）
+    book.tick("btcusdt", ctx(price=100.05))
     assert book.history[-1]["reason"] == "timeout"
 
 

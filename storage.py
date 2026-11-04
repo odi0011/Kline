@@ -291,6 +291,8 @@ class Storage:
             recovered TINYINT DEFAULT 0,
             open_seq INT DEFAULT 0, settle_bars INT DEFAULT 0,
             settle_approx TINYINT DEFAULT 0,
+            check_no INT DEFAULT 0, check_verdict VARCHAR(12) DEFAULT '',
+            check_move_pct DOUBLE DEFAULT 0,
             trade_key VARCHAR(48) DEFAULT NULL,
             UNIQUE (trade_key),
             INDEX idx_paper_trades_closed(closed_ts),
@@ -306,6 +308,12 @@ class Storage:
             ("open_seq", "ALTER TABLE paper_trades ADD COLUMN open_seq INT DEFAULT 0", False),
             ("settle_bars", "ALTER TABLE paper_trades ADD COLUMN settle_bars INT DEFAULT 0", False),
             ("settle_approx", "ALTER TABLE paper_trades ADD COLUMN settle_approx TINYINT DEFAULT 0", False),
+            # 3 分钟自检的判定：第几轮、结论（win/loss/flip）、当时方向性涨跌幅
+            ("check_no", "ALTER TABLE paper_trades ADD COLUMN check_no INT DEFAULT 0", False),
+            ("check_verdict",
+             "ALTER TABLE paper_trades ADD COLUMN check_verdict VARCHAR(12) DEFAULT ''", False),
+            ("check_move_pct",
+             "ALTER TABLE paper_trades ADD COLUMN check_move_pct DOUBLE DEFAULT 0", False),
         ):
             try:
                 if not self._qall(f"SHOW COLUMNS FROM paper_trades LIKE '{column}'"):
@@ -847,9 +855,10 @@ class Storage:
             "INSERT IGNORE INTO paper_trades(closed_ts,entry_ts,symbol,direction,entry,"
             "exit_price,sl,tp,leverage,margin,qty,pnl,pnl_pct,reason,score,gap,"
             "winrate,winrate_parts,grade,pattern,regime,atr_at_entry,held_ms,`trailing`,"
-            "recovered,open_seq,settle_bars,settle_approx,trade_key) "
+            "recovered,open_seq,settle_bars,settle_approx,"
+            "check_no,check_verdict,check_move_pct,trade_key) "
             "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
-            "%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (_safe_int(trade.get("closedAt"), now) or now,
              entry_ts,
              symbol,
@@ -878,6 +887,9 @@ class Storage:
              open_seq,
              _safe_int(trade.get("settleBars"), 0),
              _safe_int(trade.get("settleApprox"), 0),
+             _safe_int(trade.get("checkNo"), 0),
+             str(trade.get("checkVerdict") or "")[:12],
+             _safe_float(trade.get("checkMovePct")),
              trade_key))
 
     def paper_trades(self, limit: int = 200, symbol: str = "") -> list[dict]:
@@ -891,7 +903,7 @@ class Storage:
         sql = ("SELECT id,symbol,direction,entry,exit_price,sl,tp,leverage,margin,qty,"
                "pnl,pnl_pct,reason,winrate,score,gap,grade,pattern,regime,atr_at_entry,"
                "held_ms,closed_ts,entry_ts,`trailing`,recovered,winrate_parts,"
-               "open_seq,settle_bars,settle_approx "
+               "open_seq,settle_bars,settle_approx,check_no,check_verdict,check_move_pct "
                "FROM paper_trades")
         params: list = []
         symbol = str(symbol or "").strip()
@@ -919,9 +931,12 @@ class Storage:
                 "atrAtEntry": float(r[19] or 0), "heldMs": int(r[20] or 0),
                 "closedAt": int(r[21] or 0), "entryTs": int(r[22] or 0),
                 "trailing": bool(r[23]), "recovered": bool(r[24]),
-                # SELECT 顺序与上面对齐：winrate_parts 在 25，新增三列在 26..28。
+                # SELECT 顺序与上面对齐：winrate_parts 在 25，新增三列在 26..28，
+                # 3 分钟自检的三列在 29..31。
                 "openSeq": int(r[26] or 0), "settleBars": int(r[27] or 0),
                 "settleApprox": int(r[28] or 0),
+                "checkNo": int(r[29] or 0), "checkVerdict": r[30] or "",
+                "checkMovePct": float(r[31] or 0),
             }
             try:
                 parts = json.loads(r[25]) if r[25] else {}

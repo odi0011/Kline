@@ -802,6 +802,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             # read_paper 专用；read_accounts 不会读这三项。
             "paper": paper_rows,
             "paperStats": analysis.get("paperStats") or {},
+            "paperChecks": analysis.get("paperChecks") or {},
             "paperHistory": (analysis.get("paperHistory") or [])[-12:],
             "paperSummary": paper_summary,
             "positionPlans": analysis.get("positionPlans") or [],

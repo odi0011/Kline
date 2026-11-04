@@ -1,4 +1,7 @@
-"""模拟仓：每个监控币种跑一个 15 分钟的纸上交易，用来验证策略而不是真下单。
+"""模拟仓：每个监控币种跑一个持续自检的纸上交易，用来验证策略而不是真下单。
+
+每 3 分钟自检一次，按方向性涨跌幅判亏/判赢/继续持有或反手；
+不是固定 15 分钟到期平仓（那是旧设计）。
 
 设计要点（为什么这样定）：
 
@@ -27,8 +30,8 @@
    评分每 5 秒重算一次，方向在小分差上来回摆是常态。曾经把"方向翻了"
    当成离场信号，结果线上 11 小时平了 9762 笔、100% 是 flip、中位持有
    6 秒——15 分钟的窗口一次都走不完，胜率统计全是噪声。
-   纸上交易要验证的假设是"按信号方向持有 15 分钟"，所以只由
-   止盈 / 止损 / 到期离场；方向变了也等这一仓走完，下一仓再按新方向开。
+   纸上交易要验证的假设是"按信号方向持有，直到自检判出胜负"。
+   每 3 分钟自检：跌够判亏、涨够判赢、中间地带看信号是否强烈反向。
    风险仍由止损兜底，不需要用"翻向就跑"来控风险。
 
 6. **账本必须进数据库，不能只在内存**
@@ -49,14 +52,36 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field, fields
 
-# 一个模拟仓的生命周期
-HOLD_MS = 15 * 60 * 1000
+# 一个模拟仓的自检周期：每 3 分钟按当时的数据判一次成败
+CHECK_MS = 3 * 60 * 1000
+# 兼容旧名字：这个常量现在表示"两次自检之间的间隔"，不再是"到期时间"
+HOLD_MS = CHECK_MS
 # 每个模拟仓的固定名义价值（USDT）。固定下来才能横向比较策略表现。
 NOTIONAL = 1000.0
 # 内存里保留的最近平仓记录条数（只是缓存；全量在 MySQL paper_trades 表）
 MAX_HISTORY = 200
 # 动态止损：ATR 的倍数
 TRAIL_ATR = 1.4
+# ---- 3 分钟自检的三档判定阈值（相对开仓价的方向性涨跌幅，**小数**） ----
+#
+# 判"亏"的门槛要比判"赚"低一点：亏损要尽快止损离场，盈利要给趋势留空间。
+# 两个都用保证金收益率还是价格涨跌幅？用**价格涨跌幅**：它才是行情事实，
+# 保证金收益率只是加了杠杆后的放大版（20x 下 0.1% 的价格波动就是 2%）。
+#
+# 单位必须写清楚：这里一律用**小数比率**（-0.0015 = -0.15%），
+# 和 _directional_move 的返回值同一量纲。混用百分比会得到一个
+# 永远触发不了（或永远触发）的阈值——第一版就踩了这个坑。
+CHECK_LOSS_RATIO = -0.0015   # 方向性跌 0.15% → 判失败，平掉重开
+CHECK_WIN_RATIO = 0.0020     # 方向性涨 0.20% → 判胜利，落袋
+# 兼容旧名字（前端/测试可能引用）：单位仍是小数
+CHECK_LOSS_PCT = CHECK_LOSS_RATIO
+CHECK_WIN_PCT = CHECK_WIN_RATIO
+# 中间地带：|涨跌| < 阈值时，看当轮数据决定"继续持有"还是"反手"
+CHECK_FLIP_MIN_GAP = 18.0    # 反手要求的多空分离度（比开仓线的 15 更严）
+CHECK_FLIP_MIN_SCORE = 58.0  # 反手要求的共鸣分
+# 保险丝：中间地带可以一直持有，但不能无限期挂着（数据断流/行情死寂时
+# 仓位会永远不动，账本上留一个永不结算的仓）。这只是兜底，不是策略。
+SAFETY_HOLD_MS = 4 * 60 * 60 * 1000      # 4 小时
 # 最强不过 20x：模拟仓是为了验证信号，不是赌爆仓
 MAX_PAPER_LEV = 20
 
@@ -153,6 +178,16 @@ class PaperPosition:
     # 开仓单调序号：同一毫秒内平仓并重开也不会让 trade_key 碰撞。
     # 进程内从 1 递增，重启时从恢复出来的最大值继续，不能跨重启归零。
     open_seq: int = 0
+    # 上一次自检的时刻（毫秒）。0 = 还没检过。
+    # 3 分钟自检靠它判断"距上次检查够不够一个周期"，不能靠 tick 次数——
+    # tick 每 5 秒一次，但行情卡顿时会漏跳，按次数会提前或延后判定。
+    last_check_ts: int = 0
+    # 这一仓已经做过几次自检（记账/复盘用，也是"持有到现在看过几轮"的证据）
+    checks: int = 0
+    # 上一次自检的结论（hold / loss / win / flip）与当时的方向性涨跌幅。
+    # 前端能直接显示"3 分钟检过一轮：+0.08%，继续持有"。
+    last_verdict: str = ""
+    last_move_pct: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -513,7 +548,7 @@ class PaperBook:
         # 胜率高的在前；胜率相同比样本量。没有平仓记录的币不上榜。
         ranked.sort(key=lambda x: (-(x["winrate"] or 0.0), -x["closed"]))
         return {
-            "note": "模拟仓=15 分钟纸上交易，不产生真实委托，与账户实盘持仓无关。"
+            "note": "模拟仓=纸上交易（不产生真实委托，与账户实盘持仓无关）：每 3 分钟自检一次，"
                     "当前数据库不可用（纯内存降级模式）：session 是进程启动以来的"
                     f"累计值，bySymbol 只覆盖内存里最近 {MAX_HISTORY} 条平仓记录，"
                     "重启会清零——数据库恢复后这些数据会自动重新进库。",
@@ -531,6 +566,59 @@ class PaperBook:
             # 内存降级模式保持旧契约（Agent/测试都按这两个键读）
             "window": {"records": len(rows), "limit": MAX_HISTORY},
             "bySymbol": ranked,
+        }
+
+    def check_stats(self) -> dict:
+        """3 分钟自检的专项统计：判赢/判亏/反手各多少，以及回撤。
+
+        与 summary() 的区别：summary 按"有没有赚钱"算胜率；这里按
+        **自检当时的判定**算——判赢但之后其实还能涨、判亏但后来反弹，
+        这些是策略调参要看的东西，混在胜率里看不出来。
+
+        回撤用已平仓流水的累计盈亏曲线算（从峰值往下的最大跌幅），
+        这是纸上策略的"它能不能扛住"的直接答案。
+        """
+        with self._lock:
+            rows = [r for r in self.history if isinstance(r, dict)]
+        wins = losses = flips = holds = 0
+        for r in rows:
+            verdict = str(r.get("checkVerdict") or "")
+            if verdict == "win":
+                wins += 1
+            elif verdict == "loss":
+                losses += 1
+            elif verdict == "flip":
+                flips += 1
+            elif verdict == "hold":
+                holds += 1
+        # 累计盈亏曲线（按 closedAt 升序）→ 最大回撤、当前回撤
+        ordered = sorted(rows, key=lambda r: int(_num(r.get("closedAt")) or 0))
+        equity = 0.0
+        peak = 0.0
+        max_dd = 0.0
+        curve = []
+        for r in ordered:
+            equity += _num(r.get("pnl")) or 0.0
+            peak = max(peak, equity)
+            dd = (equity - peak) if peak > 0 else 0.0
+            max_dd = min(max_dd, dd)
+            curve.append(round(equity, 4))
+        judged = wins + losses
+        return {
+            "checks": wins + losses + flips + holds,
+            "winChecks": wins,
+            "lossChecks": losses,
+            "flipChecks": flips,
+            "holdChecks": holds,
+            "checkWinrate": round(wins / judged * 100, 1) if judged else None,
+            "netPnl": round(equity, 4),
+            # 回撤是金额（和权益同单位），不是百分比——模拟仓的名义本金固定，
+            # 用"赚了多少又回吐多少"更容易看懂
+            "maxDrawdown": round(max_dd, 4),
+            "currentDrawdown": round(equity - peak, 4) if peak > 0 else 0.0,
+            "peakPnl": round(peak, 4),
+            "curve": curve[-120:],
+            "samples": len(rows),
         }
 
     def _db_summary(self, agg: dict, symbols: list, open_count: int,
@@ -568,7 +656,7 @@ class PaperBook:
         # 胜率高的在前；胜率相同比样本量。没有平仓记录的币不上榜。
         ranked.sort(key=lambda x: (-(x["winrate"] or 0.0), -x["closed"]))
         return {
-            "note": "模拟仓=15 分钟纸上交易，不产生真实委托，与账户实盘持仓无关。"
+            "note": "模拟仓=纸上交易（不产生真实委托，与账户实盘持仓无关）：每 3 分钟自检一次，"
                     "全部已平仓记录在 MySQL paper_trades 表：session 与 bySymbol "
                     "都是数据库全量累计口径，服务重启不会清零，可直接用 SQL 复盘。",
             "source": "mysql",
@@ -644,6 +732,17 @@ class PaperBook:
                (pos.direction == "short" and price < pos.peak):
                 pos.peak = price
 
+            # ---- 每 3 分钟一次自检：判亏 / 判赢 / 继续持有或反手 ----
+            verdict = self._check_periodic(pos, price, ctx)
+            if verdict:
+                reason, detail = verdict
+                self._close(pos, price, reason, ctx, check=detail)
+                # 平完立刻按当前数据重开（除非自检结论是反手，反手要按
+                # **当前评估的方向**开——ctx 里已经是新方向了）
+                self._open(symbol, ctx, price)
+                pos = self.positions.get(symbol)
+                return pos.to_dict() if pos else None
+
             exit_reason = self._check_exit(pos, price)
             if exit_reason:
                 self._close(pos, price, exit_reason, ctx)
@@ -655,6 +754,80 @@ class PaperBook:
                 self._persist(pos)
             pos = self.positions.get(symbol)
             return pos.to_dict() if pos else None
+
+    def _directional_move(self, pos: PaperPosition, price: float) -> float:
+        """这笔仓相对开仓价的**方向性**涨跌幅（多头涨为正、空头跌为正）。
+
+        用价格涨跌幅而不是保证金收益率：后者只是被杠杆放大的同一个数
+        （20x 下 0.1% 的价格波动 = 2% 的保证金波动），拿来判成败会让
+        "正常波动"看起来像"大亏"。
+        """
+        if not pos.entry or not price:
+            return 0.0
+        raw = (price - pos.entry) / pos.entry
+        return raw if pos.direction == "long" else -raw
+
+    def _check_periodic(self, pos: PaperPosition, price: float,
+                        ctx: dict) -> tuple[str, dict] | None:
+        """3 分钟自检：三档判定。返回 (平仓原因, 明细) 或 None（继续持有）。
+
+        判定用的是**当时的方向性涨跌幅**，不是浮动盈亏（后者含杠杆放大）：
+
+          跌 ≤ CHECK_LOSS_PCT  → 判失败，平掉、立刻按当前数据重开
+          涨 ≥ CHECK_WIN_PCT   → 判胜利，落袋、立刻重开
+          中间地带             → 默认继续持有；只有当**当轮数据强烈反向**
+                                （方向相反 + 分离度与分数都够）才反手
+
+        为什么中间地带要"强反向"才反手，而不是方向一变就反：
+        方向在小分差上会来回摆（评分每 5 秒算一次），拿它当反手条件
+        会让仓位在几秒内反复翻向，手续费磨光本金。这里要求分离度
+        比开仓线更高，是"要翻就翻得有把握"。
+        """
+        now = int(time.time() * 1000)
+        last = int(_num(pos.last_check_ts) or 0)
+        # 首次自检从**开仓时刻**起算，而不是从 0 起算（否则一开仓就立刻判）
+        anchor = last or int(_num(pos.entry_ts) or now)
+        if now - anchor < CHECK_MS:
+            return None
+        pos.last_check_ts = now
+        pos.checks = int(_num(pos.checks) or 0) + 1
+
+        move = self._directional_move(pos, price)
+        detail = {
+            "check": pos.checks,
+            "movePct": round(move * 100, 4),
+            "heldSec": max(0, (now - int(_num(pos.entry_ts) or now)) // 1000),
+            "direction": pos.direction,
+            "score": _num(ctx.get("score")),
+            "gap": _num(ctx.get("gap")),
+        }
+
+        # 第一档：跌够 → 判失败
+        if move <= CHECK_LOSS_PCT:
+            detail["verdict"] = "loss"
+            return "check_loss", detail
+        # 第二档：涨够 → 判胜利
+        if move >= CHECK_WIN_PCT:
+            detail["verdict"] = "win"
+            return "check_win", detail
+
+        # 第三档：中间地带。看当轮数据是否**强烈反向**
+        new_dir = str(ctx.get("direction") or "")
+        want = "bearish" if pos.direction == "long" else "bullish"
+        score = _num(ctx.get("score")) or 0.0
+        gap = _num(ctx.get("gap")) or 0.0
+        if (new_dir == want and score >= CHECK_FLIP_MIN_SCORE
+                and gap >= CHECK_FLIP_MIN_GAP):
+            detail["verdict"] = "flip"
+            detail["flipTo"] = "short" if want == "bearish" else "long"
+            # 反手：先按现价平掉这一仓（记 flip），tick 随后会用
+            # ctx 里的新方向重新开仓
+            return "check_flip", detail
+        detail["verdict"] = "hold"
+        # 继续持有：把结论写进仓位，前端/Agent 能看到"这一轮检过了"
+        pos.last_verdict = "hold"
+        pos.last_move_pct = round(move * 100, 4)
+        return None
 
     def drop_missing(self, keep: set[str]) -> None:
         """币种被移出监控时清掉它的模拟仓（不记录，因为不是正常平仓）。"""
@@ -751,7 +924,8 @@ class PaperBook:
             direction="long" if bullish else "short",
             entry=_round(entry, 4),
             entry_ts=now,
-            expires_ts=now + HOLD_MS,
+            # 保险丝到期时刻（不是策略窗口）：到点强制平，防止仓位永久挂着
+            expires_ts=now + SAFETY_HOLD_MS,
             leverage=lev,
             notional=NOTIONAL,
             margin=_round(margin, 2),
@@ -784,7 +958,7 @@ class PaperBook:
                           bars: list) -> tuple[float, str, int, bool] | None:
         """补结算"停机期间已经到期"的恢复仓位。
 
-        重启后不能拿现价当 15 分钟窗口到期价——停机期间价格可能已经先碰过
+        重启后不能拿现价当保险丝到期价——停机期间价格可能已经先碰过
         止盈/止损。这里按 entry_ts ~ expires_ts 之间的 K 线逐根判断：
         先碰止损记 sl、先碰止盈记 tp，都没碰则用到期前最后一根收盘价记 timeout。
         一根K线内高低都碰到时保守判止损（与胜率评估口径一致）。
@@ -836,11 +1010,18 @@ class PaperBook:
         return (last_close, "timeout", bars_used, not covered)
 
     def _check_exit(self, pos: PaperPosition, price: float) -> str:
-        """判断是否该离场：止盈 / 止损 / 到期。
+        """硬性离场：止盈 / 止损 / 超长兜底。
 
-        方向翻转**不算**离场信号：评分每 5 秒重算、方向在小分差上反复摆，
-        拿它当离场条件会让 15 分钟的窗口永远走不完（线上实测中位持有 6 秒、
-        100% 靠 flip 平仓），胜率统计随之失真。见模块注释第 5 条。
+        3 分钟自检（`_check_periodic`）只在**中间地带**决定"继续持有"，
+        所以这里不能再按"到期就平"——那是旧设计（15 分钟窗口）。现在
+        仓位可以一直持有到自检判出胜负或碰到止损/止盈。
+
+        但必须有兜底：数据断流/行情死寂时仓位不能永远挂着。SAFETY_HOLD_MS
+        只是保险丝，不是策略的一部分。
+
+        方向翻转**不在这里**处理：评分每 5 秒重算、方向在小分差上反复摆，
+        拿它当离场条件会让仓位几秒内反复翻向、手续费磨光本金。
+        反手由 3 分钟自检按"强反向"条件判（见 _check_periodic）。
         """
         long_ = pos.direction == "long"
         if long_:
@@ -853,14 +1034,14 @@ class PaperBook:
                 return "tp"
             if price >= pos.sl:
                 return "sl"
-        if int(time.time() * 1000) >= pos.expires_ts:
+        if int(time.time() * 1000) - int(_num(pos.entry_ts) or 0) >= SAFETY_HOLD_MS:
             return "timeout"
         return ""
 
     def _trail(self, pos: PaperPosition, ctx: dict) -> None:
         """移动止损：先把浮盈跑出一段再抬，且只往盈利方向移。
 
-        两个必须守住的约束，缺一个都会把 15 分钟的交易变成秒级刮头皮：
+        两个必须守住的约束，缺一个都会把持仓变成秒级刮头皮：
 
         1. **基准用开仓时的 ATR，不用当前 ATR。**
            行情转静时当前 ATR 会塌下去（BTC 5 分钟 ATR 能从 60 掉到 8），
@@ -901,10 +1082,13 @@ class PaperBook:
 
     def _close(self, pos: PaperPosition, price: float, reason: str, ctx: dict,
                recovered: bool = False, settle_bars: int = 0,
-               settle_approx: bool = False) -> None:
+               settle_approx: bool = False, check: dict | None = None) -> None:
         qty_actual = (price - pos.entry) * pos.qty * (1 if pos.direction == "long" else -1)
         pnl = round(qty_actual, 4)
         self.positions.pop(pos.symbol, None)
+        # 3 分钟自检的判定明细：哪一轮、当时涨跌多少、持了多久、
+        # 按什么判的（win/loss/flip）。复盘时要能回答"这笔为什么平"。
+        check = check if isinstance(check, dict) else {}
         record = {
             "symbol": pos.symbol,
             "direction": pos.direction,
@@ -926,6 +1110,10 @@ class PaperBook:
             "pattern": pos.pattern,
             "regime": pos.regime,
             "atrAtEntry": pos.atr_at_entry,
+            # 自检判定：verdict=win/loss/flip/hold，movePct=当时方向性涨跌幅
+            "checkNo": int(check.get("check") or pos.checks or 0),
+            "checkVerdict": str(check.get("verdict") or ""),
+            "checkMovePct": _num(check.get("movePct")),
             "winrateParts": pos.winrate_parts or {},
             "heldMs": max(0, int(time.time() * 1000) - pos.entry_ts),
             "closedAt": int(time.time() * 1000),

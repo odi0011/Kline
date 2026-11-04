@@ -33,7 +33,7 @@ import pytest
 import decision.paper as paper_mod
 import storage
 from core.candle import Candle
-from decision.paper import HOLD_MS, PaperBook
+from decision.paper import SAFETY_HOLD_MS, PaperBook
 from storage import Storage
 from tests.test_paper_store import SQLConnection
 
@@ -252,7 +252,7 @@ def test_downtime_expired_settles_tp_sl_timeout_and_recovered_column(make_store,
     sol = book.tick("solusdt", ctx(300.0, atr=3.0))
     bnb = book.tick("bnbusdt", ctx(150.0, atr=1.0))
     entry_ts = btc["entry_ts"]
-    clock.advance(HOLD_MS + 5 * MINUTE)            # 停机 20 分钟，四仓都已到期
+    clock.advance(SAFETY_HOLD_MS + 5 * MINUTE)     # 停机超过保险丝，四仓都该补结算
 
     restarted = PaperBook(store=store)
     assert restarted.restore_info["positions"] == 4
@@ -330,7 +330,7 @@ def test_downtime_settle_uses_trailing_sl_and_falls_back_to_price(make_store, cl
     store.save_paper_position(saved)
     assert position_json(store, "xrpusdt")["sl"] == 402.0
 
-    clock.advance(HOLD_MS + 5 * MINUTE)
+    clock.advance(SAFETY_HOLD_MS + 5 * MINUTE)
     restarted = PaperBook(store=store)
     assert restarted.restore_info["positions"] == 4
 
@@ -517,7 +517,7 @@ def test_restart_settlement_does_not_duplicate_committed_trade(make_store, clock
     assert len(store.paper_trades()) == 1
 
     # 重启时旧仓位还在且已到期 → bars 补结算会再次尝试写流水，必须被去重
-    clock.advance(HOLD_MS + MINUTE)
+    clock.advance(SAFETY_HOLD_MS + MINUTE)
     restarted = PaperBook(store=store)
     assert restarted.restore_info["positions"] == 1
     bars = [Candle(open_time=opened["entry_ts"] + MINUTE, open=100.0,
