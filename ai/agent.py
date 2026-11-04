@@ -26,6 +26,9 @@ from ai.provider import chat_completion
 MAX_SENTENCES = 3
 # 默认口径（交易员短答）：只留第一句，且不超过这个字数
 SHORT_REPLY_CHARS = 60
+# 列表类回答（逐行流水）的整条上限：一行一条记录，60 字放不下几条。
+# 超了从最旧的开始丢，保证最新的记录完整。
+LIST_BUBBLE_CHARS = 1200
 # 身份类问答要完整：被问"你是谁/什么模型"时回答通常只有一两小句，
 # 按短答硬裁会把模型名这类关键信息切掉。
 _IDENTITY_QUESTION = re.compile(
@@ -42,10 +45,36 @@ _DETAIL_REQUEST = re.compile(
     r"analy[sz]e|explain|why|detail|elaborate|walk me through",
     re.I)
 
+# 要"清单/流水"类回答：最近 5 笔平仓、列出所有仓位、每笔盈亏…
+# 这是**数据**不是废话。按短答"只留第一句"裁，5 笔记录会被砍成 1 笔半，
+# 用户看到的答案就是错的（线上实测："最近5笔平仓"只回了 2 笔还断在半句）。
+_LIST_REQUEST = re.compile(
+    r"列出|列一下|列个|一条一条|逐条|逐行|每笔|每行|明细|清单|"
+    r"全部|所有|最近\s*\d+\s*[笔条个]|\d+\s*[笔条个]|前\s*\d+\s*[笔条个]",
+    re.I)
+
 
 def _wants_detail(prompt: str) -> bool:
-    """用户是否明确要求展开分析。没要求就该短答。"""
-    return bool(_DETAIL_REQUEST.search(str(prompt or "")))
+    """用户是否明确要求展开分析（或要一份清单）。没要求就该短答。"""
+    text = str(prompt or "")
+    return bool(_DETAIL_REQUEST.search(text) or _LIST_REQUEST.search(text))
+
+
+def _is_list_reply(text: str) -> bool:
+    """回答是不是"逐行数据表"：≥3 行、行都很短、带数字、且不是整句散文。
+
+    流水/清单类回答的价值就在每一行，按 60 字裁等于把数据删掉。
+    但普通的 3 段散文不能走这条路——否则短答的硬闸就被绕开了。
+    判据：每行不超过 60 字、不以句号/逗号收尾（那是散文断行），
+    多数行带数字（那是数据）。
+    """
+    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    if len(lines) < 3:
+        return False
+    if any(len(ln) > 60 or ln.endswith(("。", "！", "？", "，", "；")) for ln in lines):
+        return False
+    numbered = sum(1 for ln in lines if re.search(r"\d", ln))
+    return numbered * 2 >= len(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +178,9 @@ def split_reply(text, detailed: bool = True, identity: bool = False) -> list[str
         # 身份回答保持完整
         return [_trim_bubble(raw)]
     if not detailed:
+        # 逐行列表：短答规则在这里会删数据，整条保留（_trim_bubble 内部有上限）。
+        if _is_list_reply(raw):
+            return [_trim_bubble(raw)]
         # 拒绝/失败类回答要保留完整理由：这类回复的价值全在"为什么"，
         # 只留第一句会把原因砍光（线上出现过只剩"但不行。"）。
         if _MUST_EXPLAIN.search(raw):
@@ -184,6 +216,13 @@ def _trim_bubble(text: str) -> str:
     整段标记就当成普通文字显示在气泡里——线上截图里那串乱码就是它。
     """
     text = str(text or "").strip()
+    # 逐行列表（流水/清单）：每行都是数据，不能按 60 字裁。
+    # 只做整体上限保护，且从**末尾**（最旧）截，保留最新几条。
+    if _is_list_reply(text):
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        while len(lines) > 1 and len("\n".join(lines)) > LIST_BUBBLE_CHARS:
+            lines.pop()
+        return "\n".join(lines)
     # 先把标记摘出来，只对正文截断，最后再拼回去
     tokens = _STICKER_TOKEN.findall(text)
     body = _STICKER_TOKEN.sub("", text).strip()

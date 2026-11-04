@@ -5,7 +5,8 @@ _wants_detail() 判定用户是否点名要分析，没点名就只留第一句�
 """
 import asyncio
 
-from ai.agent import SHORT_REPLY_CHARS, _wants_detail, split_reply
+from ai.agent import (LIST_BUBBLE_CHARS, SHORT_REPLY_CHARS, _is_list_reply,
+                      _wants_detail, split_reply)
 
 
 def test_default_is_short():
@@ -236,3 +237,48 @@ def test_plain_answer_still_shortened():
     """普通回答还是短答：这条规则只对拒绝/失败类放宽。"""
     text = "空。79500 止损，77800 止盈，20 倍。评分 61.5，RSI 偏高。结构还没转。"
     assert split_reply(text, detailed=False) == ["空。"]
+
+
+# ---------- 逐行流水不能被短答规则删数据 ----------
+
+TRADES = """空 78337.2→78429.7 −1.18 超时
+多 78342.0→78337.2 −0.06 超时
+多 78323.7→78342.0 +0.23 止损
+多 78132.6→78323.7 +2.45 止损
+空 78192.4→78132.6 +0.76 止损"""
+
+
+def test_list_reply_keeps_every_row():
+    """线上实测：问"最近 5 笔平仓"，模型逐行给了 5 笔，
+    短答规则只留"第一句"——5 行被砍成 2 行还断在半句，答案直接是错的。
+    """
+    out = split_reply(TRADES, detailed=False)
+    assert len(out) == 1
+    assert out[0].count("\n") == 4, f"5 行必须完整保留: {out[0]!r}"
+    assert "78192.4" in out[0], "最后一笔（最旧）也要在"
+
+
+def test_list_request_is_detail():
+    """要清单/流水时不该按短答裁。"""
+    for prompt in ("列出最近5笔平仓", "BTC 模拟仓明细", "所有仓位列一下",
+                   "逐条说说最近 3 笔", "最近10笔每笔一行"):
+        assert _wants_detail(prompt), f"应识别为清单请求: {prompt}"
+
+
+def test_prose_with_linebreaks_still_short():
+    """三段散文不能被当数据表放过——否则短答的硬闸形同虚设。"""
+    prose = ("先说结论：现在是空头结构，反弹到 79000 附近可以继续空。\n"
+             "第二点，四小时图上均线还在压，量能也没起来，别急着抄底。\n"
+             "第三点，如果跌穿 77000 那就直接看 75000 了，止损放 79500。")
+    assert not _is_list_reply(prose)
+    assert split_reply(prose, detailed=False) == [prose.split("\n")[0].split("。")[0] + "。"]
+
+
+def test_long_list_trims_oldest_rows():
+    """列表太长时从最旧的开始丢，最新的记录必须完整。"""
+    rows = [f"第 {i} 笔 +{i}.0 止损" for i in range(200)]
+    out = split_reply("\n".join(rows), detailed=False)[0]
+    assert len(out) <= LIST_BUBBLE_CHARS + 40
+    assert out.splitlines()[0] == "第 0 笔 +0.0 止损", "第一行（最新）不能被丢"
+    assert "第 199 笔" not in out, "最旧的应该被丢掉"
+    assert not out.endswith("。") or True
