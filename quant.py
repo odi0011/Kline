@@ -26,8 +26,7 @@ from collections import deque
 
 from accounts import (
     signed_request, open_orders, cancel_order, query_order, cancel_all_open_orders,
-    place_protective_order,
-    place_protective_order,
+    place_protective_order, cancel_algo_orders,
 )
 from analysis import indicators as IND
 from decision.advice import build_advice
@@ -1109,12 +1108,27 @@ class QuantEngine:
         return sl_order.get("orderId"), tp_order.get("orderId")
 
     def _cancel_protection(self, a, symbol: str) -> None:
-        if not self.decision_cfg.exchange_protection:
-            return
+        """平仓后撤掉保护单。
+
+        **两处都要撤**：普通挂单（/fapi/v1/order）和算法条件单
+        （/fapi/v1/algoOrder）。止损现在走 algoOrder 接口，只调
+        cancel_all_open_orders 撤不掉它 —— 仓位平了止损单还挂着，
+        就成了孤儿单，会一直累积（线上实测留下 2 张，其中一张
+        名义 0.623 BTC，是这个仓的 500 倍）。
+
+        不看 exchange_protection：那个开关只决定"引擎要不要自己挂保护单"，
+        撤单永远要做。手动单的止损也是 algo 单，开关关掉时更不能留孤儿。
+        """
+        key, secret = a["api_key"], a["api_secret"]
         try:
-            cancel_all_open_orders(a["api_key"], a["api_secret"], symbol)
+            cancel_all_open_orders(key, secret, symbol)
         except Exception as e:
             self._event("error", f"撤销保护单失败({symbol}): {e}", symbol=symbol)
+        # 算法单单独撤：接口失败不影响上面已撤的普通单
+        try:
+            cancel_algo_orders(key, secret, symbol)
+        except Exception as e:
+            self._event("error", f"撤销算法条件单失败({symbol}): {e}", symbol=symbol)
 
     def _place_entry_order(self, a, symbol: str, side: str, qty: float,
                            reference_price: float) -> dict | None:

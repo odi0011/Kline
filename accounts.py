@@ -121,6 +121,32 @@ def fetch_account(api_key: str, api_secret: str) -> dict:
     }
 
 
+def cancel_algo_orders(api_key: str, api_secret: str, symbol: str) -> int:
+    """撤掉某个币种挂着的算法条件单（止损/止盈），返回撤掉的数量。
+
+    止损走的是 /fapi/v1/algoOrder（见 place_protective_order），
+    所以 cancel_all_open_orders 撤不到它。平仓后不撤就会留下孤儿单：
+    仓位没了、止损单还挂着，会一直累积（线上实测留下两张，
+    其中一张名义 0.623 BTC）。
+    """
+    rows = signed_request(api_key, api_secret, "/fapi/v1/openAlgoOrders",
+                          {"symbol": symbol.upper()})
+    items = (rows.get("orders", rows) if isinstance(rows, dict) else rows) or []
+    removed = 0
+    for order in items:
+        algo_id = order.get("algoId") if isinstance(order, dict) else None
+        if not algo_id:
+            continue
+        try:
+            signed_request(api_key, api_secret, "/fapi/v1/algoOrder",
+                           {"algoId": algo_id}, method="DELETE")
+            removed += 1
+        except Exception:
+            # 单张失败不中断：剩下的继续撤，最终数量如实返回
+            continue
+    return removed
+
+
 def open_orders(api_key: str, api_secret: str, symbol: str) -> list:
     """Read-only protection-order audit."""
     return signed_request(api_key, api_secret, "/fapi/v1/openOrders",

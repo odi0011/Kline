@@ -345,3 +345,71 @@ def test_unprotected_warning_is_explicit(tmp_path):
     assert result["unprotected"] is True
     assert "裸" in result["warning"]
     assert "手动补止损" in result["warning"]
+
+
+# ---------- 孤儿算法单清理 ----------
+
+def test_cancel_algo_orders_deletes_all(monkeypatch):
+    """平仓后要撤掉 algo 条件单。
+
+    只调 cancel_all_open_orders 撤不到它们——止损走的是 /fapi/v1/algoOrder，
+    仓位平了单还挂着就会累积成孤儿（线上实测留了两张，一张 0.623 BTC）。
+    """
+    import accounts as acc_mod
+    calls = []
+
+    def fake(key, secret, path, params=None, method="GET"):
+        calls.append((method, path, dict(params or {})))
+        if path == "/fapi/v1/openAlgoOrders":
+            return {"orders": [{"algoId": 11}, {"algoId": 22}]}
+        return {"code": "200"}
+
+    monkeypatch.setattr(acc_mod, "signed_request", fake)
+    removed = acc_mod.cancel_algo_orders("k", "s", "btcusdt")
+    assert removed == 2
+    deletes = [c for c in calls if c[0] == "DELETE"]
+    assert len(deletes) == 2
+    assert all(c[1] == "/fapi/v1/algoOrder" for c in deletes)
+    assert {c[2]["algoId"] for c in deletes} == {11, 22}
+
+
+def test_cancel_algo_orders_survives_single_failure(monkeypatch):
+    """单张撤失败不中断，其余继续撤，返回真实数量。"""
+    import accounts as acc_mod
+
+    def fake(key, secret, path, params=None, method="GET"):
+        if path == "/fapi/v1/openAlgoOrders":
+            return {"orders": [{"algoId": 11}, {"algoId": 22}]}
+        if params and params.get("algoId") == 11:
+            raise RuntimeError("boom")
+        return {"code": "200"}
+
+    monkeypatch.setattr(acc_mod, "signed_request", fake)
+    assert acc_mod.cancel_algo_orders("k", "s", "btcusdt") == 1
+
+
+def test_cancel_protection_also_clears_algo(tmp_path, monkeypatch):
+    """引擎平仓路径必须同时撤普通单和算法单。"""
+    eng = _engine(tmp_path)
+    import quant as quant_mod
+    hit = []
+    monkeypatch.setattr(quant_mod, "cancel_all_open_orders",
+                        lambda k, s, sym: hit.append(("normal", sym)))
+    monkeypatch.setattr(quant_mod, "cancel_algo_orders",
+                        lambda k, s, sym: hit.append(("algo", sym)))
+    eng._cancel_protection({"api_key": "k", "api_secret": "s"}, "btcusdt")
+    assert ("normal", "btcusdt") in hit
+    assert ("algo", "btcusdt") in hit, "算法单没撤，会留孤儿"
+
+
+def test_cancel_protection_runs_even_when_exchange_protection_off(tmp_path, monkeypatch):
+    """开关只控制"引擎要不要挂保护单"，撤单永远要做。"""
+    eng = _engine(tmp_path)
+    import dataclasses
+    eng.decision_cfg = dataclasses.replace(eng.decision_cfg, exchange_protection=False)
+    import quant as quant_mod
+    hit = []
+    monkeypatch.setattr(quant_mod, "cancel_all_open_orders", lambda k, s, sym: hit.append("normal"))
+    monkeypatch.setattr(quant_mod, "cancel_algo_orders", lambda k, s, sym: hit.append("algo"))
+    eng._cancel_protection({"api_key": "k", "api_secret": "s"}, "btcusdt")
+    assert hit == ["normal", "algo"]
