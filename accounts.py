@@ -147,6 +147,34 @@ def cancel_algo_orders(api_key: str, api_secret: str, symbol: str) -> int:
     return removed
 
 
+def account_max_leverage(api_key: str, api_secret: str, symbol: str) -> int:
+    """该**账户**对某个合约实际能设的最高杠杆。0 = 取不到。
+
+    必须查账户自己的 /fapi/v1/leverageBracket，不能用公开的
+    /fapi/v1/leverageBracket（不带签名那份）——线上实测同一时刻：
+      · 公开分档说 BTCUSDT 可以 150x
+      · 账户实际分档第一档只有 125x
+    照公开值去设 125 以上，交易所直接 -4028 "Leverage 150 is not valid"，
+    整张单下不出去（用户看到的却是"已算好、等确认"）。
+    """
+    rows = signed_request(api_key, api_secret, "/fapi/v1/leverageBracket")
+    wanted = str(symbol or "").upper()
+    best = 0
+    for row in rows if isinstance(rows, list) else []:
+        if str(row.get("symbol") or "").upper() != wanted:
+            continue
+        try:
+            best = max(best, int(row.get("maxLeverage") or 0))
+        except (TypeError, ValueError):
+            pass
+        for bracket in row.get("brackets") or []:
+            try:
+                best = max(best, int(bracket.get("initialLeverage") or 0))
+            except (TypeError, ValueError):
+                continue
+    return best
+
+
 def open_orders(api_key: str, api_secret: str, symbol: str) -> list:
     """Read-only protection-order audit."""
     return signed_request(api_key, api_secret, "/fapi/v1/openOrders",

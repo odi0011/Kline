@@ -26,7 +26,7 @@ from collections import deque
 
 from accounts import (
     signed_request, open_orders, cancel_order, query_order, cancel_all_open_orders,
-    place_protective_order, cancel_algo_orders,
+    place_protective_order, cancel_algo_orders, account_max_leverage,
 )
 from analysis import indicators as IND
 from analysis import risk_metrics as RISK
@@ -2602,17 +2602,28 @@ class QuantEngine:
                               f"交易所接口也没返回），无法算单"}
 
         # 杠杆：只受交易所对该合约的上限约束（这是真实规则，人下单也一样）。
-        # 用户要 150x 而交易所只支持 125x → 按 125x 算并说明，不额外加自己的顶。
+        # **必须用账户自己的分档**：公开分档和这份 key 实际能设的值不同
+        # （线上实测 BTCUSDT 公开说 150x、这个账户实际只有 125x，照 150 去设
+        # 直接被 -4028 拒掉，整张单下不出去）。
+        account_lev = 0
         try:
-            max_lev = int(self.max_leverage_fn(sym) or 0) if self.max_leverage_fn else 0
+            account_lev = account_max_leverage(acct["api_key"], acct["api_secret"], sym)
         except Exception:
-            max_lev = 0
+            account_lev = 0
+        try:
+            public_lev = int(self.max_leverage_fn(sym) or 0) if self.max_leverage_fn else 0
+        except Exception:
+            public_lev = 0
+        # 两个来源都拿到时取更小的那个（保守：宁可少开也不被交易所拒）
+        candidates = [x for x in (account_lev, public_lev) if x > 0]
+        max_lev = min(candidates) if candidates else 0
         want_lev = int(leverage or max_lev or 20)
         lev = max(1, want_lev)
         note = ""
         if max_lev and want_lev > max_lev:
             lev = max_lev
-            note = (f"这个合约交易所最高 {max_lev}x，已按 {lev}x 算"
+            source = "这个账户" if account_lev == max_lev else "这个合约"
+            note = (f"{source}最高 {max_lev}x，已按 {lev}x 算"
                     f"（你要求 {want_lev}x）")
 
         # 保证金：唯一约束是账户里真有这么多钱。
@@ -2718,45 +2729,63 @@ class QuantEngine:
 
         fill = self._num(order.get("avgPrice")) or float(plan.get("price") or 0)
         sl_order_id = tp_order_id = None
-        protect_errors = []
+        sl_error = tp_error = ""
         # 止损和止盈**分别**捕获：一个失败不能连累另一个。
-        # 止损优先——仓位已经开了，没有止损就是在裸奔。
+        # 止损优先——仓位已经开了，没有止损才是裸奔；止盈缺了只是少个目标位。
         try:
             sl_order = place_protective_order(
                 key, secret, sym, plan["closeSide"], "STOP_MARKET", qty,
                 float(plan["sl"]))
             sl_order_id = sl_order.get("algoId") or sl_order.get("orderId")
         except Exception as e:
-            protect_errors.append(f"止损: {str(e)[:120]}")
+            sl_error = f"止损: {str(e)[:120]}"
         try:
             tp_order = place_protective_order(
                 key, secret, sym, plan["closeSide"], "TAKE_PROFIT_MARKET", qty,
                 float(plan["tp"]))
             tp_order_id = tp_order.get("algoId") or tp_order.get("orderId")
         except Exception as e:
-            protect_errors.append(f"止盈: {str(e)[:120]}")
+            tp_error = f"止盈: {str(e)[:120]}"
+        protect_errors = [x for x in (sl_error, tp_error) if x]
         protect_error = "；".join(protect_errors)
 
         self.stats["orders"] += 1
         self._event(
             "open",
             f"手动{plan['label']} {sym.upper()} 数量 {qty} @ {fill}"
-            + (f"（止损单挂失败: {protect_error[:60]}）" if protect_error else ""),
+            + (f"（保护单挂失败: {protect_error[:60]}）" if protect_error else ""),
             account=acct.get("name", ""), symbol=sym, side=side, qty=qty,
             entry=fill, orderId=order.get("orderId"), margin=plan.get("margin"),
             direction=plan.get("direction"), slPct=plan.get("slPct"),
             tpPct=plan.get("tpPct"), manual=True)
         self._broadcast_positions()
+        # **只有止损没挂上才算裸奔**。之前用 bool(protect_error)，
+        # 止盈失败也被报成 unprotected=true + "这个仓现在是裸的"——
+        # 模型信了，接着连开 5 轮 read_orders/read_accounts/read_events
+        # 想补救，最后撞上 8 轮上限，用户只看到一句"已达到 8 轮上限"，
+        # 根本不知道自己那笔单其实已经成交了（线上真实事故）。
+        naked = bool(sl_error)
+        warning = ""
+        if naked:
+            warning = (f"仓位已成交，但**止损没挂上**：{sl_error}。"
+                       f"这个仓现在是裸的，建议手动补止损或立刻平掉。")
+        elif tp_error:
+            warning = (f"仓位已成交，止损已挂上，但止盈没挂上：{tp_error}。"
+                       f"仓位是受保护的（有止损），你可以手动补一个止盈，"
+                       f"或者不管它——它仍会按止损离场。")
         return {
             "ok": True, "symbol": sym, "side": side, "qty": qty, "fill": fill,
             "orderId": order.get("orderId"),
             "slOrderId": sl_order_id, "tpOrderId": tp_order_id,
             "protectError": protect_error,
-            # 止损没挂上 = 仓位裸奔，必须让用户知道，不能只在 tooltip 里躺着
-            "unprotected": bool(protect_error),
-            "warning": (f"仓位已成交，但保护单没挂上：{protect_error}。"
-                        f"这个仓现在是裸的，建议手动补止损或立刻平掉。"
-                        if protect_error else ""),
+            "slPlaced": bool(sl_order_id), "tpPlaced": bool(tp_order_id),
+            "unprotected": naked,
+            "warning": warning,
+            # 明确告诉模型：这笔单已经成交了，不要再去反复核对
+            "done": True,
+            "next": ("下单已完成，直接把结果和警示告诉用户。"
+                     "不要再调用 read_orders / read_accounts 去二次核对——"
+                     "成交与否这个返回值已经说明了。"),
         }
 
     @staticmethod

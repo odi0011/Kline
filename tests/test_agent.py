@@ -651,18 +651,27 @@ def test_recent_ten_runs_only(tmp_path, monkeypatch):
 def test_eight_round_limit_is_real_tool_log(tmp_path, monkeypatch):
     calls = []
     def forever(*args, **kwargs):
-        calls.append(kwargs)
+        calls.append({"kwargs": kwargs, "messages": args[2] if len(args) > 2 else kwargs.get("messages")})
         return tool_result(tool_call(call_id=f"round-{len(calls)}"))
     async def scenario():
         manager, _ = make_manager(tmp_path, monkeypatch, provider=forever)
         task = await create(manager)
         await finished(manager, task)
-        assert len(calls) == 8 and len(task["steps"]) == 8
-        assert task["status"] == "failed" and "8 轮" in task["error"]
-        assert task["runs"][0]["status"] == "failed"
+        # 8 轮工具轮 + 1 次收尾（收尾那次不带 tools）。线上事故：以前直接
+        # raise "已达到 8 轮上限"，用户完全不知道自己那笔单已经成交了。
+        assert len(task["steps"]) == 8
+        assert len(calls) == 9, len(calls)
+        assert calls[-1]["kwargs"].get("tools") is None, "收尾请求必须不带工具"
+        tail = calls[-1]["messages"] or []
+        assert any("不要再调用任何工具" in str(m.get("content")) for m in tail)
+        # 收尾也失败（mock 仍只返回工具调用）→ 退回摘要，不能是空白失败
+        assert task["status"] == "succeeded"
+        reply = (task["runs"][0].get("result") or "")
+        assert reply and "8 步" in reply, reply
         assert task["progress"]["round"] == 8
-        assert calls[0]["tool_choice"] == "required" and all(c["tool_choice"] == "auto" for c in calls[1:])
-        assert all(120 <= c["timeout"] <= 180 for c in calls)
+        choices = [c["kwargs"].get("tool_choice") for c in calls]
+        assert choices[0] == "required" and all(x == "auto" for x in choices[1:8])
+        assert all(120 <= c["kwargs"]["timeout"] <= 180 for c in calls)
         await manager.stop()
     asyncio.run(scenario())
 

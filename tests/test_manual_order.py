@@ -85,7 +85,7 @@ def test_plan_clamps_leverage_to_exchange_max(tmp_path):
     plan = eng.manual_order_plan("btcusdt", "long", 100.0, 50)
     assert plan["ready"] is True
     assert plan["leverage"] == 5
-    assert "交易所最高 5x" in plan["note"]
+    assert "最高 5x" in plan["note"]
 
 
 def test_plan_rejects_bad_direction(tmp_path):
@@ -245,7 +245,7 @@ def test_high_leverage_allowed_up_to_exchange_max(tmp_path):
     plan = eng.manual_order_plan("btcusdt", "long", 5000, 150)
     assert plan["ready"] is True, plan
     assert plan["leverage"] == 50
-    assert "交易所最高 50x" in plan["note"]
+    assert "最高 50x" in plan["note"]
 
     # 交易所支持 150x 时不该被砍到 125x
     eng.max_leverage_fn = lambda s: 150
@@ -320,8 +320,15 @@ def test_sl_and_tp_fail_independently(tmp_path):
     assert "STOP_MARKET" in calls and "TAKE_PROFIT_MARKET" in calls
     assert result["slOrderId"] == 1, "止损成功就该记下 id"
     assert result["tpOrderId"] is None
-    assert result["unprotected"] is True
+    assert result["slPlaced"] is True and result["tpPlaced"] is False
+    # **止损成功就不算裸奔**：止盈缺了只是少个目标位，仓位仍有止损保护。
+    # 线上事故：这里以前是 unprotected=True + "这个仓现在是裸的"，
+    # 模型信了，连着 5 轮 read_orders/read_accounts 想补救，撞上 8 轮上限，
+    # 用户只看到"已达到 8 轮上限"，根本不知道自己那笔单其实已经成交了。
+    assert result["unprotected"] is False
     assert "止盈" in result["protectError"]
+    assert "止损已挂上" in result["warning"]
+    assert "裸" not in result["warning"], "止损在，不能说裸奔"
 
 
 def test_unprotected_warning_is_explicit(tmp_path):
@@ -413,3 +420,102 @@ def test_cancel_protection_runs_even_when_exchange_protection_off(tmp_path, monk
     monkeypatch.setattr(quant_mod, "cancel_algo_orders", lambda k, s, sym: hit.append("algo"))
     eng._cancel_protection({"api_key": "k", "api_secret": "s"}, "btcusdt")
     assert hit == ["normal", "algo"]
+
+
+# ---------- 线上事故：止盈失败被报成裸奔 ----------
+
+def test_tp_only_failure_is_not_reported_as_naked(tmp_path):
+    """止损成功、只有止盈失败 → unprotected 必须是 false。
+
+    线上真实事故链条：
+      1. 下单成功，止损挂上，止盈报 -1111 精度错误
+      2. 旧代码 unprotected=True 并写"这个仓现在是裸的"
+      3. 模型信了，连开 5 轮 read_orders/read_accounts/read_events 想补救
+      4. 撞上 8 轮上限
+      5. 用户看到「已达到 8 轮上限，任务未得到最终结论」
+      → 用户根本不知道那笔单已经成交了，也不知道其实有止损保护。
+    """
+    eng = _engine(tmp_path)
+
+    def fake(key, secret, sym, side, otype, qty, stop):
+        if otype == "TAKE_PROFIT_MARKET":
+            raise RuntimeError("Precision is over the maximum defined for this asset")
+        return {"algoId": 7}
+
+    import quant as quant_mod
+    orig, orig_req = quant_mod.place_protective_order, quant_mod.signed_request
+    quant_mod.place_protective_order = fake
+    quant_mod.signed_request = MagicMock(return_value={})
+    try:
+        plan = eng.manual_order_plan("btcusdt", "long", 100.0, 10)
+        result = eng.manual_order_execute(plan)
+    finally:
+        quant_mod.place_protective_order = orig
+        quant_mod.signed_request = orig_req
+
+    assert result["ok"] is True
+    assert result["unprotected"] is False, "有止损就不算裸奔"
+    assert result["done"] is True
+    # 明确告诉模型别再反复核对——这是 8 轮死循环的根源
+    assert "不要再调用" in result["next"]
+    assert "止损已挂上" in result["warning"]
+
+
+def test_both_fail_is_naked(tmp_path):
+    """止损也失败才是真裸奔，warning 必须第一句就警告。"""
+    eng = _engine(tmp_path)
+
+    def fake(*_a, **_k):
+        raise RuntimeError("all protection failed")
+
+    import quant as quant_mod
+    orig, orig_req = quant_mod.place_protective_order, quant_mod.signed_request
+    quant_mod.place_protective_order = fake
+    quant_mod.signed_request = MagicMock(return_value={})
+    try:
+        plan = eng.manual_order_plan("btcusdt", "long", 100.0, 10)
+        result = eng.manual_order_execute(plan)
+    finally:
+        quant_mod.place_protective_order = orig
+        quant_mod.signed_request = orig_req
+
+    assert result["unprotected"] is True
+    assert result["slPlaced"] is False
+    assert "止损没挂上" in result["warning"] and "裸" in result["warning"]
+
+
+def test_account_leverage_bracket_is_used(monkeypatch):
+    """杠杆上限必须查账户自己的分档，不能用公开分档。
+
+    线上实测：公开分档说 BTCUSDT 可以 150x，这个账户实际只有 125x。
+    按 150 去设 → -4028 "Leverage 150 is not valid"，整张单下不出去。
+    """
+    import accounts
+
+    monkeypatch.setattr(accounts, "signed_request", lambda *a, **k: [
+        {"symbol": "BTCUSDT", "maxLeverage": 125,
+         "brackets": [{"initialLeverage": 125, "notionalCap": 50000},
+                      {"initialLeverage": 100, "notionalCap": 250000}]},
+        {"symbol": "ETHUSDT", "maxLeverage": 75, "brackets": []},
+    ])
+    assert accounts.account_max_leverage("k", "s", "btcusdt") == 125
+    assert accounts.account_max_leverage("k", "s", "BTCUSDT") == 125
+    assert accounts.account_max_leverage("k", "s", "ethusdt") == 75
+    assert accounts.account_max_leverage("k", "s", "solusdt") == 0
+
+
+def test_plan_takes_min_of_account_and_public_leverage(tmp_path):
+    """账户分档和公开分档都给时取更小的那个（宁可少开也不被拒）。"""
+    eng = _engine(tmp_path)
+    eng.max_leverage_fn = lambda s: 150        # 公开分档说 150
+    import accounts, quant as quant_mod
+    orig = accounts.signed_request
+    accounts.signed_request = lambda *a, **k: [
+        {"symbol": "BTCUSDT", "maxLeverage": 125, "brackets": []}]
+    try:
+        plan = quant_mod.QuantEngine.manual_order_plan.__wrapped__ if False else eng.manual_order_plan(
+            "btcusdt", "long", 100.0, 150)
+    finally:
+        accounts.signed_request = orig
+    assert plan["ready"] is True
+    assert plan["leverage"] == 125, plan

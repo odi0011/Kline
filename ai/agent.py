@@ -3035,7 +3035,38 @@ class AgentManager:
                 await self._emit()
                 messages.append({"role": "tool", "tool_call_id": call["id"],
                                  "content": json.dumps({"untrusted": True, "data": output}, ensure_ascii=False)})
-        raise RuntimeError("已达到 8 轮上限，任务未得到最终结论；已执行步骤可查")
+        # 轮次用尽：不能让用户只看到一句"已达到 8 轮上限"。
+        #
+        # 线上真实事故：下单成功后止盈单失败，本次把 unprotected 误报成 true，
+        # 模型以为仓位裸奔，连着 5 轮 read_orders/read_accounts/read_events
+        # 想补救，撞上上限——用户看到的只有"已达到 8 轮上限"，完全不知道
+        # 那笔单其实已经成交了。
+        #
+        # 所以最后一轮强制模型**只做总结、不许再调工具**，把已经拿到的
+        # 事实讲清楚；总结也失败时，退回按步骤摘要拼一句话。
+        try:
+            summary = await self._http_notext(
+                config, selected["id"], messages + [{"role": "user", "content": (
+                    "轮次用完了。不要再调用任何工具，只用已经拿到的数据回答："
+                    "直接说结论和你实际做过的操作（下过什么单、成交与否、"
+                    "有没有失败的保护单），不要再补查。")}],
+                proxy, deadline, "")
+            reply = (summary or {}).get("reply") if isinstance(summary, dict) else ""
+            if isinstance(reply, str) and reply.strip() and not _is_tool_markup(reply):
+                return {"reply": reply[:20000], "usage": usage, "perf": perf,
+                        "model": selected["id"]}
+        except Exception:
+            pass
+        steps = target.get("steps") or []
+        done = [s for s in steps if s.get("status") == "succeeded"]
+        failed = [s for s in steps if s.get("status") == "failed"]
+        lines = [f"这次查了 {len(steps)} 步（成功 {len(done)}、失败 {len(failed)}），"
+                 f"但没能在轮次内收尾。"]
+        if failed:
+            lines.append("失败的一步：" + str(failed[-1].get("error") or "")[:120])
+        lines.append("已执行的步骤都在下面，可以直接看。")
+        return {"reply": " ".join(lines), "usage": usage, "perf": perf,
+                "model": selected["id"]}
 
     async def _run_chat(self, message_id, prompt, model, history, attachments=None):
         message = next(item for item in self.chat if item["id"] == message_id)
