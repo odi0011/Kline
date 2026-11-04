@@ -122,7 +122,10 @@ class BroadcastHub:
     # 注意 calcStream（68KB）必须保留：计算流水面板靠它实时滚动。
     _WIRE_ANALYSIS = ("symbols", "liveFeatures", "liveEvaluations", "liveScoreHistory",
                       "calcStream", "advice", "paper", "paperStats", "paperBySymbol", "positionPlans",
-                      "params", "drawdown", "drift")
+                      "params", "drawdown", "drift",
+                      # 尾部风险画像（CVaR/波动率/样本数）：K线浮层和风险条要画它。
+                      # 漏这一项时前端拿到 undefined，整块风险显示为空。
+                      "risk")
     _WIRE_TOP = ("enabled", "ts", "stats", "events", "positions", "trades", "accounts",
                  "unsupported")
 

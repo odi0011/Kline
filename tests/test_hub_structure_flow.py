@@ -117,6 +117,8 @@ def _fat_snapshot():
         "liveScoreHistory": {}, "calcStream": [{"ts": 1}] * 50, "advice": {},
         "paper": [], "paperStats": {}, "positionPlans": [], "params": {"minScore": 55},
         "drawdown": {}, "drift": {},
+        # 尾部风险画像：K线浮层与风险条要画，必须广播
+        "risk": {"samples": 40, "cvar95": -0.012, "volatility": 0.003},
         # 下面四个是前端从来不读的调试字段，体积却最大
         "decisionTraces": [{"x": "y" * 2000}] * 40,
         "latestTraces": {f"a{i}": {"x": "y" * 1000} for i in range(30)},
@@ -133,7 +135,7 @@ def test_slim_quant_drops_debug_fields():
     for gone in ("decisionTraces", "latestTraces", "gateLog", "paperHistory"):
         assert gone not in a, f"{gone} 不该广播给浏览器"
     # 前端真正要画的必须都在
-    for keep in ("symbols", "calcStream", "advice", "paper", "params", "drawdown"):
+    for keep in ("symbols", "calcStream", "advice", "paper", "params", "drawdown", "risk"):
         assert keep in a, f"{keep} 被误删了"
 
 
