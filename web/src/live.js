@@ -111,11 +111,15 @@ export class LiveClient {
         }
       }
       this.meta = m
-      this._metaDelivered = false
-      if (typeof document === 'undefined' || !document.hidden) {
-        this._metaDelivered = true
-        this.listeners.meta.forEach((f) => f(m))
-      }
+      // **无条件派发**，不看 document.hidden。
+      //
+      // 历史上这里写了 `if (!document.hidden)`，本意是"后台标签页不必重绘"，
+      // 但 App 的 meta 是**状态初始化**而不是动画：一旦跳过，后续所有渲染
+      // 都拿 meta=null，整个看板（K线卡、账户、策略面板、流水）全空，
+      // 且不报错。在后台标签页打开看板、或从别的页面点链接跳进来（新标签
+      // 先建在后台）就是完全空白。React 自己在后台也不怕多一次 setState。
+      this._metaDelivered = true
+      this.listeners.meta.forEach((f) => f(m))
       this._emitKey('init', m)
     } else if (m.type === 'market') {
       if (Array.isArray(m.market) && this.meta) {
@@ -227,7 +231,8 @@ export class LiveClient {
       }
       this._emitKey('quant_event', event)
     } else if (m.type === 'stats') {
-      if (typeof document === 'undefined' || !document.hidden) this.listeners.stats.forEach((f) => f(m))
+      // 同样不按 hidden 过滤：统计是状态，不是动画
+      this.listeners.stats.forEach((f) => f(m))
     }
   }
 
@@ -304,8 +309,13 @@ export class LiveClient {
   }
 
   _emitKey(key, payload) {
-    const control = /^(ai_|agent_access|agent_ack|settings|bar_detail)/.test(key)
-    if (!control && typeof document !== 'undefined' && document.hidden) return
+    // 后台标签页**不再丢弃状态类消息**。
+    //
+    // 以前这里对非控制类消息直接 return（`!control && document.hidden`），
+    // 想省掉后台重绘。但 init / quant / accounts / paper_stats 这些是
+    // **状态快照**而不是动画：丢掉之后 App 的 React 状态永远停在初始值，
+    // 整个看板空白；用户切回前台也补不回来（服务端不会重发）。
+    // React 在后台多做一次 setState 的代价远小于"页面空白"。
     this.subs.get(key)?.forEach((f) => {
       try { f(payload) } catch (e) { console.error(e) }
     })
