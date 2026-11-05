@@ -30,6 +30,17 @@ export default function TradeAdvice({ advice, chartColors }) {
   if (!advice) return null
   const trade = advice.action === "long" || advice.action === "short"
   const price = advice.price
+  // 信号年龄：基于哪根已收盘K线（basisBarTime）+ 该周期长度。
+  // 图上价格每秒都在跳，而结论是一根K线算一次的——不把"这个结论是几点的"说出来，
+  // 用户会拿跳动的K线去处对静止的止损价，觉得是数据坏了（线上原话："这都是啥价"）。
+  const barMs = Number(advice.barMs) || 0
+  const basisTs = Number(advice.basisBarTime) || 0
+  const ageBars = barMs && basisTs
+    ? Math.max(0, Math.floor((Date.now() - basisTs - barMs) / barMs))
+    : 0
+  // 超过 2 根K线没更新 = 这个币已经不在量化范围内（引擎不刷它了），
+  // 明确降级成"旧信号"，不要装作是当前的。
+  const stale = trade && ageBars >= 2
   // 入场时机：now = 现价可入；wait = 等回到区间
   const zone = Array.isArray(advice.entryZone) ? advice.entryZone : null
   const entryText = !trade ? ""
@@ -43,9 +54,23 @@ export default function TradeAdvice({ advice, chartColors }) {
       + `杠杆 ${advice.leverage ?? "--"} 倍，止损 ${fmt(advice.sl)}，止盈 ${fmt(advice.tp)}`
     : `建议${meta.label}${advice.reason ? `：${advice.reason}` : ""}`
 
+  // 止损价的来源：图上哪条线、距现价多少。用户问"这都是啥价"时，
+  // 答案必须就在 tooltip 里，而不是让他自己去猜。
+  const slTitle = advice.sl == null ? "止损"
+    : `止损 ${fmt(advice.sl)}（${advice.slPct ?? "--"}%）`
+      + (advice.slBasis && advice.slBasis !== "ATR"
+        ? `\n依据：${advice.slBasis}${advice.slLevel ? ` ${fmt(advice.slLevel)}` : ""}外侧`
+        : "\n依据：ATR 波动幅度（图上没有可用的结构位）")
+  const tpTitle = advice.tp == null ? "止盈"
+    : `止盈 ${fmt(advice.tp)}（${advice.tpPct ?? "--"}%）`
+      + (advice.tpBasis ? `\n依据：${advice.tpBasis}` : "")
+
   return (
     <div className={styles.pill} data-tone={meta.tone}
-      title={advice.reason || `参考价 ${fmt(price)}`}
+      data-stale={stale || undefined}
+      title={(advice.reason || `参考价 ${fmt(price)}`)
+        + (stale ? `\n\n这个结论来自 ${ageBars} 根K线前，已经过期——`
+                   + `该币不在量化交易范围里，引擎不再更新它。` : "")}
       aria-label={label}>
       <span className={styles.side} style={tone ? { color: tone } : undefined}>
         <i style={tone ? { background: tone } : undefined} aria-hidden />
@@ -53,6 +78,13 @@ export default function TradeAdvice({ advice, chartColors }) {
         {/* 方向被锁住（分差不够没翻）：标一个小锁，说明"上一轮就是这个方向" */}
         {trade && advice.directionLatched && (
           <span className={styles.latch} title="信号优势不明显，维持上一轮方向">锁</span>
+        )}
+        {/* 信号过期：这个币已经不在量化范围，结论不是现在的。
+            宁可显式标出来，也不能让用户拿旧价去下单。 */}
+        {stale && (
+          <span className={styles.stale} title={`结论来自 ${ageBars} 根K线前`}>
+            旧 {ageBars}根
+          </span>
         )}
       </span>
       {!trade && advice.reason && (
@@ -73,10 +105,10 @@ export default function TradeAdvice({ advice, chartColors }) {
           {advice.holdMin != null ? `${Math.round(advice.holdMin)}m` : "--"}
         </span>
         <span className={styles.sep} aria-hidden />
-        <span className={styles.item} data-tone="sl" title={`止损 ${fmt(advice.sl)}（${advice.slPct ?? "--"}%）`}>
+        <span className={styles.item} data-tone="sl" title={slTitle}>
           损 {advice.sl != null ? fmt(advice.sl) : "--"}
         </span>
-        <span className={styles.item} data-tone="tp" title={`止盈 ${fmt(advice.tp)}（${advice.tpPct ?? "--"}%）`}>
+        <span className={styles.item} data-tone="tp" title={tpTitle}>
           盈 {advice.tp != null ? fmt(advice.tp) : "--"}
         </span>
         {advice.rr != null && (

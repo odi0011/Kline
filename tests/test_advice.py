@@ -79,3 +79,71 @@ class AdviceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StructureAdviceTest(unittest.TestCase):
+    """建议的止损止盈必须落在图上画出来的结构线上。
+
+    线上原话："这数据滞后性也太大了吧，这都是啥价了，上面推荐止盈止损是多少？"
+    截图里 ETH 现价 2416.39、推荐止损 2425.9 —— 那正好是 ATR 下限
+    0.4% 算出来的 2426.1，而图上阻力明明画在 2421.4 / 2425.4。
+    """
+
+    def _struct(self):
+        return {
+            "price": 2419.27, "atr": 2.125,
+            "levels": [
+                {"kind": "resistance", "price": 2421.37},
+                {"kind": "resistance", "price": 2425.35},
+                {"kind": "resistance", "price": 2428.50},
+                {"kind": "support", "price": 2416.66},
+                {"kind": "support", "price": 2412.55},
+            ],
+            "pattern": None,
+        }
+
+    def _adv(self, direction):
+        ev = evalof(direction=direction, score=63.0, opposite=40.0,
+                    gap=23.0, grade="medium")
+        return build_advice("ethusdt", {"price": 2419.27, "atr": 2.125, "atrPct": 6.0},
+                            ev, 125, self._struct())
+
+    def test_short_stop_anchors_on_a_drawn_resistance(self):
+        out = self._adv("bearish")
+        self.assertEqual(out["action"], "short")
+        # 止损必须比所有"太近"的线更远，并且锚在图上某条阻力上
+        self.assertGreater(out["sl"], out["price"])
+        # slLevel 走 _round_price 展示精度（>=1000 保留 1 位），按 0.1 容差比
+        self.assertTrue(
+            any(abs(out["slLevel"] - lv) < 0.1 for lv in (2421.37, 2425.35, 2428.5)),
+            f"止损锚点 {out['slLevel']} 不在图上任何一条阻力上")
+        self.assertEqual(out["slBasis"], "阻力位")
+        self.assertLess(abs(out["sl"] - out["slLevel"]), 1.0)
+
+    def test_long_stop_anchors_on_a_drawn_support(self):
+        out = self._adv("bullish")
+        self.assertEqual(out["action"], "long")
+        self.assertLess(out["sl"], out["price"])
+        self.assertTrue(
+            any(abs(out["slLevel"] - lv) < 0.1 for lv in (2416.66, 2412.55)),
+            f"止损锚点 {out['slLevel']} 不在图上任何一条支撑上")
+        self.assertEqual(out["slBasis"], "支撑位")
+
+    def test_stop_is_never_left_inside_noise(self):
+        """最近的线贴着现价（0.08%）时不能把止损放在那儿——必被扫。"""
+        out = self._adv("bearish")
+        self.assertGreaterEqual(out["slPct"], 0.25)
+
+    def test_take_profit_keeps_min_rr(self):
+        for d in ("bearish", "bullish"):
+            out = self._adv(d)
+            self.assertGreaterEqual(out["rr"], 1.5, out)
+
+    def test_falls_back_to_atr_without_structure(self):
+        ev = evalof(direction="bearish", score=63.0, opposite=40.0, gap=23.0,
+                    grade="medium")
+        out = build_advice("ethusdt", {"price": 2419.27, "atr": 2.125},
+                           ev, 125, None)
+        self.assertEqual(out["action"], "short")
+        self.assertEqual(out["slBasis"], "ATR")
+        self.assertGreater(out["sl"], out["price"])

@@ -32,6 +32,7 @@ from accounts import (
 )
 from analysis import indicators as IND
 from analysis import risk_metrics as RISK
+from core.candle import INTERVAL_MS as _INTERVAL_MS
 from decision.advice import build_advice, _round_price, _stop_plan
 from decision.config import DecisionConfig
 from decision.drift import ADWIN
@@ -231,6 +232,10 @@ class QuantEngine:
         self.storage_fn = None             # main 注入：storage.save_quant_event（事件落库）
         self.trade_storage_fn = None       # main 注入：storage.save_quant_trade（仓位历史落库）
         self.bars_fn = None                # main 注入：symbol -> list[Candle]（指标计算用）
+        # main 注入：symbol -> 当前周期图上的结构（支撑/压力/形态）。
+        # 建议里的止损止盈必须落在图上真实画出来的线上，否则用户看到的
+        # 是一串和 K 线对不上的数字（线上原话："这都是啥价"）。
+        self.structure_fn = None
         self.equity_fn = None              # main 注入：() -> list[float]（回撤熔断用）
         # 决策 trace/gate 与风控/漂移状态持久化（main 注入 storage；None = 纯内存）
         self.trace_storage_fn = None       # main 注入：storage.save_decision_trace(trace, kind)
@@ -1008,6 +1013,11 @@ class QuantEngine:
                             # 评分基于哪根K线：同一根内不重算，"结论"才有意义
                             "basis": "closedBar" if (len(closed) >= 30) else "liveBar",
                             "basisBarTime": int(getattr((closed or cs)[-1], "open_time", 0) or 0),
+                            # 该周期的长度：前端要靠它判断"信号过期了多久"，
+                            # 以及把 basisBarTime 换算成人能看的时间点。
+                            "barMs": int(getattr((closed or cs)[-1], "iv_ms", 0) or 0)
+                                     or _INTERVAL_MS.get(
+                                         str(getattr((closed or cs)[-1], "interval", "")), 0),
                         }
                         history = self.live_score_history.setdefault(
                             sym, deque(maxlen=24))
@@ -3505,7 +3515,8 @@ class QuantEngine:
                 max_lev = 0
             try:
                 out[sym] = build_advice(sym, state, self.live_evaluations.get(sym),
-                                        max_lev or None)
+                                        max_lev or None,
+                                        self.structure_fn(sym) if self.structure_fn else None)
             except Exception:
                 continue
         return out

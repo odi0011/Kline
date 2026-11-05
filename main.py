@@ -597,6 +597,19 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     quant.bars_fn = _bars_for
 
+    def _structure_for(symbol: str):
+        """当前检测周期上图表画的结构（支撑/压力/形态）。
+
+        建议胶囊的止损止盈要落在这些线上，否则和图对不上。
+        结构由 hub 在每次收线时算好，这里直接取，不重复计算。
+        """
+        iv = engine.detect_interval or iv0
+        return (hub.structures.get((symbol, iv))
+                or hub.structures.get((symbol, iv0))
+                or None)
+
+    quant.structure_fn = _structure_for
+
     def _watch_bars_for(symbol: str):
         def read(iv: str, include_current: bool = False):
             agg = watch_aggs.get((symbol, iv)) or aggs.get((symbol, iv))

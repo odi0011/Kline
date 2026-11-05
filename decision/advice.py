@@ -40,6 +40,112 @@ def _round_price(value: float) -> float:
     return round(value, 8)
 
 
+def _stop_plan_struct(price: float, atr: float | None, bullish: bool,
+                      structure: dict | None) -> dict:
+    """按**图表上画出来的结构**定止损止盈。
+
+    为什么需要它：原来只按 ATR 算，低波动时被夹到 0.4% 下限——
+    ETH 现价 2416.39 时推荐止损 2426.1（正好 0.4%）、止盈 2400.9，
+    而图上画着的阻力是 2421.4 / 2425.4、支撑 2416.7 / 2412.6，
+    推荐的价和图上任何一条线都对不上。用户第一反应就是"这都是啥价"。
+
+    规则（和手动画图下单的直觉一致）：
+      · 止损放在**反向结构之外**：做空 → 现价上方够远的阻力 + 0.15×ATR 缓冲
+      · 止盈放在**顺向结构之外**：做空 → 现价下方够远的支撑 - 0.15×ATR
+      · "够远"= 至少 0.25% 或半个 ATR：比这更近的线就在噪声里，挂上去必被扫
+      · 结构里没有合适的位，才退回 ATR 方案
+      · 盈亏比不足 MIN_RR 时把止盈推到满足为止（方向仍由结构决定）
+
+    返回带 slBasis / slLevel / tpBasis，前端能直接告诉用户这个价锚在哪条线上。
+    """
+    levels = (structure or {}).get("levels") or []
+    pattern = (structure or {}).get("pattern") or {}
+    if not levels and not pattern:
+        return _stop_plan(price, atr, bullish)
+    buf = (atr * 0.15) if (atr and atr > 0) else price * 0.001
+    # 最近的线可能就贴着现价（0.08%），那种位置止损等于把仓交给噪声。
+    min_move = max(0.0025, (atr * 0.5 / price) if (atr and atr > 0) else 0.0)
+
+    def _levels(kind: str, above: bool) -> list[float]:
+        out = []
+        for lv in levels:
+            if str(lv.get("kind")) != kind:
+                continue
+            try:
+                v = float(lv.get("price") or 0)
+            except (TypeError, ValueError):
+                continue
+            if v <= 0:
+                continue
+            if above and v > price * (1 + min_move):
+                out.append(v)
+            elif (not above) and v < price * (1 - min_move):
+                out.append(v)
+        return sorted(out) if above else sorted(out, reverse=True)
+
+    # 做多：止损看下方支撑，止盈看上方阻力；做空反过来
+    sl_cands = _levels("support", above=False) if bullish else _levels("resistance", above=True)
+    tp_cands = _levels("resistance", above=True) if bullish else _levels("support", above=False)
+    ptarget = _num(pattern.get("target"))
+    pdir = str(pattern.get("direction") or "")
+    ptarget_ok = bool(
+        ptarget and pattern.get("status") == "confirmed"
+        and ((bullish and pdir == "bullish" and ptarget > price)
+             or (not bullish and pdir == "bearish" and ptarget < price)))
+
+    if sl_cands:
+        anchor = sl_cands[0]
+        sl = anchor - buf if bullish else anchor + buf
+        sl_basis = "支撑位" if bullish else "阻力位"
+    else:
+        # 图上没有够远的结构：退回 ATR 距离，但保留结构说明
+        fallback = _stop_plan(price, atr, bullish)
+        if not fallback:
+            return {}
+        sl, sl_basis, anchor = (price * (1 - max(min_move, fallback["slPct"] / 100))
+                                if bullish else
+                                price * (1 + max(min_move, fallback["slPct"] / 100))), "ATR", None
+    sl_pct = abs(sl - price) / price
+    sl_pct = min(sl_pct, 0.03)
+    sl = price * (1 - sl_pct) if bullish else price * (1 + sl_pct)
+    need = sl_pct * MIN_RR
+
+    tp = None
+    tp_basis = ""
+    for lv in tp_cands:
+        if abs(lv - price) / price >= need:
+            # 放在结构位**内侧**：价格到线之前就该落袋，别指望它一定刺穿
+            tp = lv - buf if bullish else lv + buf
+            tp_basis = "阻力位" if bullish else "支撑位"
+            if abs(tp - price) / price < need:
+                tp = lv + buf if bullish else lv - buf
+            break
+    if tp is None and ptarget is not None and ptarget_ok:
+        tp, tp_basis = ptarget, f"{pattern.get('name_zh') or '形态'}目标"
+    if tp is None:
+        if tp_cands:
+            # 图上的位都不够远：越过最后一个位再放一段（说明这是延伸目标）
+            far = tp_cands[-1]
+            tp = far + buf if bullish else far - buf
+            tp_basis = "结构位外延"
+        else:
+            tp, tp_basis = None, "ATR 延伸"
+    # 盈亏比兜底：不够就把止盈推到刚好满足 MIN_RR 的距离
+    if tp is None or abs(tp - price) / price < need:
+        tp = price * (1 + need) if bullish else price * (1 - need)
+        if tp_basis in ("", "ATR 延伸"):
+            tp_basis = "ATR 延伸"
+    tp_pct = abs(tp - price) / price
+    return {
+        "sl": _round_price(sl), "tp": _round_price(tp),
+        "slPct": round(sl_pct * 100, 2), "tpPct": round(tp_pct * 100, 2),
+        "rr": round(tp_pct / sl_pct, 2) if sl_pct else None,
+        "slBasis": sl_basis,
+        "slLevel": _round_price(anchor) if anchor else None,
+        "tpBasis": tp_basis,
+    }
+
+
 def _stop_plan(price: float, atr: float | None, bullish: bool) -> dict:
     """止损止盈价：ATR 倍数，但保证止盈距离不小于止损的 MIN_RR 倍。
 
@@ -166,11 +272,15 @@ def _hold_minutes(score: float, bullish: bool, regime: str | None,
 
 
 def build_advice(symbol: str, state: dict, evaluation: dict,
-                 max_leverage: int | None) -> dict:
+                 max_leverage: int | None, structure: dict | None = None) -> dict:
     """返回一个币的实时交易方向建议；数据不足时给出明确的观望原因。
 
     只回答一个问题：现在该做多、做空，还是不动、以及为什么。
     持仓状态不属于这里（账户卡和仓位历史已经在展示）。
+
+    structure：该币当前周期图上画出来的支撑/压力/形态（analysis.structure.analyze
+    的输出）。给了就按结构线定止损止盈——图上有的线必须和建议里的价对得上，
+    否则用户只会觉得这是一串"不知道哪来的数字"。
     """
     advice = {"symbol": symbol, "maxLeverage": max_leverage}
     price = _num(state.get("price"))
@@ -203,7 +313,9 @@ def build_advice(symbol: str, state: dict, evaluation: dict,
         return {**advice, **extra, "action": "wait", "reason": "优势不足", "score": score}
 
     bullish = direction == "bullish"
-    plan = _stop_plan(price, atr, bullish)
+    # 优先用图上的结构线定止损止盈：图上画得出的位才说得出口，
+    # 价格和用户在 K 线上看到的那条线必须是同一个数。
+    plan = _stop_plan_struct(price, atr, bullish, structure)
     if not plan:
         return {**advice, **extra, "action": "wait", "reason": "等待价格"}
     lev = _suggest_leverage(max_leverage, score, plan["slPct"], atr_pct)
@@ -220,6 +332,10 @@ def build_advice(symbol: str, state: dict, evaluation: dict,
         "sl": plan["sl"], "tp": plan["tp"],
         "slPct": plan["slPct"], "tpPct": plan["tpPct"],
         "rr": plan["rr"],
+        # 这两个价是从哪条线来的：图上有的位才说得出口
+        "slBasis": plan.get("slBasis") or "ATR",
+        "slLevel": plan.get("slLevel"),
+        "tpBasis": plan.get("tpBasis") or "ATR",
         "holdMin": _hold_minutes(score, bullish, state.get("regime"), atr_pct),
         # 入场时机：现在能不能进、理想区间在哪
         **_entry_hint(price, bullish, atr, plan),

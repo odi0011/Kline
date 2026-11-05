@@ -73,6 +73,24 @@
   color: rgba(28, 35, 51, 0.5);
 }
 
+/* 信号过期：这一格是"这个结论已经不是现在的了"，必须比方向本身更显眼，
+   否则用户会照着几根K线前算出的止损价去下单。 */
+.stale {
+  margin-left: 3px;
+  padding: 0 3px;
+  border-radius: 3px;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.3;
+  background: rgba(217, 119, 6, 0.16);
+  color: #b45309;
+}
+
+/* 过期信号整体压暗一点：数据还在，但别让人以为是实时结论 */
+.pill[data-stale] {
+  opacity: 0.75;
+}
+
 .score {
   flex: none;
   min-width: 17px;
