@@ -1396,9 +1396,13 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     weixin_box: dict = {"login": None}
     try:
         from feed.weixin_login import WeixinLogin
-        oc_root = os.path.join("openclaw", "node_modules", ".bin")
+        # 路径走环境变量，缺省值对齐服务器实际部署位置：
+        # OpenClaw 装在自己的目录（不在本仓库里），Node 26 是隔离安装。
+        # 之前这里按仓库子目录拼，启动时 cwd 不存在 → 每次 start 都
+        # FileNotFoundError，守护重启了 7 次都没能起出一个可扫的码。
         weixin_box["login"] = WeixinLogin(
-            openclaw_bin=os.path.abspath(os.path.join(oc_root, "openclaw")),
+            openclaw_bin=os.environ.get(
+                "OPENCLAW_BIN", "/opt/openclaw/node_modules/.bin/openclaw"),
             openclaw_home=os.environ.get("OPENCLAW_HOME", "/opt/openclaw-home"),
             node_bin_dir=os.environ.get("OPENCLAW_NODE_BIN", "/opt/node26/bin"),
             log_path=os.environ.get("OPENCLAW_LOGIN_LOG",
