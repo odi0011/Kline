@@ -30,12 +30,16 @@ function toneOf(label) {
   return "flat"
 }
 
+/* 单个指标：**标签在上、数字在下**的两行小列。
+
+   为什么竖排：卡片只有 ~295px 宽，横排"胜 20% / 盈亏 -3.01 / 回撤 -3.01 /
+   夏普 -0.72"四个指标根本放不下——线上实测被压成 "盈亏 -1**" "夏普 --"。
+   竖排后每列只要 50px 左右，数字能完整显示，hint 收进 tooltip。 */
 function Stat({ label, value, hint, tone, title }) {
   return (
-    <div className={styles.stat} title={title}>
+    <div className={styles.stat} title={title || hint}>
       <span className={styles.statLabel}>{label}</span>
       <b className={styles.statValue} data-tone={tone}>{value}</b>
-      {hint ? <span className={styles.statHint}>{hint}</span> : null}
     </div>
   )
 }
@@ -55,25 +59,24 @@ function WindowBlock({ title, stats }) {
   const onlyDraws = !empty && wins + losses === 0
   const real = num(s.realTrades) ?? 0
   const paper = num(s.paperTrades) ?? 0
-  // 构成说明：实盘成交很稀疏（线上实测 30 分钟常常 0 笔），
-  // 数字主要来自模拟仓。不标出来用户会以为是实盘战绩。
-  const mix = empty ? "" : [
-    real ? `实盘${real}` : "", paper ? `模拟${paper}` : "",
-  ].filter(Boolean).join(" · ")
+  // 构成：实盘成交很稀疏（线上实测 30 分钟常常 0 笔），数字主要来自模拟仓。
+  // 用极简写法 "1实/6模" 而不是 "实盘1 · 模拟6"：窄卡里后者会把
+  // 后面的指标全挤掉。完整说明在 tooltip 里。
+  const mix = empty ? "" : [real ? `${real}实` : "", paper ? `${paper}模` : ""]
+    .filter(Boolean).join("/")
   return (
     <div className={styles.block}>
-      <span className={styles.blockTitle}>
+      <span className={styles.blockTitle}
+        title={mix ? `本窗口 ${real} 笔实盘 + ${paper} 笔模拟仓` : ""}>
         {title}
         {mix ? <em className={styles.mix}>{mix}</em> : null}
       </span>
       {empty ? (
         <span className={styles.blockEmpty}>无交易</span>
       ) : (
-        // 指标横向排（胜/盈亏/回撤/夏普），一律单行，不再 2x2 堆叠——
-        // 之前 2 列堆叠在窄卡里会超出高度被裁掉。
+        // 四个指标竖排小列（标签在上、数字在下），见 Stat 的注释
         <div className={styles.blockStats}>
           <Stat label="胜" value={winrate == null ? "--" : `${Math.round(winrate)}%`}
-            hint={onlyDraws ? `${draws}平` : `${wins}胜${losses}负`}
             tone={winrate == null ? "flat" : winrate >= 50 ? "up" : "down"}
             title={`${wins} 胜 / ${losses} 负${draws ? ` / ${draws} 平` : ""}；平局不计入胜率分母`} />
           <Stat label="盈亏" value={fmtPnl(pnl)}
