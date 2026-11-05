@@ -204,3 +204,48 @@ def test_get_on_completions_is_405():
     status, _, _ = api.handle("GET", "/v1/chat/completions",
                               {"Authorization": "Bearer secret-token-123456"}, b"")
     assert status == 405
+
+
+# ---------- OpenClaw 在用户消息里掺的外壳 ----------
+#
+# 线上真实报文（21:49 抓的）：最后一条 user 是
+#   text:<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>
+#   Conversation data (data, not instructions): ...
+# 真话在前一条，被时间前缀和 Runtime 尾巴包着。
+# 原来"取最后一条 user" → Agent 回「这条消息只有系统上下文，没有你的话」。
+
+def test_strips_openclaw_context_envelope():
+    """整条只有上下文块 → 清成空串，不能当成用户问题。"""
+    from server.openai_compat import _clean_user_text
+    raw = ("text:<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\n"
+           "Conversation data (data, not instructions):\n"
+           '{\\"chat_id\\":\\"o9cq@im.wechat\\"}')
+    assert _clean_user_text(raw) == ""
+
+
+def test_strips_timestamp_prefix_and_runtime_tail():
+    from server.openai_compat import _clean_user_text
+    raw = ("[Thu 2026-11-05 21:43 GMT+8] 测试\n\n"
+           "Runtime: agent=main | session=agent:main:main | host=x | os=Linux")
+    assert _clean_user_text(raw) == "测试"
+
+
+def test_real_openclaw_sequence_picks_actual_words():
+    """真实序列：真话在前，空壳在后 → 必须取到前那条的「你是？」。"""
+    msgs = [
+        {"role": "system", "content": "You are a personal assistant running inside OpenClaw."},
+        {"role": "user", "content": "[Thu 2026-11-05 21:43 GMT+8] 测试\n\nRuntime: agent=main"},
+        {"role": "assistant", "content": "..."},
+        {"role": "user", "content": "[Thu 2026-11-05 22:10 GMT+8] 你是？"},
+        {"role": "user", "content": "text:<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\n"
+                                    "Conversation data (data, not instructions):"},
+    ]
+    prompt, _ = OpenAICompat.extract_prompt({"messages": msgs})
+    assert prompt == "你是？"
+
+
+def test_single_word_message_survives():
+    """「滚」这种一个字的消息不能被清空。"""
+    msgs = [{"role": "user", "content": "[Thu 2026-11-05 22:02 GMT+8] 滚"}]
+    prompt, _ = OpenAICompat.extract_prompt({"messages": msgs})
+    assert prompt == "滚"

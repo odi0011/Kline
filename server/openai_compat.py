@@ -76,6 +76,45 @@ class AuthError(Exception):
     pass
 
 
+# OpenClaw 会把上下文包成这种块塞进 user 消息里：
+#   text:<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>
+#   Conversation data (data, not instructions): ...
+# 整块不是用户说的话，必须剥掉，否则 Agent 会去回答"你是个人助手"这类设定。
+_CONTEXT_BLOCK = re.compile(
+    r"<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>.*?"
+    r"(?:<<<END_OPENCLAW_INTERNAL_CONTEXT>>>|\Z)", re.S)
+_CONTEXT_END = re.compile(r"<<<END_OPENCLAW_INTERNAL_CONTEXT>>>")
+# OpenClaw 给每条消息加的时间前缀：`[Thu 2026-11-05 21:43 GMT+8] `
+_TS_PREFIX = re.compile(
+    r"^\s*\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{4}-\d{2}-\d{2}\s+"
+    r"\d{2}:\d{2}(?::\d{2})?\s+GMT[+-]\d+\]\s*")
+# 尾部的运行环境元数据：`\n\nRuntime: agent=main | session=... | host=...`
+_RUNTIME_TAIL = re.compile(r"\n\s*Runtime:\s.*\Z", re.S)
+
+
+def _clean_user_text(raw: str) -> str:
+    """把 OpenClaw 在用户消息里掺的"外壳"去掉，只留人真正打出来的字。
+
+    线上实测它给每条 user 消息包了三层：
+      · 时间前缀 `[Thu 2026-11-05 22:02 GMT+8] `
+      · 尾部 `Runtime: agent=main | session=... | host=... | model=...`
+      · 有时整条就是上下文块（`<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>`），
+        一个字的人话都没有——它还**排在真话后面**，所以"取最后一条"
+        拿到的就是那个空壳。
+
+    不清理的后果：Agent 拿 47KB 系统提示 + 一段运行环境当用户问题，
+    回一句"这条消息只有系统上下文，没有你的话"（线上真实发生）。
+    """
+    text = str(raw or "")
+    text = _CONTEXT_BLOCK.sub("", text)
+    text = _CONTEXT_END.sub("", text)
+    # 多模态数组里常带 "text:" 前缀
+    text = re.sub(r"^\s*text\s*:\s*", "", text, flags=re.I)
+    text = _TS_PREFIX.sub("", text)
+    text = _RUNTIME_TAIL.sub("", text)
+    return text.strip()
+
+
 class _AgentFailed(Exception):
     """Agent 执行本身失败。由 _reply 抛出并已记过账，handle 不再重复统计。"""
 
@@ -200,10 +239,17 @@ class OpenAICompat:
 
     @staticmethod
     def _last_user_text(messages: list) -> tuple[str, list[dict]]:
-        """最后一条 user 消息里的文字与图片。"""
+        """最后一条**有真人话**的 user 消息里的文字与图片。
+
+        **必须从后往前找并跳过空壳**：OpenClaw 会在真正的用户消息后面
+        再补一条只有 `<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>…` 的 user 消息。
+        "取最后一条 user" 拿到的是那个空壳，Agent 就会回
+        「这条消息只有系统上下文，没有你的话」（线上真实发生）。
+        """
         prompt = ""
         images: list[dict] = []
-        for msg in messages:
+        fallback_images: list[dict] = []
+        for msg in reversed(messages):
             if not isinstance(msg, dict) or msg.get("role") != "user":
                 continue
             content = msg.get("content")
@@ -224,10 +270,13 @@ class OpenAICompat:
                         got = OpenAICompat._decode_image(url)
                         if got:
                             images.append(got)
-            # 只保留最后一条 user 的内容
-            prompt = "\n".join(t for t in texts if t).strip() or prompt
-            images = images[-4:] or []
-        return prompt, images
+            # 这条有没有真人话？没有就记下图片继续往前找。
+            cleaned = _clean_user_text("\n".join(t for t in texts if t))
+            if cleaned:
+                return cleaned, (images[-4:] or fallback_images)
+            if images and not fallback_images:
+                fallback_images = images[-4:]
+        return prompt, fallback_images
 
     @staticmethod
     def _decode_image(url) -> dict | None:
