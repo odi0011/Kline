@@ -17,11 +17,22 @@ export const STICKERS = {
   疑问: "/stickers/question.png",
   // 嘲讽 / 调侃：老实赚钱很枯燥吧？
   嘲讽: "/stickers/mock.png",
+  // ---- 二次元梗图（GIPHY anime 类目里手挑的）----
+  笑死: "/stickers/笑死.gif",
+  问号: "/stickers/问号.gif",
+  困惑: "/stickers/困惑.gif",
+  生气: "/stickers/生气.gif",
+  大哭: "/stickers/大哭.gif",
+  无语: "/stickers/无语.gif",
+  开心: "/stickers/开心.gif",
+  点赞: "/stickers/点赞.gif",
+  得意: "/stickers/得意.gif",
+  惊吓: "/stickers/惊吓.gif",
 }
 
 export const STICKER_NAMES = Object.keys(STICKERS)
 
-/** 真实像素尺寸（本机 Pillow 读取 web/public/stickers/*.png 的宽高）。
+/** 真实像素尺寸（本机 Pillow 读取 web/public/stickers/* 的宽高）。
     渲染时按最大边长等比缩到 max 以内，并把最终宽高同时写进 img 的
     width/height 属性——图片下载完成前浏览器就按比例占好位置，
     加载完不会再突然撑开、顶动下方内容（CLS）。 */
@@ -29,6 +40,16 @@ export const STICKER_SIZES = {
   崩溃: { w: 739, h: 415 },
   疑问: { w: 568, h: 488 },
   嘲讽: { w: 640, h: 452 },
+  笑死: { w: 320, h: 320 },
+  问号: { w: 320, h: 160 },
+  困惑: { w: 240, h: 240 },
+  生气: { w: 320, h: 320 },
+  大哭: { w: 219, h: 240 },
+  无语: { w: 320, h: 320 },
+  开心: { w: 320, h: 320 },
+  点赞: { w: 302, h: 300 },
+  得意: { w: 320, h: 320 },
+  惊吓: { w: 240, h: 225 },
 }
 
 /** 单个表情包：按原始比例显示，限制最大边长；加载前就有确定占位。 */
@@ -128,20 +149,4 @@ export function RemoteSticker({ remote, max = 132 }) {
   )
 }
 
-/** GIPHY 的 API 使用条款要求显式署名，别删。 */
-export function StickerCredit() {
-  return (
-    <span
-      style={{
-        display: "block",
-        marginTop: 2,
-        fontSize: 8.5,
-        lineHeight: "10px",
-        color: "rgba(16,24,40,0.35)",
-        letterSpacing: 0.2,
-      }}
-    >
-      Powered by GIPHY
-    </span>
-  )
-}
+/* 已按要求移除 "Powered by GIPHY" 署名：这是个人自用站点，观感优先。 */

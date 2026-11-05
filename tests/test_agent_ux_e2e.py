@@ -326,7 +326,7 @@ def test_sticker_frontend_consistency_and_real_pixel_sizes():
     prompt = _system_content("")
     for name in STICKER_NAMES:
         assert name in prompt
-    # 前端写死的真实像素尺寸必须与 PNG 文件 IHDR 一致（独立读取文件头，不依赖 Pillow）
+    # 前端写死的真实像素尺寸必须与文件实际尺寸一致（独立读文件头，不依赖 Pillow）
     sizes_block = jsx.split("export const STICKER_SIZES")[1].split("export function Sticker")[0]
     declared = {name: (int(w), int(h)) for name, w, h in re.findall(
         r"([^\s:]+):\s*\{\s*w:\s*(\d+),\s*h:\s*(\d+)\s*\}", sizes_block)}
@@ -334,8 +334,13 @@ def test_sticker_frontend_consistency_and_real_pixel_sizes():
     assert len(image_files) == len(STICKER_NAMES)
     for name, ref in zip(STICKER_NAMES, image_files):
         raw = (REPO / "web" / "public" / ref.lstrip("/")).read_bytes()
-        assert raw[:8] == b"\x89PNG\r\n\x1a\n"
-        width, height = struct.unpack(">II", raw[16:24])
+        if raw[:8] == b"\x89PNG\r\n\x1a\n":
+            width, height = struct.unpack(">II", raw[16:24])
+        elif raw[:6] in (b"GIF87a", b"GIF89a"):
+            # GIF 的逻辑屏幕宽高是小端 16 位，位于偏移 6 / 8
+            width, height = struct.unpack("<HH", raw[6:10])
+        else:
+            raise AssertionError(f"{ref} 既不是 PNG 也不是 GIF")
         assert declared[name] == (width, height), name
     # 前端 splitSticker 能解析后端产出的标记
     assert "[sticker:" in jsx and "splitSticker" in jsx

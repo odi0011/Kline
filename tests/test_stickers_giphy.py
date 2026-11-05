@@ -876,8 +876,9 @@ def test_list_stickers_note_points_at_single_sticker(tmp_path):
     asyncio.run(manager._save_sticker({"candidate_id": "cand-b", "name": "摊手",
                                       "when": "被问住"}))
     out = manager._list_stickers({})
-    # 3 张内置图 + 库里这 1 张
-    assert out["count"] == 4, out["stickers"]
+    # 全部内置图 + 库里这 1 张
+    from ai.agent_tools import BUILTIN_STICKERS
+    assert out["count"] == len(BUILTIN_STICKERS) + 1, out["count"]
     assert any(x["id"] == "builtin:崩溃" for x in out["stickers"])
 
 
@@ -1275,11 +1276,12 @@ def test_invalid_handwritten_marker_is_replaced():
     from ai.agent import split_reply
     sticker = {"url": "/agent-attachments/stickers/x1.gif",
                "width": 480, "height": 311, "id": "x1"}
-    reply = "[sticker:笑死]"
+    # 用一个确实不存在的名字（笑死 现在是合法内置名了）
+    reply = "[sticker:瞎编的名字]"
     out = _attach_sticker(split_reply(reply, detailed=False), sticker, reply)
     assert len(out) == 1
     assert "url=" in out[0], out
-    assert "笑死" not in out[0]
+    assert "瞎编的名字" not in out[0]
 
 
 def test_valid_handwritten_marker_is_kept():
@@ -1296,7 +1298,7 @@ def test_marker_validity_check():
     from ai.agent import _has_valid_sticker_marker
     assert _has_valid_sticker_marker("[sticker:崩溃]")
     assert _has_valid_sticker_marker("[sticker:url=%2Fa.gif&w=1&h=1]")
-    assert not _has_valid_sticker_marker("[sticker:笑死]")
+    assert not _has_valid_sticker_marker("[sticker:瞎编的名字]")
     assert not _has_valid_sticker_marker("普通文字")
 
 
@@ -1406,5 +1408,9 @@ def test_send_builtin_by_prefixed_id(tmp_path):
 
 def test_builtin_catalog_filters_by_query():
     from ai.agent_tools import _builtin_sticker_catalog
-    assert [x["name"] for x in _builtin_sticker_catalog("亏")] == ["崩溃"]
+    names = [x["name"] for x in _builtin_sticker_catalog("亏")]
+    assert "崩溃" in names, names
     assert _builtin_sticker_catalog("完全不存在的词") == []
+    # 不带 query 时全部都在
+    from ai.agent_tools import BUILTIN_STICKERS
+    assert len(_builtin_sticker_catalog()) == len(BUILTIN_STICKERS)
