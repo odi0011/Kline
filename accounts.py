@@ -269,22 +269,50 @@ _FILTER_CACHE_TS = {"ts": 0}
 _FILTER_TTL_MS = 3600_000
 
 
+def _exchange_info(proxy: str | None = None) -> dict | None:
+    """拉合约精度表，**先问下单用的那个主机**（BASE），再退回公共行情主机。
+
+    为什么必须这样：部署在东京的服务器访问 fapi.binance.com 是 451
+    （地区限制），而下单走的是 testnet。以前这里只问 fapi.binance.com，
+    拿回来永远是 None → tickSize 缺失 → 价格按 8 位小数格式化 →
+    ETH 止损 2624.825 被交易所按 -1111 拒掉 → 审计认为"保护单缺失" →
+    **把用户的仓市价平掉**（线上真实事故：手动空单被系统自己保命平仓）。
+    """
+    try:
+        req = urllib.request.Request(
+            f"{BASE}/fapi/v1/exchangeInfo",
+            headers={"User-Agent": "kline-monitor", "Accept": "application/json"})
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        ) if proxy else urllib.request.build_opener()
+        with opener.open(req, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8", "replace"))
+        if isinstance(data, dict) and data.get("symbols"):
+            return data
+    except Exception:
+        pass
+    # 本地开发机访问不了 testnet 时，退回公共行情主机（两边精度一致）
+    try:
+        from feed.market_data import _get_json      # 延迟导入，避免循环依赖
+        try:
+            data = _get_json("/fapi/v1/exchangeInfo", {}, proxy)
+        except TypeError:
+            data = _get_json("/fapi/v1/exchangeInfo", {})
+        return data if isinstance(data, dict) and data.get("symbols") else None
+    except Exception:
+        return None
+
+
 def symbol_filters(symbol: str, proxy: str | None = None,
                    timeout: int = 8) -> dict:
     """某个合约的精度约束（tickSize / stepSize / minQty / minNotional）。
 
     取不到时返回空 dict，调用方按"不额外限制"处理，绝不因此让下单失败。
     """
-    from feed.market_data import _get_json      # 延迟导入，避免循环依赖
     global _FILTER_CACHE, _FILTER_CACHE_TS
     now = int(time.time() * 1000)
     if now - _FILTER_CACHE_TS.get("ts", 0) > _FILTER_TTL_MS or not _FILTER_CACHE:
-        try:
-            data = _get_json("/fapi/v1/exchangeInfo", {}, proxy)
-        except TypeError:
-            data = _get_json("/fapi/v1/exchangeInfo", {})
-        except Exception:
-            data = None
+        data = _exchange_info(proxy)
         table: dict[str, dict] = {}
         for row in (data or {}).get("symbols") or []:
             name = str(row.get("symbol") or "").upper()

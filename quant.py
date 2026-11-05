@@ -806,6 +806,29 @@ class QuantEngine:
 
     def _save_manual(self):
         _atomic_write_json(self._manual_path, sorted(f"{a}|{s}" for a, s in self._manual))
+        # 同步 mtime，否则下一轮 _manual_reload 会把刚写进去的登记当成"文件变了"
+        # 重新读一遍——内容其实一样，但会多打一条"已更新"事件刷屏。
+        try:
+            self._manual_mtime = os.path.getmtime(self._manual_path)
+        except OSError:
+            pass
+
+    def _mark_manual(self, name: str, symbol: str) -> None:
+        """把一个用户手动开的仓位登记成引擎豁免。
+
+        不登记会怎样（线上真实事故）：手动空单开出去、止损挂好后，
+        下一轮审计发现"交易所有仓位、本地没记录" → 补记成策略仓 →
+        用 ATR 默认止损去覆盖 → 覆盖失败 → 判定"保护单缺失且补挂失败" →
+        **把用户的仓市价平掉**。用户只是想让 AI 帮他开一笔单。
+        """
+        key = (name, symbol)
+        if key in self._manual:
+            return
+        self._manual.add(key)
+        self._save_manual()
+        self._event("system",
+                    f"{symbol.upper()} 登记为手动仓位：引擎不再管它的止盈止损",
+                    account=name, symbol=symbol)
 
     def _save_unsupported(self):
         _atomic_write_json(self._unsupported_path, sorted(self._unsupported))
@@ -2443,15 +2466,29 @@ class QuantEngine:
         if not stop:
             return True
         try:
+            # 止损挂的是算法条件单（/fapi/v1/algoOrder），**不在 openOrders 里**。
+            # 以前只查 openOrders → 永远看不到自己刚挂的止损 → 每轮都判定
+            # "保护单缺失" → 补挂 → 补挂时又因为精度失败 → 保命平仓。
+            # 用户的手动单就是这么被系统自己平掉的。
             orders = open_orders(a["api_key"], a["api_secret"], symbol)
-            stop_orders = [o for o in orders if o.get("type") == "STOP_MARKET"]
+            algo = algo_orders(a["api_key"], a["api_secret"], symbol)
             expected = float(stop)
             atr = float(pos.get("atrAtEntry") or 0)
             tolerance = max(float(pos["entry"]) * 0.0005, atr * 0.1)
-            valid = any(
-                abs(float(o.get("stopPrice") or 0) - expected) <= tolerance
-                for o in stop_orders
-            )
+
+            def _matches(order: dict) -> bool:
+                if not isinstance(order, dict):
+                    return False
+                kind = str(order.get("orderType") or order.get("type") or "").upper()
+                if kind != "STOP_MARKET":
+                    return False
+                price = order.get("triggerPrice") or order.get("stopPrice") or 0
+                try:
+                    return abs(float(price) - expected) <= tolerance
+                except (TypeError, ValueError):
+                    return False
+
+            valid = any(_matches(o) for o in (list(orders or []) + list(algo or [])))
             if valid:
                 pos["protectionOk"] = True
                 return True
@@ -3092,6 +3129,9 @@ class QuantEngine:
             direction=plan.get("direction"), slPct=plan.get("slPct"),
             tpPct=plan.get("tpPct"), manual=True)
         self._broadcast_positions()
+        # 手动仓必须登记成引擎豁免，否则下一轮审计会用 ATR 默认止损覆盖
+        # 用户指定的止损（覆盖失败还会把仓市价平掉）。
+        self._mark_manual(acct.get("name", ""), sym)
         # **只有止损没挂上才算裸奔**。之前用 bool(protect_error)，
         # 止盈失败也被报成 unprotected=true + "这个仓现在是裸的"——
         # 模型信了，接着连开 5 轮 read_orders/read_accounts/read_events
@@ -3424,6 +3464,10 @@ class QuantEngine:
             touched = True
         if touched:
             self._save_positions()
+        # 平掉的仓不再需要豁免登记，否则残留会让后续同币种的策略仓绕过止盈止损
+        if full and (acct.get("name", ""), sym) in self._manual:
+            self._manual.discard((acct.get("name", ""), sym))
+            self._save_manual()
         self.stats["orders"] += 1
         self._event("close",
                     f"手动平仓 {sym.upper()} {want} @ {fill}"

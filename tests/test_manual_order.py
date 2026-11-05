@@ -5,6 +5,7 @@
 先算出完整的单给用户看，确认后原样执行，中途不许重算。
 """
 import asyncio
+import dataclasses
 from unittest.mock import MagicMock
 
 import pytest
@@ -962,3 +963,82 @@ def test_adjust_position_sweeps_duplicate_stops(tmp_path, monkeypatch):
     assert out["ok"] is True, out
     assert deleted == [111], "旧止损必须被扫掉，止盈不能动"
     assert out["sweptStale"] == 1
+
+
+# ---------- 精度表必须来自下单那个主机 ----------
+#
+# 线上真实事故（东京部署）：symbol_filters 只问 fapi.binance.com，
+# 该主机从东京返回 451 → tickSize 缺失 → 价格按 8 位小数格式化 →
+# ETH 止损 2624.825 被 -1111 拒掉 → 审计判定"保护单缺失" → 把用户的仓平掉。
+
+def test_symbol_filters_ask_order_host_first(monkeypatch):
+    """exchangeInfo 必须先问 accounts.BASE（下单的主机）。"""
+    import accounts
+
+    asked = []
+
+    class FakeResp:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def read(self):
+            return self.payload.encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    payload = ('{"symbols":[{"symbol":"ETHUSDT","quantityPrecision":3,'
+               '"pricePrecision":2,"filters":[{"filterType":"PRICE_FILTER",'
+               '"tickSize":"0.01"},{"filterType":"LOT_SIZE",'
+               '"stepSize":"0.001"}]}]}')
+
+    class FakeOpener:
+        def open(self, req, timeout=0):
+            # 只记录 base 主机那一次；退回公共主机的分支不该被走到
+            asked.append(req.full_url)
+            return FakeResp(payload)
+
+    monkeypatch.setattr(accounts.urllib.request, "build_opener",
+                        lambda *a, **k: FakeOpener())
+    monkeypatch.setattr(accounts, "_FILTER_CACHE", {})
+    monkeypatch.setattr(accounts, "_FILTER_CACHE_TS", {"ts": 0})
+    filt = accounts.symbol_filters("ethusdt")
+    assert asked and asked[0].startswith(accounts.BASE), asked
+    assert filt["tickSize"] == "0.01"
+    assert accounts.format_price(2624.8249999999994, "ethusdt") == "2624.82"
+
+
+def test_manual_order_is_registered_as_exempt(tmp_path, monkeypatch):
+    """手动开的仓必须登记成引擎豁免，否则审计会用默认止损覆盖/平掉。"""
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(eng, "_place_protection", lambda *a, **k: (11, 22))
+    plan = eng.manual_order_plan("btcusdt", "long", 100.0, 10)
+    assert plan["ready"] is True, plan
+    eng.manual_order_execute(plan)
+    assert ("acc", "btcusdt") in eng._manual, "手动仓没登记豁免"
+
+
+def test_audit_protection_sees_algo_orders(tmp_path, monkeypatch):
+    """审计必须查算法条件单：止损不在 openOrders 里。
+
+    以前只查 openOrders → 永远看不到已挂的止损 → 每轮判定缺失 → 补挂 →
+    精度失败 → 保命平仓。用户的手动单被系统自己平掉就是这么来的。
+    """
+    eng = _engine(tmp_path)
+    eng.decision_cfg = dataclasses.replace(eng.decision_cfg,
+                                           exchange_protection=True)
+    monkeypatch.setattr(__import__("quant"), "open_orders", lambda *a, **k: [])
+    monkeypatch.setattr(__import__("quant"), "algo_orders",
+                        lambda *a, **k: [{"algoId": 1, "orderType": "STOP_MARKET",
+                                          "triggerPrice": "95.0"}])
+    placed = []
+    monkeypatch.setattr(eng, "_place_protection", lambda *a, **k: placed.append(a) or (1, 2))
+    pos = {"symbol": "btcusdt", "side": "SELL", "qty": 1.0, "entry": 100.0,
+           "sl": 95.0, "tp": 105.0, "atrAtEntry": 1.0}
+    a = {"api_key": "k", "api_secret": "s", "name": "acc"}
+    assert eng._audit_protection(a, pos) is True
+    assert placed == [], "止损已经挂着，不该重复补挂"
+    assert pos["protectionOk"] is True
