@@ -547,10 +547,20 @@ def test_prompt_chats_like_a_human():
         assert rule in SYSTEM_PROMPT, f"原有短答约束丢失: {rule}"
 
 
-def test_prompt_sticker_requires_situation_check():
-    for phrase in ("send_sticker", "先看局势再决定", "read_situation",
-                   "一条回复最多一个", "不该发", "只发表情包", "[sticker:"):
+def test_prompt_sticker_is_default_not_exception():
+    """表情包是默认行为。
+
+    用户原话："表情包应该是首选，优先考虑的，除非是很正经或者是要求的"
+    "正常说完话，带个表情包才是人类的习惯啊"。
+    旧提示词写成"先看局势再决定要不要发"，模型于是每轮都判断为不发——
+    线上实测 24 条回复 0 张图。这里的断言跟着改成"默认发"。
+    """
+    for phrase in ("send_sticker", "默认就发", "绝大多数回复都该带一张",
+                   "一条回复最多一张", "什么时候**不发**", "甩一张图",
+                   "[sticker:"):
         assert phrase in SYSTEM_PROMPT, f"表情包说明缺少: {phrase}"
+    # 例外必须是少数几种，不能又变回"随你判断"
+    assert "纯执行指令、没有任何情绪" in SYSTEM_PROMPT
 
 
 def test_prompt_watch_notifications_documented():

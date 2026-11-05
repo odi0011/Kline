@@ -21,25 +21,31 @@ def test_prompt_lists_every_sticker():
         assert name in text
 
 
-def test_prompt_makes_model_read_situation_first():
-    """要不要发表情必须基于局势综合判断，不能只看用户说了哪几个字。
+def test_prompt_makes_sticker_the_default():
+    """表情包是默认行为，不是偶尔为之。
 
-    早先的做法是关键词触发（看到"笑死"就发），那样完全不看行情、持仓、
-    信号——用户正在亏钱也会收到搞笑图。现在提示词要求先 read_situation。
+    用户原话："表情包应该是首选，优先考虑的，除非是很正经或者是要求的"
+    "正常说完话，带个表情包才是人类的习惯"。
+    早先的提示词把发表情写成"可以先看局势再决定要不要发"，
+    模型于是几乎永远判断为不发——线上实测最近 24 条回复 0 张图。
     """
     from ai.agent import SYSTEM_PROMPT
-    assert "先看局势再决定" in SYSTEM_PROMPT
-    assert "read_situation" in SYSTEM_PROMPT
-    assert "一条回复最多一个" in SYSTEM_PROMPT
+    assert "默认就发" in SYSTEM_PROMPT
+    assert "绝大多数回复都该带一张" in SYSTEM_PROMPT
+    assert "一条回复最多一张" in SYSTEM_PROMPT
+    # "只发表情不说话"必须仍是合法回复
+    assert "甩一张图" in SYSTEM_PROMPT or "只发表情包" in SYSTEM_PROMPT
 
 
 
 def test_prompt_gives_when_not_to_use():
-    """认真问价位/仓位/风险时不该发表情包，带情绪词也不行。"""
+    """问价位/仓位/风险时不发；但"不发"必须是例外而不是默认。"""
     from ai.agent import SYSTEM_PROMPT
-    assert "不该发" in SYSTEM_PROMPT
+    assert "什么时候**不发**" in SYSTEM_PROMPT
     assert "价位" in SYSTEM_PROMPT
     assert "还能加仓吗" in SYSTEM_PROMPT
+    # 纯执行指令也不发
+    assert "把止损改到 2450" in SYSTEM_PROMPT
 
 
 

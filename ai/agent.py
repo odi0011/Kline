@@ -125,9 +125,21 @@ _OUTBURST = re.compile(
 _SERIOUS_TRADING = re.compile(
     r"止损|止盈|价位|几个点|多少|开仓|平仓|入仓|进场|出场|仓位|杠杆|爆仓价|"
     r"挂单|限价|市价|下单|委托|保证金|强平|加仓|补仓|减仓|"
-    r"能买|能卖|能不能入|该不该|要不要|建议|方向|多还是空|做多|做空|"
+    r"能买|能卖|能做|能开|能不能入|该不该|要不要|建议|方向|多还是空|做多|做空|"
     r"支撑|压力|阻力|目标价|盈亏比|风险|"
+    r"怎么看|怎么走|怎么样|看多|看空|[1-9]小时线|[1-9]+[mhd]线|小时线|日线|"
     r"analy[sz]e|entry|stop|target|position|risk", re.I)
+# 问句标志：区分「在问」和「在下指令/陈述」。
+#
+# 线上实测的坑：用户说「把止损放到 2434，那边是 2435 的真阻力」，
+# 这是**下指令**，Agent 照做就行；但 _SERIOUS_TRADING 只看见"止损"两个字
+# 就判成"认真问行情"，一张图不发。同一段对话里「行，不放了。」「空仓了，
+# 没我的事。」这种纯闲聊也被一起拦掉——整段聊天 0 张表情包。
+# 只有**带问句**的交易问题才需要收着说话。
+_QUESTION_MARK = re.compile(
+    r"[？?]|吗|呢|多少|哪儿|哪里|哪|怎么|如何|什么|啥|"
+    r"是不是|要不要|能不能|该不该|可不可以|行不行|有没有|还是|"
+    r"了没|没\s*$|没有\s*$", re.I)
 # 情绪 → 贴纸库里该搜的词。
 #
 # 全部用**中文梗词**：GIPHY 的英文标签（dead inside / shrug）搜出来的是
@@ -147,16 +159,73 @@ _EMOTION_QUERY = (
     (re.compile(r"^[\s？?！!。.…~～]*$|额|呃|啊$|嗯$|哦$|诶|欸", re.I), "问号"),
     (re.compile(r"好|行|可以|收到|谢谢|赞", re.I), "点赞"),
 )
-# 一条回复里最多一个表情包；但连续几条都贴会很吵，所以有冷却。
+# 不该配图的**回复**长什么样。判定对象是 Agent 自己要说的话，不是用户的问题：
+# 用户问"止损挂上了没"很正经，但 Agent 回「改完了。」这半句就该带张图。
+#
+# 线上实测（24 条真实回复）：只按用户提问判，几乎全被判成"在问交易"→ 0 张图；
+# 而实际该配图的是「改完了。」「有仓。」「现在空仓，ETH 暂时先不碰了。」
+# 这类**人话短句**，不该配的是行情字段转储和报错。
+_NO_STICKER_REPLY = re.compile(
+    # 报错/风险：这种时候任何玩笑都刺眼
+    r"-\d{4}|概率|失败|挂不上|没挂上|裸奔|裸着|爆仓|强平|风控|拦截|"
+    r"取不到|算不出|无法|不支持|不允许|异常|错误|error|failed|reject|"
+    # 数据转储：字段名/常量开头的都是查表结果，配图只会挡住数字
+    r"^(?:STOP_MARKET|TAKE_PROFIT_MARKET|BUY|SELL|algoId|orderId|"
+    r"openOrders|positions|trades|none|null|true|false)\b",
+    re.I)
+# 数据行：字段名打头（STOP_MARKET: ...、reduceOnly=true）或等号赋值。
+# **不要把"句子里出现两个四位数"算成数据行**——中文交易对话里
+# "止损改到 2450，止盈还是 2402.3" 本来就长这样，那样会把人话全判成数据。
+_DATA_DUMP = re.compile(
+    r"^[A-Za-z_]{2,}\s*[:：=]|^[A-Z_]+_[A-Z_]+\b|=\s*[\d.]+", re.M)
+
+
+def _looks_like_data_reply(text: str) -> bool:
+    """"这整段是查表结果"而不是人话。
+
+    判据：**汉字占比**。人话里汉字一定够多，字段转储则几乎没有：
+      「STOP_MARKET 2700，TAKE_PROFIT_MARKET 2403.4」  汉字 0%
+      「3 条：2450，2402.3，2624.5」                   汉字 5%
+      「开了。ETH 空 0.01，10 倍，保证金 2.42U。」       汉字 24%
+    阈值取 15%：低于它的那几行不是在说话，是在报数。
+
+    早先拿"行长 ≤ 24 字"当判据，结果「ETH 那个仓我平掉了，零盈亏。」
+    这种正常短句被当成数据，一张图都配不上（线上实测 24 条回复 0 张图）。
+    """
+    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    if not lines:
+        return False
+    for line in lines:
+        if _DATA_DUMP.search(line):
+            continue
+        han = sum(1 for ch in line if "\u4e00" <= ch <= "\u9fff")
+        if han / max(1, len(line)) >= 0.15:
+            return False        # 这行有足够多汉字 → 是人话
+    return True
 # 用时间而不是"条数"：并发回复时条数不可靠（上一条还在跑就开始了下一条）。
-STICKER_COOLDOWN_MS = 8 * 60 * 1000      # 8 分钟内不再自动补图
+#
+# 别设太长：8 分钟意味着聊十轮才可能出一张图，屏幕上看就是"它从来不发表情"。
+# 用户的要求是"正常说完话带个表情才是人类的习惯"，那冷却只需要挡住
+# **连续几条**连贴，不需要挡掉整段对话。3 分钟大约等于"隔一两轮来一张"。
+STICKER_COOLDOWN_MS = 3 * 60 * 1000      # 3 分钟内不再自动补图
 
 
 def _auto_sticker_query(prompt: str) -> str:
     """这句用户消息该配哪种情绪的表情包；不该发就返回 ""。
 
-    "该不该发"由服务端的**规则**决定，"发哪张"仍然由模型/贴纸库决定。
-    只写在提示词里时模型几乎从不发，所以必须有这一层。
+    用户明确要求过：**表情包是首选**，"正常说完话带个表情包才是人类的习惯"，
+    甚至可以什么都不说只发一张。所以这里默认是**发**，只有下面这几种
+    情况才不发：
+
+      · 在**提问**交易问题（"止损放多少？""还能加仓吗"）——这时候插科打诨很烦
+      · 用户点名要分析（"分析一下""讲讲逻辑"）
+      · 纯指令且没有任何情绪（"把止损改到 2450"）——这是在下单，不是聊天
+      · 完全空的消息
+
+    反过来，**陈述、结论、吐槽、确认**（"行，不放了""空仓了，没我的事"）
+    都该配图——这些正是微信里人们会甩个表情的时刻。
+
+    "该不该发"由规则决定，"发哪张"仍然由模型/贴纸库决定。
     """
     text = str(prompt or "").strip()
     if not text:
@@ -170,18 +239,75 @@ def _auto_sticker_query(prompt: str) -> str:
             if pattern.search(text):
                 return query
         return "生气"
-    # 认真问行情：不发，绝不打扰
-    if _SERIOUS_TRADING.search(text):
+    # 交易话题 + 问句 = 真在问价位/风险，这时候不发
+    # （只问交易但**不问句**的是指令或陈述，下面照样发图）
+    if _SERIOUS_TRADING.search(text) and _QUESTION_MARK.search(text):
         return ""
     # 明确要求分析：不发
     if _wants_detail(text):
         return ""
-    if not _SOCIAL_CUE.search(text):
+    # 交易指令且一点情绪都没有："把止损改到 2450" —— 照着做就行，别配图
+    if _SERIOUS_TRADING.search(text) and not _SOCIAL_CUE.search(text):
         return ""
     for pattern, query in _EMOTION_QUERY:
         if pattern.search(text):
             return query
-    return "问号"
+    # 没命中任何具体情绪：只要不是纯指令，就还是发一张。
+    # 用户要的是"说完话带个表情"，不是每次都得先有强情绪；
+    # 无语 是最中性的那张，接"空仓了，没我的事"这类话不违和。
+    return "无语"
+
+
+def wants_sticker(prompt: str, reply: str = "") -> str:
+    """整轮对话该配哪种表情：用户那句话 + **Agent 自己要说的话** 一起看。
+
+    为什么必须看回复：真正决定"这句该不该带图"的是**说出口的那句话**，
+    不是用户的提问。线上实测的 24 条真实回复里：
+      用户「把 ETH 空单的止损改到 2500」→ 回复「改好了。」
+      用户「现在有仓位吗」           → 回复「有仓。」
+      用户「最近半小时 ETH 的事件」   → 回复「现在空仓，ETH 暂时先不碰了。」
+    这些回复全是人话短句，正是该甩个表情的时刻；但只看用户提问，
+    前两句带着"止损/仓位"，会被判成"在问交易"→ 一张图都没有。
+
+    反过来，回复是数据转储（「STOP_MARKET 2700，TAKE_PROFIT_MARKET 2403.4」）
+    或报错（"止损没挂上，裸着"）时，绝不能配图——这时候玩笑很刺眼。
+
+    返回情绪词（空串 = 不发）。
+    """
+    text = str(reply or "").strip()
+    # 回复本身就不适合配图：报错、风险警示、纯数据行
+    if text:
+        if _NO_STICKER_REPLY.search(text):
+            return ""
+        if _looks_like_data_reply(text):
+            return ""
+        # 用户在问交易细节，且回复很长（在解释）→ 这是分析，不是聊天
+        if _wants_detail(prompt or "") and len(text) > 40:
+            return ""
+    # 用户点名要分析：不发
+    if _wants_detail(prompt or ""):
+        return ""
+    # 用户处在情绪上：优先接情绪
+    if _OUTBURST.search(prompt or ""):
+        for pattern, query in _EMOTION_QUERY:
+            if pattern.search(prompt or ""):
+                return query
+        return "生气"
+    # 从**回复**里读情绪：Agent 自己说"改完了/开了/亏了/赚了"
+    # 只看非空文本——_EMOTION_QUERY 里"纯标点"那条用 ^...$ 写成，
+    # 它会匹配空字符串，于是空回复永远命中"问号"。
+    if text:
+        for pattern, query in _EMOTION_QUERY:
+            if pattern.search(text):
+                return query
+    # 用户的陈述/吐槽也参与判断
+    query = _auto_sticker_query(prompt or "")
+    if query:
+        return query
+    # 回复是正常的一句人话 → 默认配一张中性的
+    if text and len(text) <= 60:
+        return "无语"
+    return ""
 
 
 
@@ -639,19 +765,19 @@ liquidation / sentiment / oi / funding。
  · 工作问题继续短答，允许在结论后补半句人话（"这波确实烦"），但别拖长；
  · 用户情绪化时先接住情绪再谈数据，别上来就念评分。
 
-【表情包】你可以用表情包代替说话，或者说完一句再补一个。
- · **先看局势再决定**：要不要发、发什么，不能只看用户说了哪几个字。
-   决定前先 read_situation，看：大盘偏强还是偏弱、波动大不大、
-   你有没有持仓（有浮亏就别嬉皮笑脸）、量化当前有多少明确信号、最近有没有异常。
-   例：用户「又亏了」但你其实空仓 → 不用真安慰，可以调侃一句；
-      用户「笑死」但你有两个仓在亏 → 别发搞笑的，先讲怎么处理；
-      用户「……」且你空仓、行情在磨 → 这张摊手就挺合适。
- · **该发的时候要真的发**（不要只在心里想"该发"，要调工具）：
-   短促的情绪反应、调侃、自嘲、行情离谱、庆祝、无语；
-   用户明说「发个表情包」「来个表情」时必须发出图。
- · **不该发**：用户认真问价位/止损/仓位/方向/风险时一律不发；
-   哪怕带情绪词（「我麻了，还能加仓吗」），只要在问交易就别发。
- · 库里已经攒了一批图，每张都带着名字和使用场景。**有合适的就直接发**，
+【表情包】**默认就发**。正常说完一句话带个表情，才是人的习惯。
+
+ · 这不是"偶尔锦上添花"，是常态：**绝大多数回复都该带一张**。
+   用户原话："表情包应该是首选，优先考虑的，除非是很正经或者是要求的"。
+   甚至什么都不用说，甩一张图让对方自己体会——这也是一种完整回复。
+ · 什么时候**不发**（只有这几种）：
+   · 用户在**问**价位/止损/仓位/方向/风险（「止损放多少？」「还能加仓吗」）
+   · 用户点名要分析（「分析一下」「讲讲逻辑」「为什么」）
+   · 纯执行指令、没有任何情绪（「把止损改到 2450」）
+   · 正在报错、报裸奔仓位、报亏损这类必须严肃说清的事
+   除这几种，其余一律配图：结论、吐槽、确认、闲聊、汇报、庆祝、无语。
+ · **一条回复最多一张**，放在最后。
+ · 库里的图都带名字和使用场景，**有合适的就直接发**，
    不要把「库里有几张」当成回答内容 —— 用户要的是表情，不是库存清单。
 
  · 怎么发（按顺序，能用前面的就别往下走）：
@@ -663,7 +789,7 @@ liquidation / sentiment / oi / funding。
    3) 内置图和库里都不合适 → search_stickers(query="中文梗词") 拿 3~5 张
       候选 → save_sticker(candidate_id, name, when) 定名入库
       → send_sticker(sticker_id) 发出
-   4) 都不满意就不发 —— 不要为了发而发
+   4) 真的没一张能用才不发 —— 但这是例外，不是默认
 
  · 搜候选一律用**中文梗词**：无语 / 笑死 / 破防 / 麻了 / 牛啊 / 问号 /
    点赞 / 我裂开 / 蚌埠住了。
@@ -2848,15 +2974,14 @@ class AgentManager:
         except Exception:
             return None
 
-    def _auto_sticker(self, prompt: str) -> dict | None:
-        """模型没发、但这句明显该配图时，服务端兜底挑一张。
+    def _auto_sticker(self, prompt: str, reply: str = "") -> dict | None:
+        """模型没发、但这一轮该配图时，服务端兜底挑一张。
 
-        **只从库里挑，不联网搜、也不硬塞内置图**：
-        这条路径在回复组装的最后一步、是同步的，不能为了配图等一次 HTTP 下载；
-        库里没有合适的就不发——内置那三张是自绘的，风格和 GIPHY 贴纸差太远，
-        混着发反而怪。
+        判定用 `wants_sticker(prompt, reply)`：**回复内容也参与判断**，
+        因为决定"该不该带图"的是说出口的那句话。旧实现只看用户提问，
+        于是「改好了。」「有仓。」这种最该甩表情的短回复一张都拿不到。
         """
-        query = _auto_sticker_query(prompt)
+        query = wants_sticker(prompt, reply)
         if not query:
             return None
         cache = self.sticker_cache
@@ -3611,17 +3736,14 @@ class AgentManager:
             # 模型可能只调工具不给正文，也可能在正文里已经自己写了 [sticker: 标记。
             sticker = message.get("pendingSticker")
             if not sticker:
-                # 模型没主动发表情。如果它这轮**看过局势**（read_situation）或
-                # 翻过表情库，说明它已经做过"要不要发"的判断——尊重它，不覆盖。
-                # 只有它压根没关注表情这件事时，才用关键词规则兜底一句。
-                # 关键词只是"最后一道保险"，不该当成主逻辑：真正该不该发
-                # 取决于行情/持仓/信号这些综合上下文。
-                consulted = any((step.get("tool") or "") in
-                                ("read_situation", "list_stickers",
-                                 "search_stickers", "save_sticker")
-                                for step in (message.get("steps") or []))
-                if not consulted:
-                    sticker = self._auto_sticker(prompt)
+                # 模型没主动发表情 → 服务端按规则兜底。
+                #
+                # 以前这里有个 `consulted` 闸：模型只要调过 read_situation /
+                # list_stickers 就认定"它已经判断过、不覆盖"。线上实测的结果
+                # 是 24 条回复 0 张图——模型看了局势、然后每次都不发，
+                # 这个闸等于把兜底永久关掉。用户要的是"表情包是首选"，
+                # 所以兜底改为无条件生效，由 wants_sticker() 判断该不该发。
+                sticker = self._auto_sticker(prompt, result["reply"])
             if sticker:
                 pieces = _attach_sticker(pieces, sticker, result["reply"])
                 # 真的出现在最终消息里，才记冷却 + 使用计数。

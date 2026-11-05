@@ -1038,9 +1038,14 @@ def test_serious_trading_question_never_gets_sticker():
         assert _auto_sticker_query(text) == "", f"{text!r} 不该发表情包"
 
 
-def test_plain_statement_is_not_emotional():
+def test_plain_statement_still_gets_a_sticker():
+    """陈述句也要配图——"说完话带个表情"才是人的习惯。
+
+    旧规则要求必须有情绪词才发，于是"试了，还是多。""空仓了，没我的事。"
+    这类正常陈述一张图都拿不到。现在默认发，只有真在提问/下指令才不发。
+    """
     from ai.agent import _auto_sticker_query
-    assert _auto_sticker_query("试了，还是多。") == ""
+    assert _auto_sticker_query("试了，还是多。") == "无语"
     assert _auto_sticker_query("") == ""
 
 
@@ -1202,11 +1207,14 @@ def test_read_situation_returns_view():
     assert out["data"]["marketTone"]["bias"] in ("偏强", "偏弱", "分化/横盘")
 
 
-def test_model_consulted_situation_skips_keyword_fallback(tmp_path, monkeypatch):
-    """模型已经看过局势 → 它决定不发就别用关键词硬塞。
+def test_sticker_fallback_runs_even_after_read_situation(tmp_path, monkeypatch):
+    """模型看过局势也不该把兜底关掉。
 
-    这正是"关键词触发"被推翻的核心：会不会该发要综合行情/持仓/信号，
-    模型看过这些数据还没发，说明它判断此刻不该发。
+    旧逻辑：模型只要调过 read_situation/list_stickers，就认定"它已经判断过"、
+    不再兜底。线上实测后果是**24 条回复 0 张图**——模型每轮都看局势、
+    然后每轮都不发，兜底形同虚设。
+    用户要求"表情包应该是首选"，所以兜底无条件生效，由 wants_sticker
+    判断该不该发（它会看回复本身：报错/数据转储/分析时不发）。
     """
     from tests.test_agent import make_manager, tool_call, tool_result, wait_for
 
@@ -1228,8 +1236,8 @@ def test_model_consulted_situation_skips_keyword_fallback(tmp_path, monkeypatch)
         await manager.ask("麻了", "test-model")
         assert await wait_for(lambda: not manager.chat_runners)
         answer = [m for m in manager.chat if m.get("role") == "assistant"][-1]
-        assert "[sticker:" not in (answer.get("content") or ""), \
-            f"模型看过局势且没发，不该被关键词兜底塞图: {answer.get('content')!r}"
+        assert "[sticker:" in (answer.get("content") or ""), \
+            f"看过局势不等于可以永远不发，该配图时仍要兜底: {answer.get('content')!r}"
         await manager.stop()
 
     asyncio.run(scenario())
@@ -1443,12 +1451,23 @@ def test_outburst_beats_trading_words():
 
 
 def test_trading_questions_still_get_no_sticker():
-    """正常问行情不能被情绪词误伤——这里曾经有个恒真的正则。"""
+    """真在**问**交易问题时不能插科打诨。"""
     from ai.agent import _auto_sticker_query
     for text in ("止损挂上了没", "BTC现在能做吗", "帮我看看BTC的4小时线怎么走",
-                 "这个币止损放哪合适", "牛市怎么走", "分析一下ETH",
-                 "BTC 4小时线怎么看", "好的"):
+                 "这个币止损放哪合适", "BTC 4小时线怎么看", "分析一下ETH"):
         assert _auto_sticker_query(text) == "", f"{text} 不该发图"
+
+
+def test_trading_statements_do_get_stickers():
+    """交易话题但**不是问句**的命令/陈述照样配图。
+
+    线上那屏：用户连说「把止损放到 2434，那边是 2435 的真阻力。」
+    「行，不放了。」「空仓了，没我的事。」——全是陈述和确认，
+    却因为含"止损"被当成"认真问行情"，整段对话 0 张表情包。
+    """
+    from ai.agent import _auto_sticker_query
+    for text in ("行，不放了。", "空仓了，没我的事。", "好了，就这样"):
+        assert _auto_sticker_query(text), f"{text!r} 应该配图"
 
 
 def test_social_cue_regex_has_no_empty_branch():
