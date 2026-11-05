@@ -213,3 +213,80 @@ def test_window_stats_draws_excluded_from_winrate(tmp_path):
                            {"pnl": 0.0, "movePct": 0.0}])
     assert s["draws"] == 1
     assert s["winrate"] == pytest.approx(50.0), "1/(1+1)，平局不进分母"
+
+
+# ---------- 模拟仓必须算进概览 ----------
+
+def test_overview_includes_paper_trades(tmp_path):
+    """模拟仓流水要一起统计。
+
+    线上实测：只算实盘时 30 分钟 0 笔、今日 2 笔（还全是平局），
+    而模拟仓 30 分钟有 21 笔、今日 60 笔——面板看着像坏了。
+    """
+    eng = _engine(tmp_path)
+    now = int(time.time() * 1000)
+    _at(eng, [{"ts": now - 60_000, "account": "A", "pnl": 3.0, "movePct": 0.3}])
+
+    class _Paper:
+        store = None
+
+        def history_list(self):
+            return [{"closedAt": now - 120_000, "pnl": 0.5,
+                     "entry": 100.0, "exit": 100.5, "direction": "long"},
+                    {"closedAt": now - 180_000, "pnl": -0.2,
+                     "entry": 100.0, "exit": 99.8, "direction": "long"}]
+
+    eng.paper = _Paper()
+    ov = eng.market_overview()
+    m30 = ov["m30"]
+    assert m30["trades"] == 3, m30
+    assert m30["realTrades"] == 1
+    assert m30["paperTrades"] == 2
+    assert m30["pnl"] == pytest.approx(3.3)
+
+
+def test_overview_short_position_move_pct_is_signed(tmp_path):
+    """模拟仓只有 pnlPct（保证金收益率），要用 entry/exit/方向反算价格涨跌幅。
+
+    否则夏普会把空头的盈利算成"价格涨了"——方向是反的。
+    """
+    eng = _engine(tmp_path)
+    now = int(time.time() * 1000)
+    _at(eng, [])
+
+    class _Paper:
+        store = None
+
+        def history_list(self):
+            # 空头：开 100 平 99（赚），价格涨跌幅应该是 +1%
+            return [{"closedAt": now - 60_000, "pnl": 1.0,
+                     "entry": 100.0, "exit": 99.0, "direction": "short"}]
+
+    eng.paper = _Paper()
+    norm = eng._norm_trade(eng._paper_rows_for_overview()[0], "paper")
+    assert norm["movePct"] == pytest.approx(1.0)
+
+
+def test_overview_paper_rows_are_cached(tmp_path):
+    """概览每 5 秒被调用一次，不能每次都拉 2000 行库。"""
+    eng = _engine(tmp_path)
+    eng._tradable_accounts = lambda: [{"name": "A"}]
+    pulls = []
+
+    class _Store:
+        enabled = True
+
+        def paper_trades(self, limit=200):
+            pulls.append(limit)
+            return [{"closedAt": 1, "pnl": 1.0}]
+
+    class _Paper:
+        store = _Store()
+
+        def history_list(self):
+            return []
+
+    eng.paper = _Paper()
+    eng.market_overview()
+    eng.market_overview()
+    assert len(pulls) == 1, "第二次应命中 15 秒缓存"

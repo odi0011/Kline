@@ -1213,37 +1213,112 @@ class QuantEngine:
             "sharpe": sharpe,
         }
 
-    def market_overview(self) -> dict:
-        """账户卡下半区要显示的东西：情绪 + 30 分钟/今日战绩。
+    def _paper_rows_for_overview(self) -> list[dict]:
+        """模拟仓平仓流水（供概览统计），带 15 秒缓存。
 
-        全部基于**实时数据**：情绪来自这一轮的评估，战绩来自真实平仓流水。
-        窗口内没有成交时各项为 0 / None，前端显示"无交易"——
-        不拿别的窗口的数据冒充，也不拿模拟仓的数字顶替真实账户。
+        为什么读库而不是只用内存：内存只留最近 MAX_HISTORY(200) 条，
+        "累计"窗口会严重少算。为什么加缓存：market_overview 每 5 秒
+        被 snapshot 调用一次，每次都拉 2000 行会让 DB 压力白白翻倍。
         """
         now = _now_ms()
-        trades = [t for t in (self.trades or []) if isinstance(t, dict)]
+        cache = getattr(self, "_paper_rows_cache", None)
+        if cache and now - cache[0] < 15_000:
+            return cache[1]
+        rows: list[dict] = []
+        try:
+            memory = self.paper.history_list() or []
+            rows = [r for r in memory if isinstance(r, dict)]
+            store = getattr(self.paper, "store", None)
+            if store is not None and getattr(store, "enabled", False):
+                db_rows = store.paper_trades(2000)
+                if isinstance(db_rows, list) and db_rows:
+                    rows = [r for r in db_rows if isinstance(r, dict)]
+        except Exception:
+            rows = []
+        self._paper_rows_cache = (now, rows)
+        return rows
+
+    @staticmethod
+    def _norm_trade(row: dict, source: str) -> dict | None:
+        """把实盘/模拟仓两种流水归一成 {ts, pnl, movePct, source}。
+
+        实盘记录有 movePct（价格涨跌幅）；模拟仓只有 pnlPct（保证金收益率），
+        用 entry/exit/direction 反算价格涨跌幅，两个口径才能放进同一个
+        夏普里比较。
+        """
+        def num(value):
+            try:
+                out = float(value)
+            except (TypeError, ValueError):
+                return None
+            return out if math.isfinite(out) else None
+
+        ts = int(num(row.get("ts")) or num(row.get("closedAt")) or 0)
+        if not ts:
+            return None
+        pnl = num(row.get("pnl")) or 0.0
+        move = num(row.get("movePct"))
+        if move is None:
+            entry = num(row.get("entry")) or 0.0
+            exit_ = num(row.get("exit"))
+            if entry > 0 and exit_ is not None:
+                move = (exit_ - entry) / entry * 100
+                if str(row.get("direction") or "").lower() in ("short", "sell"):
+                    move = -move
+            else:
+                move = 0.0
+        return {"ts": ts, "pnl": float(pnl), "movePct": float(move), "source": source}
+
+    def market_overview(self) -> dict:
+        """账户卡下半区要显示的东西：情绪 + 30 分钟/今日/累计战绩。
+
+        统计口径（**实盘 + 模拟仓都算**）：
+          · 实盘：当前账户的真实平仓流水（换过 key 的旧账户不计）
+          · 模拟仓：纸上交易流水，名义价值固定 1000U
+        两块分开也合并：combined 给总数，realTrades/paperTrades 给构成，
+        前端标一句"N 笔模拟"就能说清这组数字是从哪来的。
+
+        只有实盘的话 30 分钟/今日经常是空的（真实成交很稀疏，
+        线上实测 30 分钟内 0 笔、今日 2 笔），这块面板等于白占位置。
+        """
+        now = _now_ms()
+        real = [t for t in (self.trades or []) if isinstance(t, dict)]
         # 只统计当前账户：换过 key 的旧账户成交混进来会让战绩虚高
         current = {a.get("name") for a in self._tradable_accounts()}
         if current:
-            trades = [t for t in trades if str(t.get("account") or "") in current]
+            real = [t for t in real if str(t.get("account") or "") in current]
+
+        rows: list[dict] = []
+        for t in real:
+            norm = self._norm_trade(t, "real")
+            if norm:
+                rows.append(norm)
+        for t in self._paper_rows_for_overview():
+            norm = self._norm_trade(t, "paper")
+            if norm:
+                rows.append(norm)
 
         def window(ms: int) -> list[dict]:
             cutoff = now - ms
-            out = [t for t in trades if int(t.get("ts") or 0) >= cutoff]
-            out.sort(key=lambda t: int(t.get("ts") or 0))
-            return out
+            return sorted((r for r in rows if r["ts"] >= cutoff),
+                          key=lambda r: r["ts"])
 
         # 今日 = UTC 自然日（与权益日档/热力图的日界一致）
         day_start = int(now // 86_400_000 * 86_400_000)
-        today_rows = [t for t in trades if int(t.get("ts") or 0) >= day_start]
-        today_rows.sort(key=lambda t: int(t.get("ts") or 0))
+        today_rows = sorted((r for r in rows if r["ts"] >= day_start),
+                            key=lambda r: r["ts"])
+
+        def pack(items: list[dict]) -> dict:
+            stats = self._window_stats(items)
+            stats["realTrades"] = sum(1 for r in items if r["source"] == "real")
+            stats["paperTrades"] = sum(1 for r in items if r["source"] == "paper")
+            return stats
 
         return {
             "sentiment": self._sentiment(),
-            "m30": self._window_stats(window(30 * 60 * 1000)),
-            "today": self._window_stats(today_rows),
-            "all": self._window_stats(sorted(trades,
-                                             key=lambda t: int(t.get("ts") or 0))),
+            "m30": pack(window(30 * 60 * 1000)),
+            "today": pack(today_rows),
+            "all": pack(sorted(rows, key=lambda r: r["ts"])),
             # 不要在这里调 self.snapshot()——market_overview 会被 snapshot 调用，
             # 那样直接无限递归。持仓数从 state 里数。
             "openPositions": sum(len(self._st(n)["positions"]) for n in self.state),

@@ -53,19 +53,29 @@ function WindowBlock({ title, stats }) {
   const sharpe = num(s.sharpe)
   // 有成交但全平局：胜率算不出来（分母是 0），但说"无交易"是错的
   const onlyDraws = !empty && wins + losses === 0
+  const real = num(s.realTrades) ?? 0
+  const paper = num(s.paperTrades) ?? 0
+  // 构成说明：实盘成交很稀疏（线上实测 30 分钟常常 0 笔），
+  // 数字主要来自模拟仓。不标出来用户会以为是实盘战绩。
+  const mix = empty ? "" : [
+    real ? `实盘${real}` : "", paper ? `模拟${paper}` : "",
+  ].filter(Boolean).join(" · ")
   return (
     <div className={styles.block}>
-      <span className={styles.blockTitle}>{title}</span>
+      <span className={styles.blockTitle}>
+        {title}
+        {mix ? <em className={styles.mix}>{mix}</em> : null}
+      </span>
       {empty ? (
         <span className={styles.blockEmpty}>无交易</span>
-      ) : onlyDraws ? (
-        <span className={styles.blockEmpty}>{draws} 笔平局</span>
       ) : (
+        // 指标横向排（胜/盈亏/回撤/夏普），一律单行，不再 2x2 堆叠——
+        // 之前 2 列堆叠在窄卡里会超出高度被裁掉。
         <div className={styles.blockStats}>
-          <Stat label="胜率" value={winrate == null ? "--" : `${winrate}%`}
-            hint={draws > 0 ? `${wins}胜${losses}负${draws}平` : `${trades} 笔`}
+          <Stat label="胜" value={winrate == null ? "--" : `${Math.round(winrate)}%`}
+            hint={onlyDraws ? `${draws}平` : `${wins}胜${losses}负`}
             tone={winrate == null ? "flat" : winrate >= 50 ? "up" : "down"}
-            title={`${wins} 胜 / ${losses} 负；平局不计入胜率分母`} />
+            title={`${wins} 胜 / ${losses} 负${draws ? ` / ${draws} 平` : ""}；平局不计入胜率分母`} />
           <Stat label="盈亏" value={fmtPnl(pnl)}
             tone={pnl == null ? "flat" : pnl > 0 ? "up" : pnl < 0 ? "down" : "flat"} />
           <Stat label="回撤" value={dd == null ? "--" : dd.toFixed(2)}

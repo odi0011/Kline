@@ -132,7 +132,8 @@ body {
 .pattern-zone {
   flex: 0 0 66%;
   min-width: 0;
-  height: 192px;
+  /* 与 wallet-zone 一起被最高内容撑开，两者顶部对齐 */
+  min-height: 192px;
   display: flex;
   flex-direction: column;
 }
@@ -140,9 +141,13 @@ body {
 .wallet-zone {
   flex: 1;
   min-width: 250px;
-  height: 192px;
+  /* 与形态区同高起步，但允许被账户卡的内容撑高：
+     下面加了市场概览（情绪 + 三个时间窗口），188px 装不下。 */
+  min-height: 192px;
+  height: auto;
   position: relative;
   z-index: 40;
+  display: flex;
 }
 
 /* 量化交易区：删掉第二行账户面板后填满剩余高度 */
