@@ -1105,6 +1105,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             interval = str(params.get("interval") or "15m")
             limit = max(10, min(1000, int(params.get("limit") or 60)))
             bars = fetch_klines(sym, interval, limit, proxy_cfg or None) or []
+            # 主动买卖量是不是估算值要一起带出去：欧易回退时是猜的，
+            # 模型不能拿它当真实买卖比引用。放在每根K线上而不是返回顶层，
+            # 因为 fetch 返回的就是一个 list。
+            approx = bool(getattr(bars[-1], "buysell_approx", False)) if bars else False
             return [{
                 "t": int(getattr(b, "open_time", 0) or 0),
                 "o": float(getattr(b, "open", 0) or 0),
@@ -1114,6 +1118,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 "v": round(float(getattr(b, "volume", 0) or 0), 6),
                 "buy": round(float(getattr(b, "buy_vol", 0) or 0), 6),
                 "sell": round(float(getattr(b, "sell_vol", 0) or 0), 6),
+                "approx": approx,
             } for b in bars]
         if what == "ticker":
             return _md.ticker_full(sym, proxy_cfg or None)

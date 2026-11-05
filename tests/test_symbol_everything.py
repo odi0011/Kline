@@ -329,10 +329,31 @@ def test_read_candles_rejects_all_null_rows():
 
 
 def test_read_candles_marks_approximate_buysell():
-    """欧易K线不带 taker 量，buy/sell 是拆出来的近似值，必须标出来。
+    """走交易所（欧易回退）时 buy/sell 是拆出来的近似值，必须标出来。
 
-    否则模型会拿"收阳=60%主动买"这种估算当真实主动买卖比引用。
+    否则模型会拿"收阳=60%主动买"这种估算当真实主动买卖比引用——
+    线上实测它就这么答了："20 根合计主动买 59.1 万、卖 60.0 万"，
+    而那两个数只是"这几根K线的阴阳"换了个说法。
     """
+    class _M(AgentManager):
+        def __init__(self):
+            self.symbol_fetch_fn = lambda w, s, p=None: [
+                {"t": 1793841300000 + i, "o": 80500.0, "h": 80501.0,
+                 "l": 80215.0, "c": 80432.7, "v": 100.0,
+                 "buy": 60.0, "sell": 40.0, "approx": True}
+                for i in range(12)]
+            self.bars_fn = lambda s, iv: []
+            self.symbols_fn = lambda: ["btcusdt"]
+
+    out = _M()._read_candles({"symbol": "BTC", "interval": "15m", "limit": 12})
+    assert out["available"] is True
+    assert out["buySellApprox"] is True
+    assert "近似值" in out["note"]
+    assert "tradeFlow" in out["note"], "要指路到真实数据"
+
+
+def test_local_candles_are_not_marked_approx():
+    """本地聚合器的 buy/sell 来自 aggTrade 真实分类，不该被标成近似。"""
     class _C:
         open_time = 1793841300000
         open = 80500.0
@@ -342,16 +363,26 @@ def test_read_candles_marks_approximate_buysell():
         volume = 100.0
         buy_vol = 60.0
         sell_vol = 40.0
-        buysell_approx = True
+        buysell_approx = False
 
     class _M(AgentManager):
         def __init__(self):
-            self.symbol_fetch_fn = lambda w, s, p=None: []   # 走本地分支
+            self.symbol_fetch_fn = lambda w, s, p=None: []
             self.bars_fn = lambda s, iv: [_C() for _ in range(12)]
             self.symbols_fn = lambda: ["btcusdt"]
 
     out = _M()._read_candles({"symbol": "BTC", "interval": "15m", "limit": 12})
-    assert out["available"] is True
-    assert out["buySellApprox"] is True
-    assert "近似值" in out["note"]
-    assert "tradeFlow" in out["note"], "要指路到真实数据"
+    assert out["buySellApprox"] is False
+    assert "note" not in out
+
+
+def test_prompt_forbids_empty_acknowledgement():
+    """读到数据不等于回答完了："K线已经取到"是废话。
+
+    线上实测：问"BTC 15分钟线现在长什么样"，它答
+    「BTC 15m K 线已经取到。」——工具调用了，但什么都没分析。
+    """
+    from ai.agent import SYSTEM_PROMPT
+    assert "读到数据不等于回答完了" in SYSTEM_PROMPT
+    assert "K线已经取到" in SYSTEM_PROMPT, "要作为反例写出来"
+    assert "从图里看出了什么" in SYSTEM_PROMPT

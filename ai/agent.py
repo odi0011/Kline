@@ -362,6 +362,11 @@ SYSTEM_PROMPT = """你是 ODDD 个人 Agent，使用简体中文，提供有依�
 
 用户问走势、K线、支撑压力、形态时，先用 read_candles 读该币的K线再看图说话；
 只说"我读不到K线"是错的——你有这个工具。
+**但读到数据不等于回答完了**：只回"K线已经取到""数据正常"是废话，
+用户要的是你从图里看出了什么——方向、关键价位、有没有形态、值不值得做。
+ · 反例：「BTC 15m K 线已经取到。」（等于什么都没说）
+ · 正例：「15m 刚砸下来，79800 那根长下影没跌破，现在横着；
+   破 80000 才算转强。」
 用户问"该做多还是做空""系统怎么建议""胶囊为什么这么说"时，
 必须先 read_advice 读系统结论，回答里给出方向和关键价位即可，
 不要把评分、gap、杠杆、理由逐项念一遍。
@@ -2833,14 +2838,19 @@ class AgentManager:
             # 每一行都是 None——线上实测 count=50、50 行全 null，
             # 模型只能答"交易所接口整段都是空值"。
             if isinstance(candle, dict):
-                rows.append({
+                item = {
                     "t": int(candle.get("t") or 0),
                     "o": candle.get("o"), "h": candle.get("h"),
                     "l": candle.get("l"), "c": candle.get("c"),
                     "v": round(float(candle.get("v") or 0), 6),
                     "buy": round(float(candle.get("buy") or 0), 6),
                     "sell": round(float(candle.get("sell") or 0), 6),
-                })
+                }
+                # approx 是数据源给的可信度标记，必须原样带下去，
+                # 否则上面判 buySellApprox 时永远拿不到它
+                if candle.get("approx"):
+                    item["approx"] = True
+                rows.append(item)
             else:
                 rows.append({
                     "t": int(getattr(candle, "open_time", 0) or 0),
@@ -2861,16 +2871,23 @@ class AgentManager:
                                "但内容为空，交易所/本地都没给出有效价格")}
         # 主动买卖量是否真实：欧易历史K线不带 taker 量，K 线里的 buy/sell
         # 是按涨跌拆出来的近似值，**不能当主动买卖比引用**。
-        approx = bool(getattr(bars[-1], "buysell_approx", False)) if bars else False
+        # 两种来源形状不同（dict / Candle），标记位置也不同，都要认。
+        approx = False
+        if rows:
+            last = rows[-1]
+            approx = bool(last.get("approx")) if isinstance(last, dict) \
+                else bool(getattr(bars[-1], "buysell_approx", False))
+        # 原来只看 Candle 的 buysell_approx，走交易所（dict）时永远是 False，
+        # 于是这个保护形同不存在——模型照样把估算的 59.1 万当真实主动买引用。
         out = {"available": True, "untrusted": False, "symbol": symbol,
                "interval": interval or "default", "source": source or "unknown",
                "count": len(rows), "bars": rows,
                "buySellApprox": approx}
         if approx:
             out["note"] = ("bars[].buy/sell 是**近似值**（数据源不带逐笔买卖分类，"
-                           "按收阳/收阴拆的），只能用来看买卖力量的大致观感。"
-                           "要看真实的主动买卖比请读 read_symbol_everything 的 "
-                           "tradeFlow（逐笔成交汇总）。")
+                           "按收阳/收阴拆的），只是把'这根是阳线'换个说法，"
+                           "**不能当主动买卖比引用**。要看真实的多空主动买卖，"
+                           "用 read_symbol_everything 的 tradeFlow（逐笔成交汇总）。")
         return out
 
     async def _read_symbol_everything(self, arguments: dict) -> dict:
