@@ -286,3 +286,43 @@ def test_recent_trades_returns_none_when_both_fail(monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(OSError("451")))
     monkeypatch.setattr(md, "_recent_trades_okx", lambda *a, **k: None)
     assert md.recent_trades("solusdt", 10, None) is None
+
+
+# ---------- 两种数据源形状不同（线上事故） ----------
+
+def test_read_candles_handles_dict_source():
+    """交易所入口返回的是 **dict**，本地聚合器返回 Candle 对象。
+
+    线上实测：只看 getattr 的写法让交易所那份每行都是 null，
+    返回 count=50、50 行全空，模型于是答"交易所接口整段都是空值"。
+    """
+    class _M(AgentManager):
+        def __init__(self):
+            self.symbol_fetch_fn = lambda w, s, p=None: [
+                {"t": 1793841300000 + i, "o": 80500.0, "h": 80500.1,
+                 "l": 80215.0, "c": 80416.2, "v": 12.5, "buy": 7.0, "sell": 5.5}
+                for i in range(12)]
+            self.bars_fn = lambda s, iv: []
+            self.symbols_fn = lambda: ["btcusdt"]
+
+    out = _M()._read_candles({"symbol": "BTC", "interval": "15m", "limit": 12})
+    assert out["available"] is True
+    bar = out["bars"][-1]
+    assert bar["c"] == 80416.2, "dict 源不能被读成 null"
+    assert bar["t"] == 1793841300011
+    assert bar["v"] == 12.5
+
+
+def test_read_candles_rejects_all_null_rows():
+    """拿到条数但内容全空 → 报不可用，不能把 50 个 null 丢给模型解释。"""
+    class _M(AgentManager):
+        def __init__(self):
+            self.symbol_fetch_fn = lambda w, s, p=None: [
+                {"t": 0, "o": None, "h": None, "l": None, "c": None,
+                 "v": 0, "buy": 0, "sell": 0} for _ in range(12)]
+            self.bars_fn = lambda s, iv: []
+            self.symbols_fn = lambda: ["btcusdt"]
+
+    out = _M()._read_candles({"symbol": "BTC", "interval": "15m", "limit": 12})
+    assert out["available"] is False
+    assert "内容为空" in out["reason"]

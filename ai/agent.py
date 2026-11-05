@@ -2828,16 +2828,37 @@ class AgentManager:
                     "reason": reason}
         rows = []
         for candle in bars[-raw_limit:]:
-            rows.append({
-                "t": int(getattr(candle, "open_time", 0) or 0),
-                "o": getattr(candle, "open", None),
-                "h": getattr(candle, "high", None),
-                "l": getattr(candle, "low", None),
-                "c": getattr(candle, "close", None),
-                "v": round(float(getattr(candle, "volume", 0) or 0), 6),
-                "buy": round(float(getattr(candle, "buy_vol", 0) or 0), 6),
-                "sell": round(float(getattr(candle, "sell_vol", 0) or 0), 6),
-            })
+            # 两种来源形状不同：交易所入口（symbol_fetch_fn）返回 **dict**，
+            # 本地聚合器返回 Candle 对象。只用 getattr 的话交易所那份
+            # 每一行都是 None——线上实测 count=50、50 行全 null，
+            # 模型只能答"交易所接口整段都是空值"。
+            if isinstance(candle, dict):
+                rows.append({
+                    "t": int(candle.get("t") or 0),
+                    "o": candle.get("o"), "h": candle.get("h"),
+                    "l": candle.get("l"), "c": candle.get("c"),
+                    "v": round(float(candle.get("v") or 0), 6),
+                    "buy": round(float(candle.get("buy") or 0), 6),
+                    "sell": round(float(candle.get("sell") or 0), 6),
+                })
+            else:
+                rows.append({
+                    "t": int(getattr(candle, "open_time", 0) or 0),
+                    "o": getattr(candle, "open", None),
+                    "h": getattr(candle, "high", None),
+                    "l": getattr(candle, "low", None),
+                    "c": getattr(candle, "close", None),
+                    "v": round(float(getattr(candle, "volume", 0) or 0), 6),
+                    "buy": round(float(getattr(candle, "buy_vol", 0) or 0), 6),
+                    "sell": round(float(getattr(candle, "sell_vol", 0) or 0), 6),
+                })
+        # 全是空值的行等于没数据：宁可报"取不到"，也不要给模型 50 个 null
+        # 让它去解释——它会得出"交易所接口整段都是空值"这种错误结论。
+        rows = [r for r in rows if r["c"] is not None and r["t"]]
+        if not rows:
+            return {"available": False, "symbol": symbol, "monitored": None,
+                    "reason": (f"{symbol} {interval or '默认周期'}的K线取到了条数"
+                               "但内容为空，交易所/本地都没给出有效价格")}
         return {"available": True, "untrusted": False, "symbol": symbol,
                 "interval": interval or "default", "source": source or "unknown",
                 "count": len(rows), "bars": rows}
