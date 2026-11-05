@@ -517,6 +517,19 @@ liquidation / sentiment / oi / funding。
    · 该合约交易所最高只支持 N 倍 → 超过按 N 倍算，并明确告诉用户被限制在哪
    · 最小下单量/最小名义价值
    这些都不是我们加的规则，如实说明即可，不要自己再加一层"建议仓位"的限制。
+ · **止损止盈的价位也是用户说了算**（这条以前说错过，记住）：
+   · 用户说「止损放 2428」「止损 3 个点」「就贴在强平旁边」→ 照他的意思传
+     stopLoss / stopLossPct / stopAtLiquidation，**不要说"系统固定按 0.4% 算，
+     我改不了"**——那是旧行为，现在是能改的。
+   · 系统那套 ATR×1.5、0.4%~2%，只是**用户没说时的默认值**，不是规则。
+   · 用户要的止损落在强平价外面，也照样挂（`warning` 只提醒"可能先爆仓"），
+     不许拒绝、不许私自改价、不许让他"去交易所客户端手动挂"。
+ · **改已有的仓、平已有的仓**（place_order 只管开新仓，这两件事另有两个工具）：
+   · 「止损拉到 2428」「止盈改 2500」「止损贴到强平旁边」「止损先撤了」
+     → adjust_position（撤旧条件单、挂新条件单；只动说的那一项）
+   · 「平了」「全平」「减一半」「平掉 0.5 个」→ close_position
+   · 这两条都是**用户明确说了就执行**，不用再问一遍确认。
+   · 用户没说平仓时，绝不主动平。看到浮亏想"帮他止损"也不行——那是他的仓位。
  · **拒绝时必须说清楚三件事**（这比"不行"重要得多）：
    ① 为什么不行（哪个条件不满足）
    ② 真实边界是多少（工具返回的 limits 里有 maxNotional / available / maxLeverage，
@@ -1172,6 +1185,10 @@ class AgentManager:
         #   order_exec_fn(plan) -> dict（真下单）
         self.order_plan_fn = None
         self.order_exec_fn = None
+        # 已有仓位的调整：改保护单、市价平仓（main 注入）。
+        # 这两个是 place_order 补不上的能力——它只能开新仓。
+        self.position_adjust_fn = None
+        self.position_close_fn = None
         # 模拟仓平仓流水现查：(limit, symbol) -> {"rows","source","total"}。
         # 快照里只带全市场最近 12 条，按币筛会漏，必须能按币直接查库。
         self.paper_history_fn = None
@@ -2373,7 +2390,9 @@ class AgentManager:
         """
         if not isinstance(arguments, dict):
             raise ValueError("place_order 参数需为对象")
-        if set(arguments) - {"symbol", "side", "notional", "leverage", "dryRun", "plan"}:
+        if set(arguments) - {"symbol", "side", "notional", "leverage",
+                             "stopLoss", "stopLossPct", "takeProfit", "takeProfitPct",
+                             "stopAtLiquidation", "dryRun", "plan"}:
             raise ValueError("place_order 包含不支持的参数")
 
         # 第二步：执行
@@ -2409,8 +2428,33 @@ class AgentManager:
         fn = self.order_plan_fn
         if fn is None:
             return {"ready": False, "reason": "下单未接入（服务端没有可交易的账户）"}
+        # 止损止盈的可选覆盖：用户指定价位/百分比时按用户的算，
+        # 没指定才走 ATR 默认值。四个参数都允许 None。
+        extras = {}
+        for key in ("stopLoss", "stopLossPct", "takeProfit", "takeProfitPct"):
+            value = arguments.get(key)
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return {"ready": False, "reason": f"{key} 需为数字"}
+            if value <= 0:
+                return {"ready": False, "reason": f"{key} 必须大于 0"}
+            extras[key] = float(value)
+        args = [symbol, side, notional, leverage]
+        # 只在真的给了止损止盈时才多传参数：没给的时候保持老的四参数
+        # 调用形式，外部接进来的算单函数（测试/自定义账户）不用跟着改签名。
+        if extras:
+            args += [extras.get("stopLoss"), extras.get("stopLossPct"),
+                     extras.get("takeProfit"), extras.get("takeProfitPct")]
+        if arguments.get("stopAtLiquidation"):
+            # "止损挂强平线旁边"：价位由算单函数按真实强平价算出，
+            # 不让模型自己估——估出来的数字挂上去就是错的。
+            if extras:
+                args.append(True)
+            else:
+                args += [None, None, None, None, True]
         try:
-            plan = await asyncio.to_thread(fn, symbol, side, notional, leverage)
+            plan = await asyncio.to_thread(fn, *args)
         except Exception as exc:
             return {"ready": False, "reason": f"算单失败: {str(clean(str(exc)))[:200]}"}
         if not isinstance(plan, dict):
@@ -2420,6 +2464,66 @@ class AgentManager:
                             "止损价、止盈价）复述给用户，等他确认后再用 "
                             "dryRun=false 并原样传回 plan 执行。")
         return plan
+
+    async def _adjust_position(self, arguments: dict) -> dict:
+        """改已有仓位的保护单：用户说"止损拉到 X""止盈改 Y""撤了"。
+
+        为什么单独一个工具：place_order 只能开新仓。以前用户要改止损时，
+        Agent 手上没有任何工具能改，只能说"我改不了，系统固定 0.4%"——
+        这是能力缺失，不是策略选择。
+        """
+        if not isinstance(arguments, dict):
+            raise ValueError("adjust_position 参数需为对象")
+        allowed = {"symbol", "stopLoss", "stopLossPct", "takeProfit",
+                   "takeProfitPct", "stopAtLiquidation", "clearStop",
+                   "clearTakeProfit"}
+        if set(arguments) - allowed:
+            raise ValueError("adjust_position 包含不支持的参数")
+        symbol = str(arguments.get("symbol") or "").strip().lower()
+        if not symbol:
+            return {"ok": False, "error": "缺少币种"}
+        for key in ("stopLoss", "stopLossPct", "takeProfit", "takeProfitPct"):
+            value = arguments.get(key)
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return {"ok": False, "error": f"{key} 需为数字"}
+            if value <= 0:
+                return {"ok": False, "error": f"{key} 必须大于 0"}
+        fn = self.position_adjust_fn
+        if fn is None:
+            return {"ok": False, "error": "改保护单未接入（服务端没有可交易的账户）"}
+        try:
+            return await asyncio.to_thread(
+                fn, symbol,
+                arguments.get("stopLoss"), arguments.get("stopLossPct"),
+                arguments.get("takeProfit"), arguments.get("takeProfitPct"),
+                bool(arguments.get("stopAtLiquidation")),
+                bool(arguments.get("clearStop")),
+                bool(arguments.get("clearTakeProfit")))
+        except Exception as exc:
+            return {"ok": False, "error": str(clean(str(exc)))[:300]}
+
+    async def _close_position(self, arguments: dict) -> dict:
+        """市价平掉已有仓位（可只平一部分）。"""
+        if not isinstance(arguments, dict):
+            raise ValueError("close_position 参数需为对象")
+        if set(arguments) - {"symbol", "qty"}:
+            raise ValueError("close_position 包含不支持的参数")
+        symbol = str(arguments.get("symbol") or "").strip().lower()
+        if not symbol:
+            return {"ok": False, "error": "缺少币种"}
+        qty = arguments.get("qty")
+        if qty is not None and (isinstance(qty, bool)
+                                or not isinstance(qty, (int, float))):
+            return {"ok": False, "error": "qty 需为数字"}
+        fn = self.position_close_fn
+        if fn is None:
+            return {"ok": False, "error": "平仓未接入（服务端没有可交易的账户）"}
+        try:
+            return await asyncio.to_thread(fn, symbol, qty)
+        except Exception as exc:
+            return {"ok": False, "error": str(clean(str(exc)))[:300]}
 
     def _list_stickers(self, arguments: dict) -> dict:
         """列出表情包库：Agent 看库里有什么、各自叫什么、什么时候该用。
@@ -3425,6 +3529,10 @@ class AgentManager:
                         output = await self._read_web_page(arguments)
                     elif name == "place_order":
                         output = await self._place_order(arguments)
+                    elif name == "adjust_position":
+                        output = await self._adjust_position(arguments)
+                    elif name == "close_position":
+                        output = await self._close_position(arguments)
                     elif name == "list_stickers":
                         output = self._list_stickers(arguments)
                     elif name == "search_stickers":

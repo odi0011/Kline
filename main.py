@@ -965,6 +965,11 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     # 否则模型会一步下完（真实资金操作必须先让用户看到那张单）。
     agent.order_plan_fn = quant.manual_order_plan
     agent.order_exec_fn = quant.manual_order_execute
+    # 已有仓位的调整：改保护单 / 市价平仓。place_order 只能开新仓，
+    # 用户说"止损拉到 X""平了"时以前没有任何工具能用
+    # （线上原话：「止损价我改不了」）。
+    agent.position_adjust_fn = quant.position_adjust
+    agent.position_close_fn = quant.position_close
     # 模拟仓平仓明细现查：快照里那份是全市场最近 12 条，问"BTC 最近 5 笔"
     # 会被别的币挤掉（线上实测 121 笔只读出 3 笔）。这里按币查库。
     agent.paper_history_fn = quant.paper.recent_trades

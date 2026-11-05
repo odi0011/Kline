@@ -528,7 +528,8 @@ def test_live_web_search_and_fetch_page():
         time.sleep(1)
     if not (result and result.get("ok") and result.get("results")):
         pytest.skip("联网环境波动，3 次搜索均失败: %s" % search_attempts)
-    assert result["provider"] in ("serper", "duckduckgo", "bing")
+    # yahoo 是 DDG 限流后的兜底源（线上 DDG 一封 IP 就只它可用）
+    assert result["provider"] in ("serper", "duckduckgo", "bing", "yahoo")
     first = result["results"][0]
     assert first["title"] and first["url"].startswith(("http://", "https://"))
 

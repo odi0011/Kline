@@ -27,14 +27,14 @@ from collections import deque
 from accounts import (
     signed_request, open_orders, cancel_order, query_order, cancel_all_open_orders,
     place_protective_order, cancel_algo_orders, account_max_leverage,
-    format_qty, format_price,
+    format_qty, format_price, fetch_positions, maintenance_margin_ratio,
 )
 from analysis import indicators as IND
 from analysis import risk_metrics as RISK
-from decision.advice import build_advice
+from decision.advice import build_advice, _round_price, _stop_plan
 from decision.config import DecisionConfig
 from decision.drift import ADWIN
-from decision.paper import PaperBook
+from decision.paper import PaperBook, _liq_price
 from decision.features import (
     cvd_metrics, funding_context, macd, open_interest_bias,
     order_book_imbalance, returns as return_series, squeeze_state,
@@ -120,6 +120,34 @@ def _as_int(value, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _as_float_or_none(value) -> "float | None":
+    """转 float；坏值/None/NaN/Inf 一律返回 None（表示"没给这个参数"）。
+
+    用户指定的止损价走这条：给了就得用，没给才回落到默认值，
+    所以"值是坏的"必须能区分出"没给"。
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _pct_to_ratio(value: float) -> float:
+    """百分比参数 → 比例。避免把 3% 当成 300%，也避免把 0.5% 当成 50%：
+
+    3    → 0.03   （模型最常给的"百分点"写法）
+    0.03 → 0.03   （小数写法）
+    0.5  → 0.005  （0.5 个百分点）
+
+    分界取 0.1：小于它只可能是小数写法，大于等于它只可能是百分点写法。
+    单子算完会让用户看到真实价位，比悄悄放大 100 倍安全。
+    """
+    return value if value < 0.1 else value / 100.0
 
 
 def _atomic_write_json(path: str, data) -> bool:
@@ -2763,12 +2791,26 @@ class QuantEngine:
         return None, ""
 
     def manual_order_plan(self, symbol: str, side: str, notional: float | None = None,
-                          leverage: int | None = None) -> dict:
+                          leverage: int | None = None,
+                          stop_loss: float | None = None,
+                          stop_loss_pct: float | None = None,
+                          take_profit: float | None = None,
+                          take_profit_pct: float | None = None,
+                          stop_at_liquidation: bool = False) -> dict:
         """算一张手动单的全部参数，**不下单**——供 Agent 先给用户看。
 
         为什么单独一步：真实资金操作必须先让用户看到
         「币种 / 方向 / 数量 / 杠杆 / 保证金 / 止损止盈」再确认。
         模型把"做个空"理解反、或者数量算错，直接下单就是真金白银的损失。
+
+        **止损止盈由用户决定**：
+          · stop_loss / take_profit：具体价位
+          · stop_loss_pct / take_profit_pct：百分比（0.3 表示 0.3%，也接受 3 表示 3%）
+          · stop_at_liquidation：嘴上说的"止损挂强平线旁边"，由系统换成具体价位
+          · 都不给才用 ATR 默认值
+        系统不在任何价位上拦人，只把物理事实（强平价在哪、止损会不会先触发）
+        写进 note/warning。**不因为"太大/太危险"替用户收窄**——这是他自己的钱，
+        人能做的他就能做。
 
         返回 ready=false 时带 reason，Agent 应原样转述给用户，不要自己编。
         """
@@ -2861,12 +2903,102 @@ class QuantEngine:
         if qty <= 0:
             return {"ready": False, "reason": "按当前价格和最小步长算出的数量为 0"}
 
-        # 止损止盈：沿用 K 线胶囊那套 ATR 参数，保证和页面建议一致
+        # 止损止盈：**用户给了就按用户的**，没给才用 ATR 默认值。
+        #
+        # 之前这里无条件走 _stop_plan（ATR × 1.5，夹在 0.4%~2%），
+        # 用户说"止损挂到强平线旁边"也改不了——系统替他的钱做主，
+        # 而他明确要求过"人能做的他就能做"。
+        # 现在系统不拦任何用户给的价，只把交易所的物理事实说清楚。
         state = self.indicators.get(sym) or {}
         from decision.advice import _stop_plan
         plan = _stop_plan(float(price), state.get("atr"), direction == "long")
         if not plan:
             return {"ready": False, "reason": "算不出止损止盈"}
+        custom_sl = _as_float_or_none(stop_loss)
+        custom_tp = _as_float_or_none(take_profit)
+        sl_pct_arg = _as_float_or_none(stop_loss_pct)
+        tp_pct_arg = _as_float_or_none(take_profit_pct)
+        bullish = order_side == "BUY"
+        # 强平价：能问到维持保证金率就按交易所公式算，问不到才用估算。
+        # 用户嘴里的"止损贴强平"依赖这个数字，估算差 0.3% 就落到强平后面了。
+        liq = 0.0
+        try:
+            mmr = maintenance_margin_ratio(key, secret, sym, price * qty)
+        except Exception:
+            mmr = None
+        if mmr:
+            span = 1.0 / lev - mmr
+            liq = float(price) * (1 - span if bullish else 1 + span)
+        if not liq or liq <= 0:
+            liq = _liq_price(float(price), lev, "long" if bullish else "short")
+        notes = []
+        if stop_at_liquidation:
+            # "止损放在强平线旁边"——用户嘴里的这句话需要一个具体价位。
+            # 取强平价往里收 10% 的距离：既贴着强平，又保证先于强平触发。
+            # 不能贴到 0：交易所的强平价是按维持保证金算的，我们这里只是
+            # 估算，留一点余量才不会出现"止损还没到就已经爆了"。
+            span = abs(price - liq) * 0.1
+            sl = liq + span if bullish else liq - span
+            sl_pct = abs(sl - price) / price
+            notes.append(f"止损贴在强平线旁边 {_round_price(sl)}"
+                         f"（{sl_pct * 100:.2f}%，强平 {_round_price(liq)}）")
+        elif custom_sl is not None and custom_sl > 0:
+            if bullish and custom_sl >= price:
+                return {"ready": False,
+                        "reason": f"多单止损 {custom_sl} 必须在现价 {price} 下方"}
+            if not bullish and custom_sl <= price:
+                return {"ready": False,
+                        "reason": f"空单止损 {custom_sl} 必须在现价 {price} 上方"}
+            sl = float(custom_sl)
+            sl_pct = abs(sl - price) / price
+            notes.append(f"止损按你给的 {custom_sl}")
+        elif sl_pct_arg is not None and sl_pct_arg > 0:
+            # 百分比参数：3 和 3% 都按 3 个点处理，0.5 按 0.5 个点
+            pct = _pct_to_ratio(float(sl_pct_arg))
+            sl_pct = pct
+            sl = price * (1 - pct) if bullish else price * (1 + pct)
+            notes.append(f"止损按你给的 {pct * 100:.2f}%")
+        else:
+            sl, sl_pct = float(plan["sl"]), float(plan["slPct"]) / 100.0
+        if custom_tp is not None and custom_tp > 0:
+            if bullish and custom_tp <= price:
+                return {"ready": False,
+                        "reason": f"多单止盈 {custom_tp} 必须在现价 {price} 上方"}
+            if not bullish and custom_tp >= price:
+                return {"ready": False,
+                        "reason": f"空单止盈 {custom_tp} 必须在现价 {price} 下方"}
+            tp = float(custom_tp)
+            tp_pct = abs(tp - price) / price
+            notes.append(f"止盈按你给的 {custom_tp}")
+        elif tp_pct_arg is not None and tp_pct_arg > 0:
+            pct = _pct_to_ratio(float(tp_pct_arg))
+            tp_pct = pct
+            tp = price * (1 + pct) if bullish else price * (1 - pct)
+            notes.append(f"止盈按你给的 {pct * 100:.2f}%")
+        else:
+            tp, tp_pct = float(plan["tp"]), float(plan["tpPct"]) / 100.0
+        # 强平价只做**提示**，不做拦截。
+        #
+        # 之前这里还想"拒绝越过强平的止损"，但交易所本身接受这种单——
+        # 拦下来就又变回"系统替用户决定"。用户要的就是"人能做的它就能做"，
+        # 所以这里只把物理事实说清楚：仓位会先被强平，止损大概率不触发。
+        warning = None
+        # 默认止损（没被用户指定）在高杠杆下会算到强平价外面——150x 时强平
+        # 只有 0.67% 的距离，ATR 给的 1%~2% 止损永远触发不了。这种"挂上去
+        # 也没用"的默认值要收进强平线内；用户自己给的价一律原样保留。
+        default_sl = custom_sl is None and sl_pct_arg is None and not stop_at_liquidation
+        if default_sl and ((bullish and sl <= liq) or (not bullish and sl >= liq)):
+            sl = price - (price - liq) * 0.9 if bullish else price + (liq - price) * 0.9
+            sl_pct = abs(sl - price) / price
+            notes.append(f"杠杆 {lev}x 下强平太近，默认止损收到 {_round_price(sl)}")
+        if (bullish and sl <= liq) or (not bullish and sl >= liq):
+            warning = (f"止损 {sl:.6g} 在强平价 {liq:.6g} 之外，"
+                       f"仓位会在止损触发前先被强平，这个止损大概率不会触发")
+        plan = {
+            "sl": _round_price(sl), "tp": _round_price(tp),
+            "slPct": round(sl_pct * 100, 2), "tpPct": round(tp_pct * 100, 2),
+            "rr": round(tp_pct / sl_pct, 2) if sl_pct else None,
+        }
 
         return {
             "ready": True,
@@ -2883,10 +3015,14 @@ class QuantEngine:
             "leverage": lev,
             "margin": round(qty * float(price) / lev, 2),
             "available": round(available, 2),
+            "liquidation": _round_price(liq),
             "sl": plan["sl"], "tp": plan["tp"],
             "slPct": plan["slPct"], "tpPct": plan["tpPct"],
             "rr": plan["rr"],
-            "note": note,
+            # 止损落在强平价之外时给一句提醒，但仍然照用户/默认的价挂
+            "warning": warning,
+            # 止损止盈是用户指定的还是系统默认，写在 note 里让用户一眼看到
+            "note": "；".join([x for x in (note, "，".join(notes), warning) if x]),
         }
 
     def manual_order_execute(self, plan: dict) -> dict:
@@ -2977,11 +3113,299 @@ class QuantEngine:
             "slPlaced": bool(sl_order_id), "tpPlaced": bool(tp_order_id),
             "unprotected": naked,
             "warning": warning,
+            # 算单时那句"止损在强平之外/用户指定"的说明，执行后原样带回，
+            # 免得模型只记得成交价、忘了把风险那句话也说给用户
+            "planNote": plan.get("note") or "",
             # 明确告诉模型：这笔单已经成交了，不要再去反复核对
             "done": True,
             "next": ("下单已完成，直接把结果和警示告诉用户。"
                      "不要再调用 read_orders / read_accounts 去二次核对——"
                      "成交与否这个返回值已经说明了。"),
+        }
+
+    # ---------- 已有仓位的调整：改止损/止盈、平仓 ----------
+    #
+    # 用户原话："止损价我改不了"。这不是"算法不够聪明"，是**根本没有这个工具**：
+    # place_order 只能新开仓，改不了已经挂着的保护单。人能做的它就得能做，
+    # 所以这里补上"改保护单"和"平仓"两条路。
+
+    def _live_position(self, acct: dict, sym: str) -> dict | None:
+        """交易所里的真实持仓（含强平价、杠杆、方向）。没有仓位返回 None。
+
+        双向持仓模式下同一个币会有多空两条记录，取**名义价值最大**的那条：
+        用户说"把止损拉到 X"指的是他最在意的那个仓位。
+        """
+        rows = fetch_positions(acct["api_key"], acct["api_secret"])
+        hits = [p for p in rows or []
+                if str(p.get("symbol") or "").lower() == sym]
+        if not hits:
+            return None
+        hits.sort(key=lambda p: -abs(float(p.get("notional") or 0)))
+        return hits[0]
+
+    def position_adjust(self, symbol: str, stop_loss: float | None = None,
+                        stop_loss_pct: float | None = None,
+                        take_profit: float | None = None,
+                        take_profit_pct: float | None = None,
+                        stop_at_liquidation: bool = False,
+                        clear_stop: bool = False,
+                        clear_take_profit: bool = False) -> dict:
+        """改一个**已有实盘仓位**的止损/止盈（撤旧条件单 → 挂新条件单）。
+
+        和 place_order 的区别：不下新单、不改数量，只动保护单。所以不需要
+        走"先算单再确认"——用户说"止损拉到 X""止盈改到 Y"就是这条指令本身。
+
+        也能"只撤不挂"（clear_stop / clear_take_profit）：用户要把仓位裸着
+        做手动管理，那是他的自由。
+
+        只撤**对应类型**的条件单：改止损不能顺手把止盈也撤了。
+        """
+        sym = self._normalize_symbol(symbol)
+        if not sym:
+            return {"ok": False, "error": "缺少或认不出币种"}
+        accounts = self._tradable_accounts()
+        if not accounts:
+            return {"ok": False, "error": "没有可交易的账户"}
+        acct = accounts[0]
+        key, secret = acct.get("api_key", ""), acct.get("api_secret", "")
+        try:
+            pos = self._live_position(acct, sym)
+        except Exception as exc:
+            return {"ok": False, "error": f"查不到交易所持仓: {str(exc)[:160]}"}
+        if not pos:
+            return {"ok": False,
+                    "error": f"交易所里现在没有 {sym.upper()} 的仓位，"
+                             f"要开新仓用 place_order"}
+
+        qty = abs(float(pos.get("amt") or 0))
+        price = float(pos.get("mark") or 0) or float(pos.get("entry") or 0)
+        if qty <= 0 or price <= 0:
+            return {"ok": False, "error": "持仓数量或价格取不到，无法改保护单"}
+        bullish = float(pos.get("amt")) > 0
+        close_side = "SELL" if bullish else "BUY"
+        lev = int(pos.get("leverage") or 1) or 1
+        liq = float(pos.get("liquidation") or 0) or _liq_price(
+            float(pos.get("entry") or price), lev, "long" if bullish else "short")
+
+        want_stop = (stop_loss is not None or stop_loss_pct is not None
+                     or stop_at_liquidation or clear_stop)
+        want_tp = (take_profit is not None or take_profit_pct is not None
+                   or clear_take_profit)
+        if not want_stop and not want_tp:
+            return {"ok": False,
+                    "error": "没说要改什么：要给 stopLoss/stopLossPct/"
+                             "stopAtLiquidation，或 takeProfit/takeProfitPct，"
+                             "或用 clearStop/clearTakeProfit 撤掉"}
+
+        notes = []
+        new_sl = new_tp = None
+        warning = None
+        if clear_stop:
+            notes.append("已撤掉止损，仓位现在裸着")
+        elif want_stop:
+            custom_sl = _as_float_or_none(stop_loss)
+            sl_pct_arg = _as_float_or_none(stop_loss_pct)
+            if stop_at_liquidation:
+                span = abs(price - liq) * 0.1
+                new_sl = liq + span if bullish else liq - span
+                notes.append(f"止损改到强平线旁边 {_round_price(new_sl)}"
+                             f"（强平 {_round_price(liq)}）")
+            elif custom_sl is not None and custom_sl > 0:
+                if (bullish and custom_sl >= price) or (
+                        not bullish and custom_sl <= price):
+                    return {"ok": False,
+                            "error": (f"{'多' if bullish else '空'}单止损 "
+                                      f"{custom_sl} 在现价 {price} 的"
+                                      f"{'上方' if bullish else '下方'}，"
+                                      f"再成反向单了")}
+                new_sl = float(custom_sl)
+                notes.append(f"止损改到 {custom_sl}")
+            elif sl_pct_arg is not None and sl_pct_arg > 0:
+                pct = _pct_to_ratio(float(sl_pct_arg))
+                new_sl = price * (1 - pct) if bullish else price * (1 + pct)
+                notes.append(f"止损改到 {pct * 100:.2f}% 外")
+            else:
+                return {"ok": False, "error": "止损参数无效"}
+
+        if clear_take_profit:
+            notes.append("已撤掉止盈")
+        elif want_tp:
+            custom_tp = _as_float_or_none(take_profit)
+            tp_pct_arg = _as_float_or_none(take_profit_pct)
+            if custom_tp is not None and custom_tp > 0:
+                if (bullish and custom_tp <= price) or (
+                        not bullish and custom_tp >= price):
+                    return {"ok": False,
+                            "error": (f"{'多' if bullish else '空'}单止盈 "
+                                      f"{custom_tp} 在现价的错误一侧")}
+                new_tp = float(custom_tp)
+                notes.append(f"止盈改到 {custom_tp}")
+            elif tp_pct_arg is not None and tp_pct_arg > 0:
+                pct = _pct_to_ratio(float(tp_pct_arg))
+                new_tp = price * (1 + pct) if bullish else price * (1 - pct)
+                notes.append(f"止盈改到 {pct * 100:.2f}% 外")
+            else:
+                return {"ok": False, "error": "止盈参数无效"}
+
+        if new_sl is not None and ((bullish and new_sl <= liq) or (
+                not bullish and new_sl >= liq)):
+            warning = (f"止损 {new_sl:.6g} 越过强平价 {liq:.6g}，"
+                       f"这个仓会先被强平、止损大概率不触发")
+
+        replaced_sl = replaced_tp = 0
+        try:
+            if want_stop:
+                replaced_sl = cancel_algo_orders(key, secret, sym,
+                                                 types=("STOP_MARKET",))
+            if want_tp:
+                replaced_tp = cancel_algo_orders(key, secret, sym,
+                                                 types=("TAKE_PROFIT_MARKET",))
+        except Exception as exc:
+            return {"ok": False, "error": f"撤旧保护单失败: {str(exc)[:160]}"}
+
+        sl_order_id = tp_order_id = None
+        errors = []
+        if new_sl is not None:
+            try:
+                order = place_protective_order(key, secret, sym, close_side,
+                                               "STOP_MARKET", qty, new_sl)
+                sl_order_id = order.get("algoId") or order.get("orderId")
+            except Exception as exc:
+                errors.append(f"新止损挂失败: {str(exc)[:140]}")
+        if new_tp is not None:
+            try:
+                order = place_protective_order(key, secret, sym, close_side,
+                                               "TAKE_PROFIT_MARKET", qty, new_tp)
+                tp_order_id = order.get("algoId") or order.get("orderId")
+            except Exception as exc:
+                errors.append(f"新止盈挂失败: {str(exc)[:140]}")
+
+        # 本地记录跟着改，否则引擎的软件层还会按旧价位判离场
+        touched = False
+        for name in list(self.state):
+            pos_state = self._st(name)["positions"].get(sym)
+            if not pos_state:
+                continue
+            if new_sl is not None:
+                pos_state["sl"] = _round_price(new_sl)
+            if new_tp is not None:
+                pos_state["tp"] = _round_price(new_tp)
+            if clear_stop:
+                pos_state["sl"] = None
+            if clear_take_profit:
+                pos_state["tp"] = None
+            touched = True
+        if touched:
+            self._save_positions()
+
+        naked = bool(new_sl is None and (want_stop or clear_stop))
+        self._event("adjust",
+                    f"调整保护单 {sym.upper()}: " + "；".join(notes or ["无变化"])
+                    + (f"（失败: {'; '.join(errors)}）" if errors else ""),
+                    account=acct.get("name", ""), symbol=sym,
+                    sl=new_sl, tp=new_tp, manual=True)
+        if errors:
+            return {"ok": False, "error": "；".join(errors),
+                    "replacedStop": replaced_sl, "replacedTakeProfit": replaced_tp,
+                    "note": "；".join(notes)}
+        return {
+            "ok": True, "symbol": sym, "side": "long" if bullish else "short",
+            "qty": qty, "price": _round_price(price),
+            "stopLoss": _round_price(new_sl) if new_sl is not None else None,
+            "takeProfit": _round_price(new_tp) if new_tp is not None else None,
+            "liquidation": _round_price(liq),
+            "slOrderId": sl_order_id, "tpOrderId": tp_order_id,
+            "replacedStop": replaced_sl, "replacedTakeProfit": replaced_tp,
+            "naked": naked,
+            "warning": warning,
+            "note": "；".join([x for x in (notes and "；".join(notes) or "",
+                                          warning) if x]),
+            "done": True,
+            "next": ("改完了，直接一句话告诉用户新的止损/止盈价。"
+                     "不要再调 read_orders 二次核对。"),
+        }
+
+    def position_close(self, symbol: str, qty: float | None = None) -> dict:
+        """市价平掉一个**已有实盘仓位**（可只平一部分）。
+
+        用户说"平了""全平""减一半"时用它。平完会撤掉该币种的全部保护单，
+        否则会留下孤儿条件单（仓位没了、止损还挂着，一触发就是反向开仓）。
+        """
+        sym = self._normalize_symbol(symbol)
+        if not sym:
+            return {"ok": False, "error": "缺少或认不出币种"}
+        accounts = self._tradable_accounts()
+        if not accounts:
+            return {"ok": False, "error": "没有可交易的账户"}
+        acct = accounts[0]
+        key, secret = acct.get("api_key", ""), acct.get("api_secret", "")
+        try:
+            pos = self._live_position(acct, sym)
+        except Exception as exc:
+            return {"ok": False, "error": f"查不到交易所持仓: {str(exc)[:160]}"}
+        if not pos:
+            return {"ok": True, "symbol": sym, "closed": 0,
+                    "note": f"交易所里本来就没有 {sym.upper()} 的仓位"}
+        held = abs(float(pos.get("amt") or 0))
+        side = "SELL" if float(pos.get("amt")) > 0 else "BUY"
+        want = held
+        if qty is not None:
+            try:
+                want = abs(float(qty))
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "qty 需为数字"}
+            if want <= 0:
+                return {"ok": False, "error": "qty 必须大于 0"}
+            want = min(want, held)
+        # 数量按交易所 stepSize 归一，否则 -1111
+        want = self._quantize(want, self._step_size(key, secret, sym))
+        if want <= 0:
+            return {"ok": False, "error": "按最小步长算出的平仓量为 0"}
+        full = abs(want - held) < 1e-9
+        try:
+            order = self._place_order(key, secret, sym, side, want,
+                                      reduce_only=True)
+        except Exception as exc:
+            self._event("error", f"手动平仓失败({sym}): {exc}", symbol=sym)
+            return {"ok": False, "error": f"交易所拒绝: {str(exc)[:200]}"}
+        fill = self._num(order.get("avgPrice")) or float(pos.get("mark") or 0)
+        cancelled = 0
+        orphan_error = ""
+        if full:
+            try:
+                cancelled = cancel_algo_orders(key, secret, sym)
+            except Exception as exc:
+                # 仓位已经平了，条件单还在 → 一触发就是反向开仓。必须说出来。
+                cancelled = 0
+                orphan_error = f"撤条件单失败: {str(exc)[:120]}"
+        # 本地仓位记录同步（部分平仓改数量，全平删掉）
+        touched = False
+        for name in list(self.state):
+            st = self._st(name)
+            cur = st["positions"].get(sym)
+            if not cur:
+                continue
+            if full:
+                st["positions"].pop(sym, None)
+            else:
+                cur["qty"] = abs(float(cur.get("qty") or held) - want)
+            touched = True
+        if touched:
+            self._save_positions()
+        self.stats["orders"] += 1
+        self._event("close",
+                    f"手动平仓 {sym.upper()} {want} @ {fill}"
+                    + ("（已全部平掉）" if full else "（部分平仓）"),
+                    account=acct.get("name", ""), symbol=sym, side=side,
+                    qty=want, entry=fill, manual=True)
+        self._broadcast_positions()
+        return {
+            "ok": True, "symbol": sym, "closeSide": side, "qty": want,
+            "fill": fill, "full": full, "remaining": 0 if full else held - want,
+            "cancelledProtection": cancelled,
+            "warning": orphan_error,
+            "done": True,
+            "next": "平仓已完成，直接告诉用户成交价和剩下多少仓位，不用再核对。",
         }
 
     @staticmethod

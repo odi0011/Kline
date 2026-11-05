@@ -122,20 +122,28 @@ def fetch_account(api_key: str, api_secret: str) -> dict:
     }
 
 
-def cancel_algo_orders(api_key: str, api_secret: str, symbol: str) -> int:
+def cancel_algo_orders(api_key: str, api_secret: str, symbol: str,
+                       types: tuple[str, ...] | None = None) -> int:
     """撤掉某个币种挂着的算法条件单（止损/止盈），返回撤掉的数量。
 
     止损走的是 /fapi/v1/algoOrder（见 place_protective_order），
     所以 cancel_all_open_orders 撤不到它。平仓后不撤就会留下孤儿单：
     仓位没了、止损单还挂着，会一直累积（线上实测留下两张，
     其中一张名义 0.623 BTC）。
+
+    types：只撤指定类型（如 ("STOP_MARKET",)）。改止损时不能把止盈一起撤了——
+    用户只想动止损，结果止盈也没了，等于替他改了另一件事。
     """
     rows = signed_request(api_key, api_secret, "/fapi/v1/openAlgoOrders",
                           {"symbol": symbol.upper()})
     items = (rows.get("orders", rows) if isinstance(rows, dict) else rows) or []
     removed = 0
     for order in items:
-        algo_id = order.get("algoId") if isinstance(order, dict) else None
+        if not isinstance(order, dict):
+            continue
+        if types and str(order.get("type") or "").upper() not in types:
+            continue
+        algo_id = order.get("algoId")
         if not algo_id:
             continue
         try:
@@ -148,6 +156,45 @@ def cancel_algo_orders(api_key: str, api_secret: str, symbol: str) -> int:
     return removed
 
 
+_BRACKET_CACHE: dict[str, tuple[float, dict, float]] = {}
+_BRACKET_OK_TTL = 600.0     # 分档很少变，10 分钟足够
+_BRACKET_FAIL_TTL = 30.0    # 失败只缓存 30 秒，别让一次抖动糊住后续查询
+
+
+def clear_bracket_cache() -> None:
+    """清空分档缓存（测试用；线上靠 TTL 自动过期）。"""
+    _BRACKET_CACHE.clear()
+
+
+def _bracket_row(api_key: str, api_secret: str, symbol: str) -> dict | None:
+    """带缓存的 leverageBracket 单行查询。
+
+    为什么缓存：算一张手动单要同时用到"最高杠杆"和"维持保证金率"，
+    两处各打一次接口既慢又容易撞限频。同一次查询的结果留 10 分钟。
+    """
+    wanted = str(symbol or "").upper()
+    if not wanted:
+        return None
+    cache_key = f"{(api_key or '')[-8:]}:{wanted}"
+    now = time.time()
+    hit = _BRACKET_CACHE.get(cache_key)
+    if hit and now - hit[0] < hit[2]:
+        return hit[1] or None
+    try:
+        rows = signed_request(api_key, api_secret, "/fapi/v1/leverageBracket")
+    except Exception:
+        _BRACKET_CACHE[cache_key] = (now, {}, _BRACKET_FAIL_TTL)
+        return None
+    row = None
+    for item in rows if isinstance(rows, list) else []:
+        if str(item.get("symbol") or "").upper() == wanted:
+            row = item
+            break
+    _BRACKET_CACHE[cache_key] = (
+        now, row or {}, _BRACKET_OK_TTL if row else _BRACKET_FAIL_TTL)
+    return row
+
+
 def account_max_leverage(api_key: str, api_secret: str, symbol: str) -> int:
     """该**账户**对某个合约实际能设的最高杠杆。0 = 取不到。
 
@@ -158,22 +205,50 @@ def account_max_leverage(api_key: str, api_secret: str, symbol: str) -> int:
     照公开值去设 125 以上，交易所直接 -4028 "Leverage 150 is not valid"，
     整张单下不出去（用户看到的却是"已算好、等确认"）。
     """
-    rows = signed_request(api_key, api_secret, "/fapi/v1/leverageBracket")
-    wanted = str(symbol or "").upper()
+    row = _bracket_row(api_key, api_secret, symbol)
+    if not row:
+        return 0
     best = 0
-    for row in rows if isinstance(rows, list) else []:
-        if str(row.get("symbol") or "").upper() != wanted:
-            continue
+    try:
+        best = max(best, int(row.get("maxLeverage") or 0))
+    except (TypeError, ValueError):
+        pass
+    for bracket in row.get("brackets") or []:
         try:
-            best = max(best, int(row.get("maxLeverage") or 0))
+            best = max(best, int(bracket.get("initialLeverage") or 0))
         except (TypeError, ValueError):
-            pass
-        for bracket in row.get("brackets") or []:
-            try:
-                best = max(best, int(bracket.get("initialLeverage") or 0))
-            except (TypeError, ValueError):
-                continue
+            continue
     return best
+
+
+def maintenance_margin_ratio(api_key: str, api_secret: str, symbol: str,
+                             notional: float = 0.0) -> float | None:
+    """该合约在这个名义价值档位的维持保证金率。取不到返回 None。
+
+    用来估算强平价：`liq = price × (1 ∓ 1/杠杆 + mmr)`。
+    decision.paper._liq_price 用的是"1/杠杆 × 0.95"的拍脑袋系数，等于假设
+    mmr = 0.05/杠杆：BTC 125x 时它认为强平在 -0.76%，真实公式是 -0.4%
+    （mmr 0.4%）——差出来的这 0.36% 正好让"止损贴强平"落到强平之后，
+    结果是仓先爆、止损不触发。
+    """
+    row = _bracket_row(api_key, api_secret, symbol)
+    brackets = (row or {}).get("brackets") or []
+    if not brackets:
+        return None
+    for b in brackets:
+        try:
+            cap = float(b.get("notionalCap") or 0)
+        except (TypeError, ValueError):
+            cap = 0
+        if notional <= 0 or cap <= 0 or notional <= cap:
+            try:
+                return float(b.get("maintMarginRatio") or 0)
+            except (TypeError, ValueError):
+                return None
+    try:
+        return float(brackets[-1].get("maintMarginRatio") or 0)
+    except (TypeError, ValueError):
+        return None
 
 
 # ---- 价格/数量精度：必须按交易所的 tickSize / stepSize 格式化 ----

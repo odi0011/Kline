@@ -13,8 +13,29 @@ from decision.config import DecisionConfig
 from quant import QuantEngine
 
 
+@pytest.fixture(autouse=True)
+def _isolate_exchange(monkeypatch):
+    """每个用例都把交易所调用隔开，结束后自动还原。
+
+    为什么要 autouse：分档查询/精度查询/下单全走 accounts.signed_request，
+    不拦住就会真的打币安（实测一个用例从 0.1 秒涨到 20 秒，还可能拿到
+    真实账户数据）。用 monkeypatch 而不是直接赋值，是为了不把假接口
+    漏给后面的模块。
+    """
+    import accounts
+    import quant as quant_mod
+    monkeypatch.setattr(accounts, "signed_request", lambda *a, **k: [])
+    monkeypatch.setattr(quant_mod, "signed_request", lambda *a, **k: {})
+    accounts.clear_bracket_cache()
+    yield
+    accounts.clear_bracket_cache()
+
+
 def _engine(tmp_path, price=100.0, available=1000.0):
     accts = {"list": [{"name": "acc", "api_key": "k", "api_secret": "s", "icon": ""}]}
+    # 分档查询带 TTL 缓存；每个用例换一份 mock，缓存必须清掉
+    import accounts
+    accounts.clear_bracket_cache()
     eng = QuantEngine(
         accts, str(tmp_path / "quant.yaml"), price_fn=lambda s: price,
         min_pattern_winrate=0.35, min_pattern_samples=5,
@@ -28,9 +49,6 @@ def _engine(tmp_path, price=100.0, available=1000.0):
     eng._broadcast_positions = MagicMock()
     eng.max_leverage_fn = lambda s: 50
     eng.indicators["btcusdt"] = {"price": price, "atr": price * 0.01}
-    # 设置杠杆会打真实交易所接口，测试里一律拦掉
-    import quant as quant_mod
-    quant_mod.signed_request = MagicMock(return_value={})
     return eng
 
 
@@ -53,6 +71,153 @@ def test_plan_short_direction_is_reversed(tmp_path):
     assert plan["ready"] is True, plan
     assert plan["orderSide"] == "SELL" and plan["closeSide"] == "BUY"
     assert plan["tp"] < plan["price"] < plan["sl"]
+
+
+# ---------- 止损止盈由用户说了算 ----------
+#
+# 线上原话："止损价我改不了：系统固定按 0.4% 算" "把止损挂到强平线旁边这件事
+# 我设不了"。系统的默认值（ATR×1.5，夹在 0.4%~2%）是**建议**，不是规则：
+# 用户报一个价，就必须按那个价挂。这里锁住这条，防止以后又被"收窄"回来。
+
+
+def test_user_stop_loss_price_is_honored(tmp_path):
+    """用户给 3% 的宽止损：旧实现会夹到 2%，现在必须原样。"""
+    eng = _engine(tmp_path)
+    plan = eng.manual_order_plan("btcusdt", "long", 100.0, 10, stop_loss=97.0)
+    assert plan["ready"] is True, plan
+    assert plan["sl"] == 97.0
+    assert abs(plan["slPct"] - 3.0) < 1e-6
+    assert "止损按你给的" in plan["note"]
+
+
+def test_user_stop_loss_near_liquidation_is_accepted(tmp_path):
+    """止损贴着强平线：交易所收这种单，系统就不许拒，只提醒风险。"""
+    eng = _engine(tmp_path)
+    eng.max_leverage_fn = lambda s: 150
+    # 150x 多单强平约在 100 × (1 - 0.95/150) ≈ 99.367
+    near = eng.manual_order_plan("btcusdt", "long", 100.0, 150, stop_loss=99.4)
+    assert near["ready"] is True, near
+    assert near["sl"] == 99.4, "用户给的价不能被改成默认值"
+    # 越过强平线也照挂，只是提醒"大概率先爆仓"
+    beyond = eng.manual_order_plan("btcusdt", "long", 100.0, 150, stop_loss=99.2)
+    assert beyond["ready"] is True, beyond
+    assert beyond["sl"] == 99.2
+    assert beyond["warning"] and "强平" in beyond["warning"]
+
+
+def test_user_stop_loss_beyond_liquidation_is_still_accepted(tmp_path):
+    """止损在强平价之外（先爆仓、止损永不触发）也是用户的自由，只提示。"""
+    eng = _engine(tmp_path)
+    eng.max_leverage_fn = lambda s: 150
+    plan = eng.manual_order_plan("btcusdt", "long", 100.0, 150, stop_loss=95.0)
+    assert plan["ready"] is True, plan
+    assert plan["sl"] == 95.0
+    assert plan.get("warning")
+
+
+def test_user_stop_loss_percent_in_points_and_fraction(tmp_path):
+    """stopLossPct：0.5 和 5 都要按百分数理解，不是 50% 也不是 500%。"""
+    eng = _engine(tmp_path)
+    a = eng.manual_order_plan("btcusdt", "long", 100.0, 10, stop_loss_pct=0.5)
+    assert a["ready"] is True and abs(a["sl"] - 99.5) < 1e-9, a
+    b = eng.manual_order_plan("btcusdt", "long", 100.0, 10, stop_loss_pct=5)
+    assert b["ready"] is True and abs(b["sl"] - 95.0) < 1e-9, b
+
+
+def test_user_take_profit_on_short_side(tmp_path):
+    """空单用户给止盈：必须是现价下方的那个价。"""
+    eng = _engine(tmp_path)
+    plan = eng.manual_order_plan("btcusdt", "short", 100.0, 10, take_profit=92.0)
+    assert plan["ready"] is True, plan
+    assert plan["tp"] == 92.0 and plan["tp"] < plan["price"]
+
+
+def test_wrong_side_stop_is_rejected_with_reason(tmp_path):
+    """方向搞反（多单止损在现价上方）是物理错误，必须说清楚。"""
+    eng = _engine(tmp_path)
+    plan = eng.manual_order_plan("btcusdt", "long", 100.0, 10, stop_loss=101.0)
+    assert plan["ready"] is False
+    assert "下方" in plan["reason"]
+
+
+def test_high_leverage_default_stop_stays_inside_liquidation(tmp_path):
+    """用户没给止损时，默认值要收进强平线内——否则挂上去永远不触发。"""
+    eng = _engine(tmp_path)
+    eng.max_leverage_fn = lambda s: 150
+    plan = eng.manual_order_plan("btcusdt", "long", 100.0, 150)
+    assert plan["ready"] is True, plan
+    assert plan["sl"] > plan["liquidation"], "默认止损落在强平之外等于没挂"
+    assert "强平太近" in plan["note"]
+
+
+def test_stop_at_liquidation_gets_a_concrete_price(tmp_path):
+    """用户说"止损挂强平线旁边"：系统给出贴着强平的具体价，不许落到 0.4%。"""
+    eng = _engine(tmp_path)
+    eng.max_leverage_fn = lambda s: 150
+    plan = eng.manual_order_plan("btcusdt", "long", 100.0, 150,
+                                 stop_at_liquidation=True)
+    assert plan["ready"] is True, plan
+    liq = plan["liquidation"]
+    # 贴在强平线内侧：距强平只有千分之二的价差，远小于默认的 0.4%
+    assert plan["sl"] > liq
+    assert abs(plan["sl"] - liq) / plan["price"] < 0.002
+    assert plan["sl"] < plan["price"]
+    assert "强平线旁边" in plan["note"]
+    # 这种情况下不该再报"止损在强平之外"
+    assert not plan["warning"]
+
+
+def test_stop_at_liquidation_on_short_side(tmp_path):
+    eng = _engine(tmp_path)
+    eng.max_leverage_fn = lambda s: 50
+    plan = eng.manual_order_plan("btcusdt", "short", 100.0, 50,
+                                 stop_at_liquidation=True)
+    assert plan["ready"] is True, plan
+    # 空单：现价 < 止损 < 强平（止损在强平内侧，先于爆仓触发）
+    assert plan["price"] < plan["sl"] < plan["liquidation"]
+
+
+def test_tool_forwards_stop_at_liquidation(tmp_path, monkeypatch):
+    """Agent 工具层要把 stopAtLiquidation 透传（放在第 9 个位置）。"""
+    from tests.test_agent import make_manager
+
+    seen = []
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch)
+        manager.order_plan_fn = lambda *a: seen.append(a) or {
+            "ready": True, "symbol": a[0]}
+        out = await manager._place_order({
+            "symbol": "btcusdt", "side": "long", "stopAtLiquidation": True})
+        assert out["ready"] is True
+        assert seen[0][8] is True
+        await manager.stop()
+
+    asyncio.run(scenario())
+
+
+def test_tool_forwards_user_stops_to_plan(tmp_path, monkeypatch):
+    """Agent 工具层要把 stopLoss 等四个参数透传给算单函数。"""
+    from tests.test_agent import make_manager
+
+    seen = []
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch)
+
+        def plan_fn(*args):
+            seen.append(args)
+            return {"ready": True, "symbol": args[0]}
+        manager.order_plan_fn = plan_fn
+        out = await manager._place_order({
+            "symbol": "btcusdt", "side": "long",
+            "stopLoss": 97.5, "takeProfitPct": 5})
+        assert out["ready"] is True
+        # 位置：symbol, side, notional, leverage, sl, slPct, tp, tpPct
+        assert seen[0][4] == 97.5 and seen[0][7] == 5.0 and seen[0][5] is None
+        await manager.stop()
+
+    asyncio.run(scenario())
 
 
 def test_plan_rejects_only_when_margin_insufficient(tmp_path):
@@ -492,6 +657,7 @@ def test_account_leverage_bracket_is_used(monkeypatch):
     """
     import accounts
 
+    accounts.clear_bracket_cache()
     monkeypatch.setattr(accounts, "signed_request", lambda *a, **k: [
         {"symbol": "BTCUSDT", "maxLeverage": 125,
          "brackets": [{"initialLeverage": 125, "notionalCap": 50000},
@@ -580,3 +746,160 @@ def test_decimals_of_step():
     assert accounts._decimals_of("0.10") == 1
     assert accounts._decimals_of("1") == 0
     assert accounts._decimals_of(None) == 0
+
+
+# ---------- 改已有仓位 / 平已有仓位 ----------
+#
+# 线上原话："止损价我改不了：系统固定按 0.4% 算"。
+# 根因不是"策略限制"，是根本没有这个工具：place_order 只能开新仓，
+# 改不了已经挂着的条件单。下面锁住这两个新能力。
+
+def test_position_adjust_moves_stop_loss(tmp_path, monkeypatch):
+    """用户说"止损拉到 X"：撤旧 STOP_MARKET → 挂新价，且不动止盈。"""
+    import accounts
+    import quant as quant_mod
+
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(quant_mod, "fetch_positions", lambda *a, **k: [{
+        "symbol": "btcusdt", "amt": 0.5, "entry": 100.0, "mark": 100.0,
+        "leverage": 10, "liquidation": 90.5}])
+    calls = []
+    monkeypatch.setattr(accounts, "cancel_algo_orders",
+                        lambda *a, **k: calls.append(("cancel", a[2], k.get("types"))) or 1)
+    monkeypatch.setattr(quant_mod, "cancel_algo_orders",
+                        lambda *a, **k: calls.append(("cancel", a[2], k.get("types"))) or 1)
+    placed = []
+    monkeypatch.setattr(quant_mod, "place_protective_order",
+                        lambda *a, **k: placed.append(a) or {"algoId": 7})
+
+    out = eng.position_adjust("BTC", stop_loss=96.0)
+    assert out["ok"] is True, out
+    assert out["stopLoss"] == 96.0
+    # 只撤止损类条件单，止盈不能被顺手撤掉
+    assert calls == [("cancel", "btcusdt", ("STOP_MARKET",))]
+    assert len(placed) == 1 and placed[0][4] == "STOP_MARKET"
+    assert placed[0][-1] == 96.0
+
+
+def test_position_adjust_stop_beyond_liquidation_is_honored(tmp_path, monkeypatch):
+    """改到强平线外面也照挂，只给 warning——不拒绝、不改价。"""
+    import accounts
+    import quant as quant_mod
+
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(quant_mod, "fetch_positions", lambda *a, **k: [{
+        "symbol": "btcusdt", "amt": 0.5, "entry": 100.0, "mark": 100.0,
+        "leverage": 100, "liquidation": 99.05}])
+    monkeypatch.setattr(accounts, "cancel_algo_orders", lambda *a, **k: 1)
+    monkeypatch.setattr(quant_mod, "cancel_algo_orders", lambda *a, **k: 1)
+    monkeypatch.setattr(quant_mod, "place_protective_order",
+                        lambda *a, **k: {"algoId": 8})
+    out = eng.position_adjust("btcusdt", stop_loss=98.0)
+    assert out["ok"] is True, out
+    assert out["stopLoss"] == 98.0
+    assert out["warning"] and "强平" in out["warning"]
+
+
+def test_position_adjust_can_clear_stop_only(tmp_path, monkeypatch):
+    """用户要把仓裸着手动管理：撤止损，不动止盈。"""
+    import accounts
+    import quant as quant_mod
+
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(quant_mod, "fetch_positions", lambda *a, **k: [{
+        "symbol": "btcusdt", "amt": -0.5, "entry": 100.0, "mark": 100.0,
+        "leverage": 10, "liquidation": 109.0}])
+    cancelled = []
+    monkeypatch.setattr(quant_mod, "cancel_algo_orders",
+                        lambda *a, **k: cancelled.append(k.get("types")) or 1)
+    placed = []
+    monkeypatch.setattr(quant_mod, "place_protective_order",
+                        lambda *a, **k: placed.append(a) or {"algoId": 9})
+    out = eng.position_adjust("btcusdt", clear_stop=True)
+    assert out["ok"] is True, out
+    assert cancelled == [("STOP_MARKET",)]
+    assert placed == [] and out["naked"] is True
+
+
+def test_position_adjust_rejects_when_no_position(tmp_path, monkeypatch):
+    import quant as quant_mod
+
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(quant_mod, "fetch_positions", lambda *a, **k: [])
+    out = eng.position_adjust("btcusdt", stop_loss=96.0)
+    assert out["ok"] is False and "没有" in out["error"]
+
+
+def test_position_close_full_cancels_protection(tmp_path, monkeypatch):
+    """全平：市价 reduceOnly 平掉，并撤掉条件单（否则留孤儿单）。"""
+    import quant as quant_mod
+
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(quant_mod, "fetch_positions", lambda *a, **k: [{
+        "symbol": "btcusdt", "amt": 0.5, "entry": 100.0, "mark": 101.0,
+        "leverage": 10, "liquidation": 90.5}])
+    eng._place_order = MagicMock(return_value={"avgPrice": "101.0"})
+    eng._broadcast_positions = MagicMock()
+    cancelled = []
+    monkeypatch.setattr(quant_mod, "cancel_algo_orders",
+                        lambda *a, **k: cancelled.append(a[2]) or 2)
+    out = eng.position_close("btcusdt")
+    assert out["ok"] is True, out
+    assert out["qty"] == 0.5 and out["full"] is True
+    assert out["fill"] == 101.0 and out["cancelledProtection"] == 2
+    assert cancelled == ["btcusdt"]
+    assert eng._place_order.call_args.kwargs.get("reduce_only") is True
+
+
+def test_position_close_partial_keeps_protection(tmp_path, monkeypatch):
+    """部分平仓不能撤条件单——剩下的仓位还需要保护。"""
+    import quant as quant_mod
+
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(quant_mod, "fetch_positions", lambda *a, **k: [{
+        "symbol": "btcusdt", "amt": 1.0, "entry": 100.0, "mark": 100.0,
+        "leverage": 10, "liquidation": 90.5}])
+    eng._place_order = MagicMock(return_value={"avgPrice": "100.0"})
+    eng._broadcast_positions = MagicMock()
+    cancelled = []
+    monkeypatch.setattr(quant_mod, "cancel_algo_orders",
+                        lambda *a, **k: cancelled.append(a) or 2)
+    out = eng.position_close("btcusdt", qty=0.4)
+    assert out["ok"] is True, out
+    assert out["qty"] == 0.4 and out["full"] is False
+    assert abs(out["remaining"] - 0.6) < 1e-9
+    assert cancelled == []
+
+
+def test_adjust_tool_is_exposed_and_forwards(tmp_path, monkeypatch):
+    """Agent 工具层：adjust_position 必须接到 position_adjust 上。"""
+    from tests.test_agent import make_manager
+
+    seen = []
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch)
+        manager.position_adjust_fn = lambda *a: seen.append(a) or {"ok": True}
+        out = await manager._adjust_position({
+            "symbol": "btcusdt", "stopLoss": 96.5, "clearTakeProfit": True})
+        assert out["ok"] is True
+        assert seen[0][1] == 96.5 and seen[0][7] is True
+        await manager.stop()
+
+    asyncio.run(scenario())
+
+
+def test_close_tool_is_exposed_and_forwards(tmp_path, monkeypatch):
+    from tests.test_agent import make_manager
+
+    seen = []
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch)
+        manager.position_close_fn = lambda *a: seen.append(a) or {"ok": True}
+        out = await manager._close_position({"symbol": "btcusdt", "qty": 0.2})
+        assert out["ok"] is True
+        assert seen[0] == ("btcusdt", 0.2)
+        await manager.stop()
+
+    asyncio.run(scenario())
