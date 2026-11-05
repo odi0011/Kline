@@ -37,6 +37,7 @@ from __future__ import annotations
 import base64
 import hmac
 import json
+import os
 import re
 import threading
 import time
@@ -194,6 +195,12 @@ class OpenAICompat:
         messages = body.get("messages")
         if not isinstance(messages, list):
             return "", []
+        text, images = OpenAICompat._last_user_text(messages)
+        return text[:MAX_PROMPT_CHARS], images
+
+    @staticmethod
+    def _last_user_text(messages: list) -> tuple[str, list[dict]]:
+        """最后一条 user 消息里的文字与图片。"""
         prompt = ""
         images: list[dict] = []
         for msg in messages:
@@ -220,7 +227,7 @@ class OpenAICompat:
             # 只保留最后一条 user 的内容
             prompt = "\n".join(t for t in texts if t).strip() or prompt
             images = images[-4:] or []
-        return prompt[:MAX_PROMPT_CHARS], images
+        return prompt, images
 
     @staticmethod
     def _decode_image(url) -> dict | None:
@@ -246,6 +253,39 @@ class OpenAICompat:
                 "data": "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))}
 
     # ---------- 响应构造 ----------
+
+    def _dump_request(self, payload: dict, prompt: str) -> None:
+        """把收到的请求摘要落到文件，用于排查"用户的话到底放在哪个字段"。
+
+        只在 OPENCLAW_DUMP 指向一个路径时启用——默认关闭，不写盘、不占空间。
+        存的是**结构摘要**（每条消息的角色 + 前 400 字），不是完整上下文：
+        排查看的是"OpenClaw 把微信消息塞在哪"，不需要整份历史。
+        """
+        path = str(os.environ.get("OPENCLAW_DUMP") or "").strip()
+        if not path:
+            return
+        try:
+            messages = payload.get("messages") or []
+            summary = []
+            for msg in messages if isinstance(messages, list) else []:
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content")
+                if isinstance(content, list):
+                    content = " | ".join(
+                        f"{p.get('type')}:{str(p.get('text') or p.get('image_url') or '')[:120]}"
+                        for p in content if isinstance(p, dict))
+                summary.append({
+                    "role": msg.get("role"),
+                    "len": len(str(content or "")),
+                    "text": str(content or "")[:400],
+                })
+            row = {"ts": _now(), "extracted": prompt[:200],
+                   "model": payload.get("model"), "messages": summary}
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception:
+            pass                                    # 排查工具本身不能影响回复
 
     def _reply(self, prompt: str, images: list[dict]) -> str:
         if not self.ask_fn:
@@ -340,6 +380,7 @@ class OpenAICompat:
                 if not isinstance(payload, dict):
                     return self._json(400, {"error": "请求体必须是 JSON 对象"})
                 prompt, images = self.extract_prompt(payload)
+                self._dump_request(payload, prompt)
                 if not prompt and not images:
                     return self._json(400, {"error": "messages 里没有用户内容"})
                 if payload.get("stream"):

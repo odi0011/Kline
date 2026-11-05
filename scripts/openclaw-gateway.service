@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenClaw Gateway (WeChat channel for ODDD)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/openclaw-gateway.sh
+Restart=always
+RestartSec=5
+# 微信长连接：退出时给足排空时间，别把连接撕断导致重复登录
+TimeoutStopSec=40
+KillMode=mixed
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
