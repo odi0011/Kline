@@ -29,3 +29,4 @@ quant-*.json.tmp
 
 # Agent 沙盒工作目录（运行时生成）
 sandbox/
+card.png
