@@ -326,3 +326,32 @@ def test_read_candles_rejects_all_null_rows():
     out = _M()._read_candles({"symbol": "BTC", "interval": "15m", "limit": 12})
     assert out["available"] is False
     assert "内容为空" in out["reason"]
+
+
+def test_read_candles_marks_approximate_buysell():
+    """欧易K线不带 taker 量，buy/sell 是拆出来的近似值，必须标出来。
+
+    否则模型会拿"收阳=60%主动买"这种估算当真实主动买卖比引用。
+    """
+    class _C:
+        open_time = 1793841300000
+        open = 80500.0
+        high = 80501.0
+        low = 80215.0
+        close = 80432.7
+        volume = 100.0
+        buy_vol = 60.0
+        sell_vol = 40.0
+        buysell_approx = True
+
+    class _M(AgentManager):
+        def __init__(self):
+            self.symbol_fetch_fn = lambda w, s, p=None: []   # 走本地分支
+            self.bars_fn = lambda s, iv: [_C() for _ in range(12)]
+            self.symbols_fn = lambda: ["btcusdt"]
+
+    out = _M()._read_candles({"symbol": "BTC", "interval": "15m", "limit": 12})
+    assert out["available"] is True
+    assert out["buySellApprox"] is True
+    assert "近似值" in out["note"]
+    assert "tradeFlow" in out["note"], "要指路到真实数据"

@@ -31,6 +31,10 @@ class Candle:
     # 主动买 / 主动卖成交量（由 aggTrade 的 isBuyerMaker 区分）
     buy_vol: float = 0.0
     sell_vol: float = 0.0
+    # 上面两个数是**近似**还是交易所真实值。
+    # 欧易历史K线不带 taker 量，只能按收阳/收阴拆 60/40——那种估算
+    # 不能当"主动买卖比"引用，Agent 工具要据此标注出来。
+    buysell_approx: bool = False
 
     @property
     def close_time(self) -> int:

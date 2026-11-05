@@ -2859,9 +2859,19 @@ class AgentManager:
             return {"available": False, "symbol": symbol, "monitored": None,
                     "reason": (f"{symbol} {interval or '默认周期'}的K线取到了条数"
                                "但内容为空，交易所/本地都没给出有效价格")}
-        return {"available": True, "untrusted": False, "symbol": symbol,
-                "interval": interval or "default", "source": source or "unknown",
-                "count": len(rows), "bars": rows}
+        # 主动买卖量是否真实：欧易历史K线不带 taker 量，K 线里的 buy/sell
+        # 是按涨跌拆出来的近似值，**不能当主动买卖比引用**。
+        approx = bool(getattr(bars[-1], "buysell_approx", False)) if bars else False
+        out = {"available": True, "untrusted": False, "symbol": symbol,
+               "interval": interval or "default", "source": source or "unknown",
+               "count": len(rows), "bars": rows,
+               "buySellApprox": approx}
+        if approx:
+            out["note"] = ("bars[].buy/sell 是**近似值**（数据源不带逐笔买卖分类，"
+                           "按收阳/收阴拆的），只能用来看买卖力量的大致观感。"
+                           "要看真实的主动买卖比请读 read_symbol_everything 的 "
+                           "tradeFlow（逐笔成交汇总）。")
+        return out
 
     async def _read_symbol_everything(self, arguments: dict) -> dict:
         """某个币在交易所能拿到的全部实时数据，一次拿全。

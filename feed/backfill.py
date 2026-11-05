@@ -51,12 +51,15 @@ def _fetch_okx(symbol: str, interval: str, limit: int, proxy: str | None,
             vol = float(r[5])
         except (TypeError, ValueError, IndexError):
             continue
-        # 收阳按主动买 60% 估、收阴按 40% 估，仅用于买卖力量图的近似
+        # 欧易历史K线不带 taker 买卖量（那是币安才有的字段）。
+        # 这里按收阳/收阴给 60/40 的**近似**，只够画买卖力量图的观感，
+        # **不能当真实主动买卖比引用**——调用方要用 approx 标记区分。
         ratio = 0.6 if c >= o else 0.4
         out.append(Candle(
             open_time=int(r[0]), open=o, high=h, low=l, close=c,
             volume=vol, trades=0, interval=interval, closed=True,
             buy_vol=vol * ratio, sell_vol=vol * (1 - ratio),
+            buysell_approx=True,
         ))
     return out
 
