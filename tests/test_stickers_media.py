@@ -147,3 +147,27 @@ def test_telegram_text_unaffected_without_sticker():
     bot.send_reply(1, "就是一句话。")
     assert calls == [("sendMessage", {"chat_id": 1, "text": "就是一句话。",
                                       "disable_web_page_preview": True})]
+
+
+def test_http_error_body_is_surfaced(monkeypatch):
+    """Telegram 把错误码放在响应体里，必须读出来。
+
+    线上实测：只回 "HTTPError: HTTP Error 400" 时，无法区分
+    "文件格式不对" 和 "chat_id 不存在" —— 排查只能靠猜。
+    """
+    import io
+    import urllib.error
+
+    bot = TelegramBot("tok", [], None, None, sticker_dir=PUB, attach_dir=ATT)
+
+    def boom(req, timeout=0):
+        raise urllib.error.HTTPError(
+            req.full_url, 400, "Bad Request", {},
+            io.BytesIO(b'{"ok":false,"error_code":400,'
+                       b'"description":"Bad Request: chat not found"}'))
+
+    monkeypatch.setattr("urllib.request.build_opener",
+                        lambda *a, **k: type("O", (), {"open": staticmethod(boom)})())
+    res = bot._request("getMe")
+    assert res["ok"] is False
+    assert "chat not found" in res["error"]

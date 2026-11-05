@@ -67,6 +67,14 @@ class TelegramBot:
         try:
             with opener.open(req, timeout=TIMEOUT) as resp:
                 return json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as exc:
+            # 错误码在 body 里（-1004 会话不存在、-403 被用户拉黑、
+            # -400 参数不对）。只回 "HTTP Error 400" 的话排查只能靠猜。
+            try:
+                raw = exc.read().decode("utf-8", "replace")[:300]
+            except Exception:
+                raw = ""
+            return {"ok": False, "error": f"HTTP {exc.code}: {raw or exc.reason}"}
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -145,6 +153,16 @@ class TelegramBot:
         try:
             with opener.open(req, timeout=TIMEOUT) as resp:
                 return json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as exc:
+            # **必须读响应体**：Telegram 把错误码放在 body 里
+            # （-1004 会话不存在 / -400 文件格式 / -413 文件太大）。
+            # 只回 "HTTP Error 400" 的话，上层根本没法区分是"图有问题"
+            # 还是"chat_id 不对"，排查只能靠猜。
+            try:
+                body = exc.read().decode("utf-8", "replace")[:300]
+            except Exception:
+                body = ""
+            return {"ok": False, "error": f"HTTP {exc.code}: {body or exc.reason}"}
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
