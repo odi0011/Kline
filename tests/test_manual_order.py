@@ -903,3 +903,62 @@ def test_close_tool_is_exposed_and_forwards(tmp_path, monkeypatch):
         await manager.stop()
 
     asyncio.run(scenario())
+
+
+def test_cancel_algo_orders_matches_order_type_field(monkeypatch):
+    """交易所返回的字段叫 orderType，不是 type。
+
+    线上真实事故：按 `type` 匹配 → 一条都没匹配上 → 撤 0 条 → 改止损后
+    旧止损（2624.5）和新止损（2450）两张同时挂着，价格先碰哪张就按哪张平。
+    """
+    import accounts
+
+    rows = [
+        {"algoId": 1, "orderType": "STOP_MARKET", "triggerPrice": "2450.0"},
+        {"algoId": 2, "orderType": "TAKE_PROFIT_MARKET", "triggerPrice": "2402.3"},
+        {"algoId": 3, "orderType": "STOP_MARKET", "triggerPrice": "2624.5"},
+    ]
+    deleted = []
+
+    def fake(api_key, api_secret, path, params=None, method="GET"):
+        if path.endswith("/openAlgoOrders"):
+            return {"orders": rows}
+        if path.endswith("/algoOrder") and method == "DELETE":
+            deleted.append(params["algoId"])
+            return {}
+        raise AssertionError("unexpected call " + path)
+
+    monkeypatch.setattr(accounts, "signed_request", fake)
+    removed = accounts.cancel_algo_orders("k", "s", "ethusdt",
+                                          types=("STOP_MARKET",))
+    assert removed == 2
+    assert sorted(deleted) == [1, 3], "只撤止损，止盈那条必须留着"
+
+
+def test_adjust_position_sweeps_duplicate_stops(tmp_path, monkeypatch):
+    """撤单接口没撤干净时，收尾必须把旧止损扫掉，只留新挂的那张。"""
+    import accounts
+    import quant as quant_mod
+
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(quant_mod, "fetch_positions", lambda *a, **k: [{
+        "symbol": "ethusdt", "amt": -0.01, "entry": 2418.0, "mark": 2418.0,
+        "leverage": 10, "liquidation": 2647.4}])
+    # 撤单"失败"：换以前就是两张止损并存
+    monkeypatch.setattr(quant_mod, "cancel_algo_orders", lambda *a, **k: 0)
+    monkeypatch.setattr(quant_mod, "place_protective_order",
+                        lambda *a, **k: {"algoId": 999})
+    live = [
+        {"algoId": 999, "orderType": "STOP_MARKET", "triggerPrice": "2450.0"},
+        {"algoId": 111, "orderType": "STOP_MARKET", "triggerPrice": "2624.5"},
+        {"algoId": 222, "orderType": "TAKE_PROFIT_MARKET", "triggerPrice": "2402.3"},
+    ]
+    monkeypatch.setattr(quant_mod, "algo_orders", lambda *a, **k: live)
+    deleted = []
+    monkeypatch.setattr(quant_mod, "signed_request",
+                        lambda k, s, path, params=None, method="GET":
+                        deleted.append(params.get("algoId")) or {})
+    out = eng.position_adjust("ethusdt", stop_loss=2450.0)
+    assert out["ok"] is True, out
+    assert deleted == [111], "旧止损必须被扫掉，止盈不能动"
+    assert out["sweptStale"] == 1

@@ -28,6 +28,7 @@ from accounts import (
     signed_request, open_orders, cancel_order, query_order, cancel_all_open_orders,
     place_protective_order, cancel_algo_orders, account_max_leverage,
     format_qty, format_price, fetch_positions, maintenance_margin_ratio,
+    algo_orders,
 )
 from analysis import indicators as IND
 from analysis import risk_metrics as RISK
@@ -3280,6 +3281,36 @@ class QuantEngine:
             except Exception as exc:
                 errors.append(f"新止盈挂失败: {str(exc)[:140]}")
 
+        # 挂完再核对一遍：同一类型只该有**一条**。
+        #
+        # 线上真实事故：撤单时按 `type` 匹配，而交易所返回的字段叫 `orderType`，
+        # 于是一条都没撤掉，改完止损后 2450 和 2624.5 两张同时挂着——
+        # 价格先碰到哪张就按哪张平，用户以为改成功了，其实旧止损还在。
+        # 这里做一次收尾：保留刚挂的 id，其它同类型的一律撤掉。
+        stale = 0
+        try:
+            live = algo_orders(key, secret, sym) or []
+        except Exception:
+            live = []
+        keep_ids = {str(x) for x in (sl_order_id, tp_order_id) if x}
+        for order in live:
+            if not isinstance(order, dict):
+                continue
+            kind = str(order.get("orderType") or order.get("type") or "").upper()
+            touched_kind = (kind == "STOP_MARKET" and want_stop) or (
+                kind == "TAKE_PROFIT_MARKET" and want_tp)
+            if not touched_kind:
+                continue
+            algo_id = str(order.get("algoId") or "")
+            if not algo_id or algo_id in keep_ids:
+                continue
+            try:
+                signed_request(key, secret, "/fapi/v1/algoOrder",
+                               {"algoId": int(algo_id)}, method="DELETE")
+                stale += 1
+            except Exception:
+                continue
+
         # 本地记录跟着改，否则引擎的软件层还会按旧价位判离场
         touched = False
         for name in list(self.state):
@@ -3316,6 +3347,7 @@ class QuantEngine:
             "liquidation": _round_price(liq),
             "slOrderId": sl_order_id, "tpOrderId": tp_order_id,
             "replacedStop": replaced_sl, "replacedTakeProfit": replaced_tp,
+            "sweptStale": stale,
             "naked": naked,
             "warning": warning,
             "note": "；".join([x for x in (notes and "；".join(notes) or "",

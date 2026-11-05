@@ -133,6 +133,11 @@ def cancel_algo_orders(api_key: str, api_secret: str, symbol: str,
 
     types：只撤指定类型（如 ("STOP_MARKET",)）。改止损时不能把止盈一起撤了——
     用户只想动止损，结果止盈也没了，等于替他改了另一件事。
+
+    **类型字段叫 orderType，不叫 type**：线上实测 /fapi/v1/openAlgoOrders
+    返回的是 `{"algoType":"CONDITIONAL","orderType":"STOP_MARKET",...}`。
+    只读 type 会得到 None，于是"按类型撤"一条都匹配不上、返回 0——
+    用户把止损从 2624.5 改成 2450，结果两张止损同时挂着（真实事故）。
     """
     rows = signed_request(api_key, api_secret, "/fapi/v1/openAlgoOrders",
                           {"symbol": symbol.upper()})
@@ -141,7 +146,8 @@ def cancel_algo_orders(api_key: str, api_secret: str, symbol: str,
     for order in items:
         if not isinstance(order, dict):
             continue
-        if types and str(order.get("type") or "").upper() not in types:
+        order_type = str(order.get("orderType") or order.get("type") or "").upper()
+        if types and order_type not in types:
             continue
         algo_id = order.get("algoId")
         if not algo_id:
@@ -410,11 +416,21 @@ def protection_snapshot(api_key: str, api_secret: str, positions: list) -> dict:
             errors.append(f"{sym} 条件单: {str(exc)[:80]}")
         keep = ("symbol", "side", "type", "origQty", "price", "stopPrice",
                 "triggerPrice", "reduceOnly", "closePosition", "timeInForce", "status")
-        algo_keep = ("symbol", "side", "type", "quantity", "triggerPrice",
-                     "reduceOnly", "closePosition", "algoStatus", "algoId", "bookTime")
+        # 条件单的类型字段叫 orderType（不是 type），时间字段叫 createTime
+        # （不是 bookTime）。照原来那份字段名投影出来，Agent 看到的每条单
+        # 都没有类型，只能靠"触发价在现价哪边"反推是止损还是止盈。
+        algo_keep = ("symbol", "side", "quantity", "triggerPrice",
+                     "reduceOnly", "closePosition", "algoStatus", "algoId",
+                     "clientAlgoId", "workingType", "createTime")
         rows = [{k: o.get(k) for k in keep if k in o} for o in plain if isinstance(o, dict)]
-        rows += [{"algo": True, **{k: o.get(k) for k in algo_keep if k in o}}
-                 for o in algo if isinstance(o, dict)]
+        rows += [{
+            "algo": True,
+            "symbol": o.get("symbol"),
+            "side": o.get("side"),
+            "type": o.get("orderType") or o.get("type"),
+            **{k: o[k] for k in algo_keep[2:] if k in o},
+            "createdAt": o.get("createTime") or o.get("bookTime"),
+        } for o in algo if isinstance(o, dict)]
         symbols[sym] = rows
         # 有仓却没有任何"只减仓/全平"条件单 = 保护缺失
         protected = any(
