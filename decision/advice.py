@@ -63,8 +63,12 @@ def _stop_plan_struct(price: float, atr: float | None, bullish: bool,
     if not levels and not pattern:
         return _stop_plan(price, atr, bullish)
     buf = (atr * 0.15) if (atr and atr > 0) else price * 0.001
-    # 最近的线可能就贴着现价（0.08%），那种位置止损等于把仓交给噪声。
-    min_move = max(0.0025, (atr * 0.5 / price) if (atr and atr > 0) else 0.0)
+    # 最近的线可能就贴着现价（BTC 1m 的支撑离现价只有 0.02%），那种位置
+    # 止损等于把仓交给噪声。但"噪声"要按每个币自己的波动算，不能用一个
+    # 固定百分比：BTC 1m 的 ATR 只有 0.075%，用 0.25% 会把图上所有支撑
+    # 都判成"太近"，于是又退回 ATR 方案——等于白改。
+    # 取「半个 ATR」与 0.1% 里更大的那个。
+    min_move = max(0.001, (atr * 0.5 / price) if (atr and atr > 0) else 0.0)
 
     def _levels(kind: str, above: bool) -> list[float]:
         out = []

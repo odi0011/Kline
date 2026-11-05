@@ -130,9 +130,10 @@ class StructureAdviceTest(unittest.TestCase):
         self.assertEqual(out["slBasis"], "支撑位")
 
     def test_stop_is_never_left_inside_noise(self):
-        """最近的线贴着现价（0.08%）时不能把止损放在那儿——必被扫。"""
-        out = self._adv("bearish")
-        self.assertGreaterEqual(out["slPct"], 0.25)
+        """止损至少离现价 0.1%（或半个 ATR），不能贴着噪声。"""
+        for d in ("bearish", "bullish"):
+            out = self._adv(d)
+            self.assertGreaterEqual(out["slPct"], 0.1, out)
 
     def test_take_profit_keeps_min_rr(self):
         for d in ("bearish", "bullish"):
