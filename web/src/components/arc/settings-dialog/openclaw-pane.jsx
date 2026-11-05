@@ -168,6 +168,8 @@ export default function OpenclawPane({ openclaw = {}, onSave }) {
         {status.lastError && <span className={styles.error}>{status.lastError}</span>}
       </div>
 
+      <WeixinBind bound={status.bound} />
+
       <div className={styles.setup}>
         <div className={styles.setupHead}>
           <Globe size={12} /> 在 OpenClaw 里这样填
@@ -204,6 +206,71 @@ export default function OpenclawPane({ openclaw = {}, onSave }) {
         <button type="button" className={styles.save} onClick={save}>
           {saved ? <><Check size={12} /> 已保存</> : "保存并应用"}
         </button>
+      </div>
+    </div>
+  )
+}
+
+
+/* 微信扫码绑定：直接显示当前有效的二维码。
+   二维码每 60~90 秒换一次、没人扫就整个流程退出，所以这里
+   不是"截一张图给你"，而是每 3 秒重新拉一次——屏幕上永远是活的码。 */
+function WeixinBind({ bound }) {
+  const [state, setState] = useState("loading")
+  const [error, setError] = useState("")
+  const [tick, setTick] = useState(0)
+
+  useEffect(() => {
+    if (bound) { setState("ok"); return undefined }
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const res = await fetch("/weixin/status", { cache: "no-store" })
+        const data = await res.json()
+        if (cancelled) return
+        setState(data.state || "waiting")
+        setError(data.error || "")
+      } catch {
+        if (!cancelled) setState("unavailable")
+      }
+    }
+    poll()
+    const timer = setInterval(() => {
+      poll()
+      setTick((t) => t + 1)      // 顺带刷新 <img> 的 cache-buster
+    }, 3000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [bound])
+
+  if (bound || state === "ok") {
+    return (
+      <div className={styles.bindOk}>
+        <Check size={12} /> 已绑定微信，消息会进入这个会话
+      </div>
+    )
+  }
+
+  const hint =
+    state === "expired" ? "上一张码过期了，正在自动换一张…"
+    : state === "waiting" ? "用微信扫一扫，或长按图片识别"
+    : state === "unavailable" ? "微信绑定未启用"
+    : "正在生成二维码…"
+
+  return (
+    <div className={styles.bindBox}>
+      <div className={styles.bindHead}>绑定微信（OpenClaw ClawBot）</div>
+      <img
+        className={styles.qr}
+        src={`/weixin/qr.png?t=${tick}`}
+        alt="微信扫码绑定二维码"
+        width={220}
+        height={220}
+      />
+      <div className={styles.bindHint}>{hint}</div>
+      {error && <div className={styles.error}>{error}</div>}
+      <div className={styles.bindNote}>
+        扫完后微信里会出现「微信 ClawBot」，直接发消息就是 ODDD 在回。
+        二维码会自动刷新，过期了不用管。
       </div>
     </div>
   )

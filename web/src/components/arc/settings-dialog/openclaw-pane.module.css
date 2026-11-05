@@ -126,3 +126,35 @@
   cursor: pointer;
 }
 .save:hover { background: #2b3346; }
+
+/* 微信扫码绑定：二维码要够大（手机上要能扫），且始终占据固定位置，
+   避免每 3 秒刷新时布局跳动。 */
+.bindBox {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 14px 12px;
+  border-radius: 12px;
+  background: rgba(28, 35, 51, 0.04);
+  border: 1px solid rgba(28, 35, 51, 0.06);
+}
+.bindHead { font-size: 13px; font-weight: 600; color: #1c2333; align-self: flex-start; }
+.qr {
+  width: 220px; height: 220px;
+  border-radius: 10px;
+  background: #fff;
+  padding: 6px;
+  box-sizing: content-box;
+  /* 没码时是一张 1×1 透明图，拉伸会变成糊块——用 image-rendering
+     保证有点码时边缘锐利，扫码识别率更高 */
+  image-rendering: pixelated;
+}
+.bindHint { font-size: 11.5px; color: var(--text-muted, #8b949e); }
+.bindNote {
+  font-size: 11px; line-height: 1.65; color: var(--text-muted, #8b949e);
+  text-align: center;
+}
+.bindOk {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px; border-radius: 10px;
+  background: rgba(22, 163, 74, 0.1);
+  color: #15803d; font-size: 12px;
+}

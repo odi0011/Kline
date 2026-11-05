@@ -132,7 +132,8 @@ def write_config_file(cfg: dict, path: str) -> dict:
     return payload
 
 
-def start_static(dist_dir: str, port: int, api_box: dict | None = None) -> None:
+def start_static(dist_dir: str, port: int, api_box: dict | None = None,
+                 weixin_box: dict | None = None) -> None:
     """静态页面 + 可选的 OpenAI 兼容接口（给 OpenClaw/微信 用）。
 
     api_box 里放 {"api": OpenAICompat}；没启用 OpenClaw 时是空的，
@@ -142,6 +143,13 @@ def start_static(dist_dir: str, port: int, api_box: dict | None = None) -> None:
     # 聊天图片附件放在配置目录下（不在 web/dist 里，构建会被覆盖）
     attach_dir = os.path.join(os.path.dirname(os.path.abspath("config.yaml")), "agent-attachments")
     api_box = api_box if api_box is not None else {}
+    weixin_box = weixin_box if weixin_box is not None else {}
+
+    # 1×1 透明 PNG：二维码还没生成时用它占位，避免 <img> 显示破图。
+    _TRANSPARENT_PNG = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+        b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
 
     class Quiet(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
@@ -184,12 +192,25 @@ def start_static(dist_dir: str, port: int, api_box: dict | None = None) -> None:
             return entry
 
         def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            # 微信绑定的二维码与状态：设置页每 3 秒轮询这两条，
+            # 所以必须**不走缓存**，且不能要求令牌（浏览器侧无凭据）。
+            # 只暴露"登录进行中"的信息，不含 Token/账号隐私。
+            if path == "/weixin/qr.png":
+                self._serve_weixin_qr()
+                return
+            if path == "/weixin/status":
+                self._serve_weixin_status()
+                return
             if self.path.startswith("/v1/"):
                 self._serve_api("GET", b"")
                 return
             super().do_GET()
 
         def do_POST(self):
+            if self.path.split("?", 1)[0] == "/weixin/start":
+                self._serve_weixin_start()
+                return
             if self.path.startswith("/v1/"):
                 try:
                     length = int(self.headers.get("Content-Length") or 0)
@@ -205,6 +226,40 @@ def start_static(dist_dir: str, port: int, api_box: dict | None = None) -> None:
                 self._serve_api("POST", body)
                 return
             self._send_raw(404, {"Content-Type": "text/plain"}, b"not found")
+
+        def _serve_weixin_qr(self) -> None:
+            login = weixin_box.get("login")
+            png = login.qr_png() if login is not None else b""
+            if not png:
+                # 没有可扫的码：不要返回 404 让 <img> 显示破图，
+                # 回一张 1×1 透明 PNG，前端按 status 显示提示文案。
+                self._send_raw(200, {"Content-Type": "image/png",
+                                     "Cache-Control": "no-store"},
+                               _TRANSPARENT_PNG)
+                return
+            self._send_raw(200, {"Content-Type": "image/png",
+                                 "Cache-Control": "no-store"}, png)
+
+        def _serve_weixin_status(self) -> None:
+            login = weixin_box.get("login")
+            payload = (login.status() if login is not None
+                       else {"bound": False, "state": "unavailable",
+                             "running": False, "hasQr": False, "error": "未启用"})
+            self._send_raw(200, {"Content-Type": "application/json",
+                                 "Cache-Control": "no-store"},
+                           json.dumps(payload, ensure_ascii=False).encode())
+
+        def _serve_weixin_start(self) -> None:
+            login = weixin_box.get("login")
+            if login is None:
+                self._send_raw(503, {"Content-Type": "application/json"},
+                               b'{"ok":false,"error":"\xe6\x9c\xaa\xe5\x90\xaf\xe7\x94\xa8"}')
+                return
+            # 主动发起登录：用户点"开始绑定"就该立刻有码，
+            # 不用等守护循环的下一轮。
+            login.start()
+            self._send_raw(200, {"Content-Type": "application/json"},
+                           json.dumps({"ok": True}, ensure_ascii=False).encode())
 
         def _serve_api(self, method: str, body: bytes) -> None:
             api = self._api()
@@ -1332,6 +1387,37 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     _oc_loop["loop"] = asyncio.get_running_loop()
     _sync_openclaw_api()
 
+    # ---- 微信绑定：常驻登录进程 + 二维码暴露给设置页 ----
+    #
+    # 二维码每 60~90 秒换一张、没人扫就整个退出（"二维码多次失效"）。
+    # 把某一刻的图发给用户等于发废码，所以这里起一个守护：
+    # 没绑定就一直保持一个活着的登录进程，进程退就自动换新码。
+    # 设置页拿的是 /weixin/qr.png（no-store + 3 秒轮询），永远是最新那张。
+    weixin_box: dict = {"login": None}
+    try:
+        from feed.weixin_login import WeixinLogin
+        oc_root = os.path.join("openclaw", "node_modules", ".bin")
+        weixin_box["login"] = WeixinLogin(
+            openclaw_bin=os.path.abspath(os.path.join(oc_root, "openclaw")),
+            openclaw_home=os.environ.get("OPENCLAW_HOME", "/opt/openclaw-home"),
+            node_bin_dir=os.environ.get("OPENCLAW_NODE_BIN", "/opt/node26/bin"),
+            log_path=os.environ.get("OPENCLAW_LOGIN_LOG",
+                                    "/opt/openclaw-home/login.log"))
+    except Exception as e:
+        print(f"[weixin] 登录守护不可用: {e}")
+
+    async def weixin_supervisor():
+        login = weixin_box.get("login")
+        if login is None:
+            return
+        while True:
+            try:
+                # 守护在子进程里跑（会阻塞几秒），别卡事件循环
+                await asyncio.to_thread(login.tick)
+            except Exception as e:
+                print(f"[weixin] 守护异常: {e}")
+            await asyncio.sleep(5)
+
     async def openclaw_supervisor():
         while True:
             try:
@@ -1475,7 +1561,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     dist = "web/dist"
     if os.path.isdir(dist):
-        start_static(dist, int(cfg.get("web_port", 8000)), api_box)
+        start_static(dist, int(cfg.get("web_port", 8000)), api_box, weixin_box)
         if api_box.get("api") is not None:
             print("[openclaw] OpenAI 兼容接口已启用：/v1/chat/completions"
                   f"（模型名 {api_box['api'].model}）")
@@ -1885,7 +1971,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     try:
         await asyncio.gather(supervisor(), sweep(), accounts_poller(),
                              news_poller(), article_prefetcher(), news_ai_poller(),
-                             telegram_supervisor(), openclaw_supervisor(),
+                             telegram_supervisor(), openclaw_supervisor(), weixin_supervisor(),
                              backfill_retry(), pool_auditor(), chatter_poller(),
                              market_list_poller(), leverage_poller(),
                              derivatives_poller(), market_feature_poller())
