@@ -287,10 +287,13 @@ def test_remote_sticker_is_downloaded_then_cached(tmp_path):
 
 # ---------------- D. 联网不可用时从已存表情里挑 ----------------
 
-def test_pick_for_matches_stored_emotion():
-    """配额用完/断网时，从已存的贴纸里挑一张贴近当前情绪的。"""
-    root = tempfile.mkdtemp()
-    cache = StickerCache(root)
+def test_pick_for_matches_stored_emotion(tmp_path):
+    """配额用完/断网时，从已存的贴纸里挑一张贴近当前情绪的。
+
+    用 tmp_path 而不是 tempfile.mkdtemp()：后者不清理，整套测试跑下来
+    会留下一堆目录，而且互相干扰（这条曾经单跑通过、套跑失败）。
+    """
+    cache = StickerCache(str(tmp_path / "s"))
     for sid, word in (("id-dead", "无语"), ("id-shrug", "shrug"),
                       ("id-pop", "popcorn")):
         cache.save(sid, b"GIF89a" + sid.encode()[:8], 100, 100,
