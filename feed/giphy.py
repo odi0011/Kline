@@ -88,10 +88,14 @@ def _pick_image(images: dict) -> dict | None:
 
 
 def _call_api(query: str, count: int, api_key: str, proxy: str, timeout: float) -> list[dict]:
+    # 关键词里有中文就用 zh-CN 的标签体系，否则英文。
+    # GIPHY 的中文库比英文小很多，但"无语/破防/笑死"这类词能搜到中文梗图；
+    # 一律 lang=en 只会返回欧美 meme，跟中文对话完全不搭。
+    has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in str(query or ""))
     params = urllib.parse.urlencode({
         "api_key": api_key, "q": query, "limit": count,
         "rating": "pg-13",          # 交易助手场景，不要过火内容
-        "lang": "en",               # GIPHY 的标签体系以英文为主
+        "lang": "zh-CN" if has_cjk else "en",
     })
     request = urllib.request.Request(f"{GIPHY_URL}?{params}", headers=dict(HEADERS))
     response = _open(request, proxy, timeout)

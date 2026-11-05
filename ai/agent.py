@@ -100,14 +100,18 @@ _SERIOUS_TRADING = re.compile(
     r"能买|能卖|能不能入|该不该|要不要|建议|方向|多还是空|做多|做空|"
     r"支撑|压力|阻力|目标价|盈亏比|风险|"
     r"analy[sz]e|entry|stop|target|position|risk", re.I)
-# 情绪 → 贴纸库里该搜的词（英文是 GIPHY 的标签体系）。
+# 情绪 → 贴纸库里该搜的词。
+#
+# 全部用**中文梗词**：GIPHY 的英文标签（dead inside / shrug）搜出来的是
+# 欧美 meme，跟中文对话完全不搭。带中文时 giphy.py 会自动切 lang=zh-CN。
+# 注意这些词只是"兜底搜索词"——真正发什么由 Agent 从库里挑。
 # 顺序重要：更具体的情绪排前面，"又亏了草"里的"草"不该被当成笑。
 _EMOTION_QUERY = (
-    (re.compile(r"麻|无语|服了|难绷|绷不住|又亏|亏麻|爆仓|卧槽|草", re.I), "dead inside"),
-    (re.compile(r"笑|哈|离谱|绝了|lol|lmao", re.I), "crying laughing"),
-    (re.compile(r"牛|厉害|猛|起飞|拉爆|砸穿", re.I), "mind blown"),
-    (re.compile(r"^[\s？?！!。.…~～]*$|额|呃|啊$|嗯$|哦$|诶|欸", re.I), "shrug"),
-    (re.compile(r"好|行|可以|收到|谢谢|赞", re.I), "thumbs up"),
+    (re.compile(r"麻|无语|服了|难绷|绷不住|又亏|亏麻|爆仓|卧槽|草", re.I), "无语"),
+    (re.compile(r"笑|哈|离谱|绝了|lol|lmao", re.I), "笑死"),
+    (re.compile(r"牛|厉害|猛|起飞|拉爆|砸穿", re.I), "牛啊"),
+    (re.compile(r"^[\s？?！!。.…~～]*$|额|呃|啊$|嗯$|哦$|诶|欸", re.I), "问号"),
+    (re.compile(r"好|行|可以|收到|谢谢|赞", re.I), "点赞"),
 )
 # 一条回复里最多一个表情包；但连续几条都贴会很吵，所以有冷却。
 # 用时间而不是"条数"：并发回复时条数不可靠（上一条还在跑就开始了下一条）。
@@ -257,11 +261,16 @@ def _sticker_marker(sticker) -> str:
     if isinstance(sticker, dict):
         url = sticker.get("url")
         if url:
-            query = urllib.parse.urlencode({
+            params = {
                 "url": str(url),
                 "w": int(sticker.get("width") or 0),
                 "h": int(sticker.get("height") or 0),
-            })
+            }
+            # 只有 GIPHY 来源的图才需要署名（API 条款），本地图不用。
+            # 把它带进标记，前端不必再猜。
+            if str(sticker.get("source") or "") == "giphy":
+                params["src"] = "giphy"
+            query = urllib.parse.urlencode(params)
             return f"[sticker:{query}]"
         name = sticker.get("builtin")
         if name:

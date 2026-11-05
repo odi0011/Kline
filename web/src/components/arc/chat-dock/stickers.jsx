@@ -86,7 +86,11 @@ export function splitSticker(raw) {
       const local = url.startsWith("/agent-attachments/")
       const giphy = /^https:\/\/[^/]*giphy/i.test(url)
       if ((local || giphy) && w > 0 && h > 0) {
-        return { text, sticker: "", remote: { url, w, h } }
+        // credit：这张图是否需要署名。GIPHY 的 API 条款要求展示其内容时
+        // 标注 "Powered by GIPHY"；我们自己/用户提供的图不需要，
+        // 否则每张贴纸下面都挂一行，很碍眼。
+        const credit = params.get("src") === "giphy" || giphy
+        return { text, sticker: "", remote: { url, w, h, credit } }
       }
     } catch {
       // 解析失败就当没有表情包，文字照常显示

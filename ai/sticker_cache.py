@@ -179,7 +179,9 @@ class StickerCache:
     def _public(record: dict) -> dict:
         return {"url": record.get("url", ""), "width": int(record.get("width") or 0),
                 "height": int(record.get("height") or 0),
-                "title": record.get("title", ""), "id": record.get("id", "")}
+                "title": record.get("title", ""), "id": record.get("id", ""),
+                # 前端据此决定要不要显示 "Powered by GIPHY"（条款要求）
+                "source": record.get("source") or "giphy"}
 
     def lookup(self, query) -> dict | None:
         """按情绪词找已落盘的贴纸；命中直接返回本地地址（不打 API、不下载）。"""
@@ -287,6 +289,7 @@ class StickerCache:
                     "width": int(row.get("width") or 0),
                     "height": int(row.get("height") or 0),
                     "uses": int(row.get("useCount") or 0),
+                    "source": str(row.get("source") or "giphy"),
                 })
             return out[:limit]
         # 没连库：用本地索引拼一份同样形状的
@@ -311,6 +314,7 @@ class StickerCache:
                             "width": int(record.get("width") or 0),
                             "height": int(record.get("height") or 0),
                             "uses": int(record.get("uses") or 0),
+                            "source": record.get("source") or "giphy",
                             "_lastUsed": int(record.get("lastUsed") or 0)})
             # 没连库时也要按"最近用过"排：否则 touch() 的计数在清单里看不出效果
             out.sort(key=lambda x: (x.get("_lastUsed") or 0,
@@ -454,7 +458,8 @@ class StickerCache:
 
     def save(self, sticker_id, data: bytes, width: int, height: int,
              title: str = "", url_hint: str = "", content_type: str = "",
-             name: str = "", when_to_use: str = "") -> dict | None:
+             name: str = "", when_to_use: str = "",
+             source: str = "giphy") -> dict | None:
         """把下载好的图片存进缓存目录，返回可对外提供的本地记录。
 
         name / when_to_use 是 **Agent 决策出来的**（这张图叫什么、什么时候用），
@@ -502,7 +507,9 @@ class StickerCache:
                                or str(title or "").strip()[:80]),
                       "whenToUse": str(when_to_use or "")[:300],
                       "url": f"/agent-attachments/stickers/{filename}",
-                      "bytes": len(data), "ts": int(time.time())}
+                      "bytes": len(data), "ts": int(time.time()),
+                      # 来源：GIPHY 的内容按条款要署名，本地图不用
+                      "source": str(source or "giphy")[:16]}
             self._index["stickers"][sid] = record
             self._prune_locked()
             self._save()
@@ -523,6 +530,7 @@ class StickerCache:
                     "tags": " ".join(tags),
                     "width": record["width"], "height": record["height"],
                     "bytes": record["bytes"], "ts": record["ts"] * 1000,
+                    "source": record.get("source") or "giphy",
                 })
             except Exception:
                 pass

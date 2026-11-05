@@ -139,11 +139,12 @@ const MessageGroup = memo(function MessageGroup({ items }) {
           <Sticker name={name} max={132} />
         </div>
       ))}
-      {/* 在线贴纸：服务器已落盘的本地文件，尺寸已知所以加载前就占好位置 */}
+      {/* 在线贴纸：服务器已落盘的本地文件，尺寸已知所以加载前就占好位置。
+          署名只在 GIPHY 来源时显示——条款只管它，本地图不用挂。 */}
       {remotes.map((remote, index) => (
         <div key={`${remote.url}-${index}`} className={styles.stickerRow} data-role={mine ? "user" : "bot"}>
           <RemoteSticker remote={remote} max={132} />
-          <StickerCredit />
+          {remote.credit ? <StickerCredit /> : null}
         </div>
       ))}
       {/* 图片：单独的宫格气泡 */}

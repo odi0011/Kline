@@ -291,7 +291,7 @@ def test_pick_for_matches_stored_emotion():
     """配额用完/断网时，从已存的贴纸里挑一张贴近当前情绪的。"""
     root = tempfile.mkdtemp()
     cache = StickerCache(root)
-    for sid, word in (("id-dead", "dead inside"), ("id-shrug", "shrug"),
+    for sid, word in (("id-dead", "无语"), ("id-shrug", "shrug"),
                       ("id-pop", "popcorn")):
         cache.save(sid, b"GIF89a" + sid.encode()[:8], 100, 100,
                    url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
@@ -328,7 +328,7 @@ def test_send_sticker_falls_back_to_stored_not_builtin(tmp_path):
     cache = StickerCache(str(tmp_path / "s"))
     cache.save("stored1", b"GIF89a" + b"s" * 16, 200, 200,
                url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
-    cache.remember_query("dead inside", "stored1")
+    cache.remember_query("无语", "stored1")
 
     manager = AgentManager(lambda: {}, lambda: "", lambda: {}, lambda m: None,
                            str(tmp_path / "state.json"))
@@ -1042,7 +1042,7 @@ def test_auto_sticker_uses_library(tmp_path):
     manager, cache = _manager_with_stickers(tmp_path)
     cache.save("sad1", b"GIF89a" + b"s" * 16, 200, 150, name="麻了",
                url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
-    cache.remember_query("dead inside", "sad1")
+    cache.remember_query("无语", "sad1")
     manager.chat = []
     picked = manager._auto_sticker("麻了")
     assert picked and picked["id"] == "sad1", picked
@@ -1059,7 +1059,7 @@ def test_auto_sticker_respects_cooldown(tmp_path):
     manager, cache = _manager_with_stickers(tmp_path)
     cache.save("sad1", b"GIF89a" + b"s" * 16, 200, 150,
                url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
-    cache.remember_query("dead inside", "sad1")
+    cache.remember_query("无语", "sad1")
     manager._recent_sticker_ts = [int(_time.time() * 1000)]
     assert manager._auto_sticker("麻了") is None, "冷却期内不该再贴"
 
@@ -1071,7 +1071,7 @@ def test_auto_sticker_after_cooldown_expires(tmp_path):
     manager, cache = _manager_with_stickers(tmp_path)
     cache.save("sad1", b"GIF89a" + b"s" * 16, 200, 150,
                url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
-    cache.remember_query("dead inside", "sad1")
+    cache.remember_query("无语", "sad1")
     manager._recent_sticker_ts = [int(_time.time() * 1000) - STICKER_COOLDOWN_MS - 1000]
     assert manager._auto_sticker("麻了") is not None
 
@@ -1101,7 +1101,7 @@ def test_emotion_reply_gets_sticker_end_to_end(tmp_path, monkeypatch):
         cache = StickerCache(str(tmp_path / "s"))
         cache.save("sad1", b"GIF89a" + b"s" * 16, 200, 150,
                    url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
-        cache.remember_query("dead inside", "sad1")
+        cache.remember_query("无语", "sad1")
         manager.sticker_cache = cache
         await manager.ask("麻了", "test-model")
         assert await wait_for(lambda: not manager.chat_runners)
@@ -1210,7 +1210,7 @@ def test_model_consulted_situation_skips_keyword_fallback(tmp_path, monkeypatch)
         cache = StickerCache(str(tmp_path / "s"))
         cache.save("sad1", b"GIF89a" + b"s" * 16, 200, 150,
                    url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
-        cache.remember_query("dead inside", "sad1")
+        cache.remember_query("无语", "sad1")
         manager.sticker_cache = cache
         await manager.ask("麻了", "test-model")
         assert await wait_for(lambda: not manager.chat_runners)
@@ -1237,7 +1237,7 @@ def test_keyword_fallback_still_works_without_consultation(tmp_path, monkeypatch
         cache = StickerCache(str(tmp_path / "s"))
         cache.save("sad1", b"GIF89a" + b"s" * 16, 200, 150,
                    url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
-        cache.remember_query("dead inside", "sad1")
+        cache.remember_query("无语", "sad1")
         manager.sticker_cache = cache
         await manager.ask("麻了", "test-model")
         assert await wait_for(lambda: not manager.chat_runners)
@@ -1295,3 +1295,79 @@ def test_marker_validity_check():
     assert _has_valid_sticker_marker("[sticker:url=%2Fa.gif&w=1&h=1]")
     assert not _has_valid_sticker_marker("[sticker:笑死]")
     assert not _has_valid_sticker_marker("普通文字")
+
+
+# ---------- 中文梗词 & 署名 ----------
+
+def test_giphy_uses_chinese_lang_for_cjk_query():
+    """中文查询词要用 zh-CN 标签体系。
+
+    线上实测：一律 lang=en 时，搜 dead inside / shrug 拿到的是欧美 meme，
+    跟中文对话完全不搭。用户要的是"趣味表情包"（中文二次元/梗图）。
+    """
+    import urllib.parse
+    from feed import giphy
+
+    captured = {}
+
+    class _Resp:
+        def read(self, n=-1):
+            return b'{"data": []}'
+
+        def close(self):
+            pass
+
+    monkeypatch_target = giphy._open
+    try:
+        giphy._open = lambda req, proxy, timeout: (captured.update(
+            url=req.full_url), _Resp())[1]
+        try:
+            giphy._call_api("无语", 3, "k", "", 5.0)
+        except Exception:
+            pass
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(captured["url"]).query)
+        assert qs["lang"] == ["zh-CN"], qs.get("lang")
+
+        captured.clear()
+        try:
+            giphy._call_api("shrug", 3, "k", "", 5.0)
+        except Exception:
+            pass
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(captured["url"]).query)
+        assert qs["lang"] == ["en"], qs.get("lang")
+    finally:
+        giphy._open = monkeypatch_target
+
+
+def test_emotion_query_is_chinese():
+    """兜底情绪词必须用中文梗词，不能再用 dead inside / shrug。"""
+    from ai.agent import _EMOTION_QUERY
+    queries = [q for _, q in _EMOTION_QUERY]
+    assert "无语" in queries and "笑死" in queries
+    for english in ("dead inside", "crying laughing", "shrug", "thumbs up"):
+        assert english not in queries, f"还在用英文标签: {english}"
+
+
+def test_sticker_source_marks_giphy_for_credit():
+    """只有 GIPHY 来源的贴纸才需要署名。
+
+    GIPHY 的 API 条款要求展示其内容时标注 Powered by GIPHY；
+    本地/用户提供的图不需要——不区分来源就会每张图下面挂一行。
+    """
+    from ai.agent import _sticker_marker
+    giphy = _sticker_marker({"url": "/agent-attachments/stickers/a.gif",
+                             "width": 200, "height": 150, "source": "giphy"})
+    assert "src=giphy" in giphy
+    local = _sticker_marker({"url": "/agent-attachments/stickers/b.gif",
+                             "width": 200, "height": 150, "source": "local"})
+    assert "src=giphy" not in local
+
+
+def test_cache_save_records_source(tmp_path):
+    from ai.sticker_cache import StickerCache
+    cache = StickerCache(str(tmp_path / "s"))
+    rec = cache.save("local1", b"GIF89a" + b"x" * 16, 100, 80,
+                     url_hint="https://media.giphy.com/a.gif",
+                     content_type="image/gif", source="local")
+    assert rec["source"] == "local"
+    assert cache.catalog()[0]["source"] == "local"

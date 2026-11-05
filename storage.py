@@ -384,15 +384,26 @@ class Storage:
             tags VARCHAR(600) DEFAULT '',
             width INT DEFAULT 0, height INT DEFAULT 0,
             bytes INT DEFAULT 0,
+            source VARCHAR(16) DEFAULT '',
             created_ts BIGINT DEFAULT 0,
             last_used_ts BIGINT DEFAULT 0,
             use_count INT DEFAULT 0,
             INDEX idx_stickers_used(last_used_ts)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # source：这张图是哪来的（giphy / local / user）。
+        # GIPHY 的 API 条款要求展示其内容时署名 "Powered by GIPHY"；
+        # 本地/自己提供的图则不需要。不区分来源就只能一律署名，
+        # 结果就是每张贴纸下面都挂一行 Powered by GIPHY。
+        try:
+            if not self._qall("SHOW COLUMNS FROM stickers LIKE 'source'"):
+                self._q("ALTER TABLE stickers ADD COLUMN source VARCHAR(16) DEFAULT ''")
+        except Exception:
+            pass
         # 老库迁移：name/when_to_use 是后加的列（表可能已按旧结构建过）
         for _col, _ddl in (
             ("name", "ALTER TABLE stickers ADD COLUMN name VARCHAR(80) DEFAULT ''"),
             ("when_to_use", "ALTER TABLE stickers ADD COLUMN when_to_use VARCHAR(300) DEFAULT ''"),
+            ("source", "ALTER TABLE stickers ADD COLUMN source VARCHAR(16) DEFAULT ''"),
         ):
             try:
                 if not self._qall(f"SHOW COLUMNS FROM stickers LIKE '{_col}'"):
@@ -1463,14 +1474,15 @@ class Storage:
         now = int(record.get("ts") or time.time() * 1000)
         self._q(
             "REPLACE INTO stickers(id,file,title,name,when_to_use,tags,width,height,bytes,"
-            "created_ts,last_used_ts,use_count) "
-            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "source,created_ts,last_used_ts,use_count) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (sid, file, str(record.get("title") or "")[:200],
              str(record.get("name") or "")[:80],
              str(record.get("whenToUse") or "")[:300],
              str(record.get("tags") or "")[:600],
              _safe_int(record.get("width"), 0), _safe_int(record.get("height"), 0),
-             _safe_int(record.get("bytes"), 0), now, 0, 0))
+             _safe_int(record.get("bytes"), 0),
+             str(record.get("source") or "")[:16], now, 0, 0))
         return True
 
     def stickers(self, query: str = "", limit: int = 200) -> list[dict]:
@@ -1482,7 +1494,7 @@ class Storage:
         limit = max(1, min(1000, _safe_int(limit, 200)))
         like = f"%{str(query or '').strip().lower()[:60]}%" if str(query or "").strip() else ""
         cols = ("id,file,title,name,when_to_use,tags,width,height,bytes,"
-                "created_ts,last_used_ts,use_count")
+                "source,created_ts,last_used_ts,use_count")
         if like:
             rows = self._qall(
                 f"SELECT {cols} FROM stickers WHERE LOWER(tags) LIKE %s "
@@ -1496,8 +1508,9 @@ class Storage:
         return [{"id": r[0], "file": r[1], "title": r[2] or "",
                  "name": r[3] or "", "whenToUse": r[4] or "", "tags": r[5] or "",
                  "width": int(r[6] or 0), "height": int(r[7] or 0),
-                 "bytes": int(r[8] or 0), "createdTs": int(r[9] or 0),
-                 "lastUsedTs": int(r[10] or 0), "useCount": int(r[11] or 0)}
+                 "bytes": int(r[8] or 0), "source": r[9] or "",
+                 "createdTs": int(r[10] or 0),
+                 "lastUsedTs": int(r[11] or 0), "useCount": int(r[12] or 0)}
                 for r in rows]
 
     def touch_sticker(self, sticker_id: str) -> None:
