@@ -62,31 +62,37 @@
 }
 
 /* ---- 两个窗口并排 ---- */
+/* 三个时间窗口改为**纵向分栏**（每格一整行、横向排指标）。
+   横向三列平分 400px 每格只有 130px，指标全挤在一起看不清；
+   纵向每格占满宽度，四个指标一行读完。 */
 .windows {
   flex: 1 1 auto;
   min-height: 0;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 .block {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 3px 5px;
-  border-radius: 8px;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 6px;
+  border-radius: 7px;
   background: rgba(28, 35, 51, 0.035);
   min-width: 0;
-  flex: 1 1 0;
+  flex: none;
+  overflow: hidden;
 }
 .blockTitle {
   display: flex;
   align-items: baseline;
-  gap: 4px;
+  gap: 3px;
+  width: 76px;
+  flex: none;
   font-size: 8.5px;
   font-weight: 700;
   color: rgba(16, 24, 40, 0.5);
-  letter-spacing: 0.03em;
+  letter-spacing: 0.02em;
   white-space: nowrap;
   overflow: hidden;
 }
@@ -107,8 +113,9 @@
 .blockStats {
   display: flex;
   align-items: baseline;
-  gap: 7px;
+  gap: 9px;
   min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
 }
 .stat {
