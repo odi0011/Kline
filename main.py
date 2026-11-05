@@ -132,9 +132,16 @@ def write_config_file(cfg: dict, path: str) -> dict:
     return payload
 
 
-def start_static(dist_dir: str, port: int) -> None:
+def start_static(dist_dir: str, port: int, api_box: dict | None = None) -> None:
+    """静态页面 + 可选的 OpenAI 兼容接口（给 OpenClaw/微信 用）。
+
+    api_box 里放 {"api": OpenAICompat}；没启用 OpenClaw 时是空的，
+    /v1/* 一律 404——这个端点后面连着能真实下单的 Agent，
+    不能因为"反正没人知道路径"就默认开着。
+    """
     # 聊天图片附件放在配置目录下（不在 web/dist 里，构建会被覆盖）
     attach_dir = os.path.join(os.path.dirname(os.path.abspath("config.yaml")), "agent-attachments")
+    api_box = api_box if api_box is not None else {}
 
     class Quiet(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
@@ -168,6 +175,57 @@ def start_static(dist_dir: str, port: int) -> None:
             try:
                 super().handle_one_request()
             except (ValueError, AttributeError, ConnectionError):
+                self.close_connection = True
+
+        # ---- OpenAI 兼容接口（OpenClaw / 微信）----
+
+        def _api(self):
+            entry = api_box.get("api")
+            return entry
+
+        def do_GET(self):
+            if self.path.startswith("/v1/"):
+                self._serve_api("GET", b"")
+                return
+            super().do_GET()
+
+        def do_POST(self):
+            if self.path.startswith("/v1/"):
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    length = 0
+                # 先按上限读，绝不无界 read()：公网端口上拿到一个
+                # Content-Length: 999999999 就能把内存打满。
+                if length > 8 * 1024 * 1024:
+                    self._send_raw(413, {"Content-Type": "application/json"},
+                                   b'{"error":"request too large"}')
+                    return
+                body = self.rfile.read(length) if length > 0 else b""
+                self._serve_api("POST", body)
+                return
+            self._send_raw(404, {"Content-Type": "text/plain"}, b"not found")
+
+        def _serve_api(self, method: str, body: bytes) -> None:
+            api = self._api()
+            if api is None:
+                # 没启用 OpenClaw：连"有没有这个接口"都不透露
+                self._send_raw(404, {"Content-Type": "application/json"},
+                               b'{"error":"not found"}')
+                return
+            headers = {k: v for k, v in self.headers.items()}
+            status, resp_headers, payload = api.handle(method, self.path, headers, body)
+            self._send_raw(status, resp_headers, payload)
+
+        def _send_raw(self, status: int, headers: dict, payload: bytes) -> None:
+            self.send_response(status)
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            try:
+                self.wfile.write(payload)
+            except (BrokenPipeError, ConnectionResetError):
                 self.close_connection = True
 
         def end_headers(self):
@@ -369,6 +427,24 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                              "bot": {}, "allowed": [], "error": ""}),
         }
 
+    def _mask_openclaw(o: dict) -> dict:
+        """OpenClaw 配置：访问令牌只给掩码，附接口的实时状态。"""
+        token = str(o.get("token") or "")
+        api = api_box.get("api")
+        return {
+            "enabled": bool(o.get("enabled")),
+            "token": (token[:4] + MASK_KEY + token[-4:]) if len(token) > 10 else (MASK_SEC if token else ""),
+            "hasToken": bool(token),
+            "model": str(o.get("model") or "oddd"),
+            "max_per_min": int(o.get("max_per_min") or 40),
+            "base_url": "https://od1.site/v1",
+            "status": (api.describe() if api is not None
+                       else {"ready": False, "hasToken": bool(token), "model": "",
+                             "hits": 0, "errors": 0, "lastError": "",
+                             "lastReplyAt": 0, "callsLastMinute": 0,
+                             "maxPerMinute": int(o.get("max_per_min") or 40)}),
+        }
+
     def current_settings() -> dict:
         # 凭据绝不出网：settings 会广播给所有 WS 客户端（端口在公网），
         # 只下发掩码；前端回传掩码时由 apply_settings 换回服务端保存的原值。
@@ -387,6 +463,8 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                    **mask_cfg(cfg.get("ai", {}) or {})},
             # Telegram：token 只回掩码，白名单和运行状态原样下发
             "telegram": _mask_telegram(cfg.get("telegram", {}) or {}),
+            # OpenClaw（微信）：同样只回掩码，外加"当前有没有在跑"的状态
+            "openclaw": _mask_openclaw(cfg.get("openclaw", {}) or {}),
         }
 
     def apply_settings(s: dict) -> dict:
@@ -475,6 +553,23 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             if isinstance(telegram.get("allowed_chats"), list):
                 cur["allowed_chats"] = [str(x)[:32] for x in telegram["allowed_chats"][:50] if str(x).strip()]
             cfg["telegram"] = cur
+        # OpenClaw（微信）：令牌同样支持"留空/掩码 = 沿用原值"
+        openclaw = s.get("openclaw")
+        if isinstance(openclaw, dict):
+            cur = dict(cfg.get("openclaw") or {})
+            raw = str(openclaw.get("token") or "").strip()
+            if raw and MASK_KEY not in raw and raw != MASK_SEC:
+                cur["token"] = raw[:200]
+            if "enabled" in openclaw:
+                cur["enabled"] = bool(openclaw["enabled"])
+            if "model" in openclaw:
+                cur["model"] = str(openclaw.get("model") or "oddd")[:40]
+            if "max_per_min" in openclaw:
+                try:
+                    cur["max_per_min"] = max(1, min(300, int(openclaw["max_per_min"])))
+                except (TypeError, ValueError):
+                    pass
+            cfg["openclaw"] = cur
         ai = s.get("ai")
         if isinstance(ai, dict):
             # 密钥走 merge（掩码/留空则沿用原值）；模型清单整体替换
@@ -1190,6 +1285,61 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     agent.advice_fn = _agent_advice
 
+    # ---- OpenClaw / 微信：把 Agent 暴露成 OpenAI 兼容的「模型」 ----
+    #
+    # OpenClaw 是自托管的 agent 网关，用 models.providers 指向任意
+    # OpenAI 兼容端点。所以这里不需要逆向它的私有协议：我们按标准形状
+    # 提供服务，它在设置里把 baseUrl 指到 https://od1.site/v1 即可，
+    # 微信/Discord/Slack 的消息就会进到这条链路。
+    #
+    # HTTP handler 跑在线程池里，而 Agent 是 asyncio 的 → 用
+    # run_coroutine_threadsafe 桥过去并等结果（有超时，不会把线程挂死）。
+    api_box: dict = {"api": None}
+    _oc_loop: dict = {"loop": None}
+    OC_REPLY_TIMEOUT = 170.0
+
+    def _oc_ask(prompt, attachments=None):
+        loop = _oc_loop.get("loop")
+        if loop is None:
+            raise RuntimeError("服务还没启动完")
+        fut = asyncio.run_coroutine_threadsafe(
+            agent.ask_and_wait(prompt, attachments=attachments), loop)
+        return fut.result(timeout=OC_REPLY_TIMEOUT)
+
+    def _sync_openclaw_api() -> None:
+        """按配置（重新）装配接口。设置页改开关/令牌后 5 秒内生效。"""
+        ocfg = cfg.get("openclaw") or {}
+        enabled = bool(ocfg.get("enabled"))
+        token = str(ocfg.get("token") or "").strip()
+        if not enabled or not token:
+            api_box["api"] = None
+            return
+        api = api_box.get("api")
+        if api is not None and api.token == token:
+            return                                  # 没变，保留计数等状态
+        from server.openai_compat import OpenAICompat
+        cfg_dir = os.path.dirname(os.path.abspath(config_path))
+        api_box["api"] = OpenAICompat(
+            token=token, model=str(ocfg.get("model") or "oddd"),
+            ask_fn=_oc_ask, timeout=OC_REPLY_TIMEOUT,
+            max_per_min=int(ocfg.get("max_per_min") or 40),
+            # 表情包：微信不认 [sticker:xxx]，要换成图片链接
+            sticker_dir=os.path.join("web", "dist", "stickers"),
+            public_dir=os.path.join("web", "public", "stickers"),
+            attach_dir=os.path.join(cfg_dir, "agent-attachments"),
+            base_url=str(ocfg.get("public_url") or "https://od1.site"))
+
+    _oc_loop["loop"] = asyncio.get_running_loop()
+    _sync_openclaw_api()
+
+    async def openclaw_supervisor():
+        while True:
+            try:
+                _sync_openclaw_api()
+            except Exception as e:
+                print(f"[openclaw] 装配失败: {e}")
+            await asyncio.sleep(5)
+
     # ---- Telegram Bot：与网页端共用同一个 AgentManager 会话 ----
     tg_box: dict = {"bot": None}
 
@@ -1213,7 +1363,14 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                     bot = None
                 if enabled and token and bot is None:
                     bot = TelegramBot(token, tcfg.get("allowed_chats") or [],
-                                      _tg_reply, proxy_cfg or None)
+                                      _tg_reply, proxy_cfg or None,
+                                      # 表情包：内置图取 web/public（源目录，
+                                      # 不依赖前端是否已构建），落盘的 GIPHY 图
+                                      # 在 agent-attachments 下
+                                      sticker_dir=os.path.join("web", "public", "stickers"),
+                                      attach_dir=os.path.join(
+                                          os.path.dirname(os.path.abspath(config_path)),
+                                          "agent-attachments"))
                     tg_box["bot"] = bot
                     info = await asyncio.to_thread(bot.verify)
                     if info.get("ok"):
@@ -1318,7 +1475,10 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
 
     dist = "web/dist"
     if os.path.isdir(dist):
-        start_static(dist, int(cfg.get("web_port", 8000)))
+        start_static(dist, int(cfg.get("web_port", 8000)), api_box)
+        if api_box.get("api") is not None:
+            print("[openclaw] OpenAI 兼容接口已启用：/v1/chat/completions"
+                  f"（模型名 {api_box['api'].model}）")
     else:
         print(f"[web] 未找到 {dist}，前端未构建（npm run build 后自动可用）")
 
@@ -1725,7 +1885,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     try:
         await asyncio.gather(supervisor(), sweep(), accounts_poller(),
                              news_poller(), article_prefetcher(), news_ai_poller(),
-                             telegram_supervisor(),
+                             telegram_supervisor(), openclaw_supervisor(),
                              backfill_retry(), pool_auditor(), chatter_poller(),
                              market_list_poller(), leverage_poller(),
                              derivatives_poller(), market_feature_poller())

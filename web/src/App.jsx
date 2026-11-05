@@ -135,6 +135,7 @@ export default function App() {
   const [srvAccounts, setSrvAccounts] = useState(null)          // 服务端账户列表（含密钥）
   const [aiCfg, setAiCfg] = useState({})                        // AI 配置（服务端，密钥为掩码）
   const [telegramCfg, setTelegramCfg] = useState({})            // Telegram 配置（token 为掩码）
+  const [openclawCfg, setOpenclawCfg] = useState({})            // OpenClaw / 微信接入（令牌为掩码）
   const [aiModelsResult, setAiModelsResult] = useState(null)     // 一键获取模型的结果
   const [aiTestResult, setAiTestResult] = useState(null)         // 单模型连通测试结果
   const [quantSnap, setQuantSnap] = useState(null)              // 量化引擎快照
@@ -272,6 +273,7 @@ export default function App() {
       if (Array.isArray(s.accounts)) setSrvAccounts(s.accounts)
       if (s.ai) setAiCfg(s.ai)
       if (s.telegram) setTelegramCfg(s.telegram)
+      if (s.openclaw) setOpenclawCfg(s.openclaw)
     })
     const offAiModels = live.on('ai_models', (m) => setAiModelsResult(m.result || null))
     const offAiTest = live.on('ai_test', (m) => setAiTestResult({ ...(m.result || {}), at: Date.now() }))
@@ -329,6 +331,7 @@ export default function App() {
       if (Array.isArray(s.accounts)) setSrvAccounts(s.accounts)
       if (s.ai) setAiCfg(s.ai)
       if (s.telegram) setTelegramCfg(s.telegram)
+      if (s.openclaw) setOpenclawCfg(s.openclaw)
       if (live.quant) setQuantSnap((current) => mergeQuantSnapshot(current, live.quant))
       setQuantEvents(live.quantEvents || [])
       setQuantTrades(live.quantTrades || [])
@@ -662,6 +665,11 @@ export default function App() {
     if (!connected) { setAgentNotice('尚未连接服务端'); return }
     liveRef.current && liveRef.current.sendSettings({ telegram })
   }
+  // OpenClaw（微信）：同一套掩码规则；令牌留空 = 沿用服务端已存的
+  const saveOpenclaw = (openclaw) => {
+    if (!connected) { setAgentNotice('尚未连接服务端'); return }
+    liveRef.current && liveRef.current.sendSettings({ openclaw })
+  }
   const aiAction = (msg) => {
     if (!connected) { setAgentNotice('尚未连接服务端'); return }
     liveRef.current?.send(msg)
@@ -915,7 +923,8 @@ export default function App() {
         accounts={srvAccounts} onSaveAccount={saveAccount}
         ai={aiCfg} onSaveAi={saveAi} onAiAction={aiAction}
         aiModelsResult={aiModelsResult} aiTestResult={aiTestResult}
-        telegram={telegramCfg} onSaveTelegram={saveTelegram} />
+        telegram={telegramCfg} onSaveTelegram={saveTelegram}
+        openclaw={openclawCfg} onSaveOpenclaw={saveOpenclaw} />
 
       {/* 命中飞线：K线卡片 → 形态卡片，落地后触发卡片背景扩散 */}
       <HitFlight flight={flight} onLand={onFlightLand} onDone={onFlightDone} />

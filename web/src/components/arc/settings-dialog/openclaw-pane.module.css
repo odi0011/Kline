@@ -1,0 +1,128 @@
+/* OpenClaw 设置面板：与 Telegram 面板同一套行布局，多了令牌生成与配置示例。 */
+
+.root { display: flex; flex-direction: column; gap: 12px; padding: 2px 0 8px; }
+
+.note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text-muted, #8b949e);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: rgba(28, 35, 51, 0.04);
+  border: 1px solid rgba(28, 35, 51, 0.06);
+}
+.rowLabel { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rowName { font-size: 13px; color: #1c2333; }
+.rowHint { font-size: 11px; color: var(--text-muted, #8b949e); }
+.rowControl { flex: 1 1 220px; min-width: 0; display: flex; justify-content: flex-end; }
+.rowControl :global(input) { width: 100%; }
+
+.switch { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: #1c2333; cursor: pointer; }
+.switch input { width: 15px; height: 15px; accent-color: var(--accent, #f0b90b); cursor: pointer; }
+
+.tokenRow { display: flex; align-items: center; gap: 8px; width: 100%; }
+.tokenRow :global(input) { flex: 1 1 auto; }
+.genBtn {
+  flex: none;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 6px 10px;
+  border: 1px solid rgba(28, 35, 51, 0.12);
+  border-radius: 8px;
+  background: #fff;
+  color: #1c2333;
+  font: inherit; font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.genBtn:hover { background: rgba(28, 35, 51, 0.05); }
+
+/* 令牌只显示一次：必须显眼，否则用户关掉弹窗就再也拿不到了 */
+.reveal {
+  display: flex; align-items: center; gap: 5px;
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: #b45309;
+}
+
+.status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 999px;
+  background: rgba(28, 35, 51, 0.06);
+  color: var(--text-muted, #8b949e);
+  font-size: 11px;
+}
+.badge[data-on] { background: rgba(22, 163, 74, 0.12); color: #15803d; }
+.stat { font-size: 11.5px; color: #1c2333; }
+.error { margin: 0; font-size: 11px; color: #b91c1c; overflow-wrap: anywhere; }
+
+/* 配置示例：用户照着复制到 OpenClaw，所以用等宽字体并允许横向滚动 */
+.setup {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(28, 35, 51, 0.03);
+  border: 1px solid rgba(28, 35, 51, 0.06);
+}
+.setupHead {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 600; color: #1c2333;
+}
+.setupRow { display: flex; align-items: center; gap: 8px; }
+.setupKey {
+  flex: none; width: 54px;
+  font-size: 11px; color: var(--text-muted, #8b949e);
+}
+.setupHint { margin: 0; font-size: 11px; line-height: 1.6; color: var(--text-muted, #8b949e); }
+.copyField {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 6px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(28, 35, 51, 0.08);
+}
+.copyValue {
+  flex: 1 1 auto; min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; color: #1c2333;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.copyBtn {
+  flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px;
+  border: 0; border-radius: 5px;
+  background: transparent; color: var(--text-muted, #8b949e);
+  cursor: pointer;
+}
+.copyBtn:hover { background: rgba(28, 35, 51, 0.08); color: #1c2333; }
+.snippet {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(28, 35, 51, 0.05);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px; line-height: 1.65;
+  color: #1c2333;
+  overflow-x: auto;
+}
+
+.actions { display: flex; justify-content: flex-end; }
+.save {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 7px 16px;
+  border: 0; border-radius: 9px;
+  background: #1c2333; color: #fff;
+  font: inherit; font-size: 12px;
+  cursor: pointer;
+}
+.save:hover { background: #2b3346; }

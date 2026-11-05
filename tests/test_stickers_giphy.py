@@ -294,7 +294,10 @@ def test_pick_for_matches_stored_emotion(tmp_path):
     会留下一堆目录，而且互相干扰（这条曾经单跑通过、套跑失败）。
     """
     cache = StickerCache(str(tmp_path / "s"))
-    for sid, word in (("id-dead", "无语"), ("id-shrug", "shrug"),
+    # 记住的情绪词要真的和后面查询的词相关：这条测试原本给 id-dead
+    # 记的是"无语"，却断言 pick_for("dead") 能命中——两者毫无关系，
+    # 之前能过只是因为同秒保存时字典顺序碰巧让它排第一（套跑就红）。
+    for sid, word in (("id-dead", "dead inside"), ("id-shrug", "shrug"),
                       ("id-pop", "popcorn")):
         cache.save(sid, b"GIF89a" + sid.encode()[:8], 100, 100,
                    url_hint="https://media.giphy.com/a.gif", content_type="image/gif")

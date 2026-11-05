@@ -12,6 +12,7 @@ import asyncio
 import base64
 import inspect
 import json
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,16 +34,21 @@ def _mime_from_path(path: str) -> str:
 
 class TelegramBot:
     def __init__(self, token: str = "", allowed: list[str] | None = None,
-                 on_message=None, proxy: str | None = None):
+                 on_message=None, proxy: str | None = None,
+                 sticker_dir: str = "", attach_dir: str = ""):
         self.token = (token or "").strip()
         self.allowed = {str(x).strip() for x in (allowed or []) if str(x).strip()}
         self.on_message = on_message          # async (chat_id, text) -> str
         self.proxy = proxy
+        # 表情包：内置图目录（web/public/stickers）+ 落盘图目录（agent-attachments）
+        self.sticker_dir = sticker_dir
+        self.attach_dir = attach_dir
         self._offset = 0
         self._task: asyncio.Task | None = None
         self._running = False
         self.last_error = ""
         self.bot_info: dict = {}
+        self.media_sent = 0        # 成功发出去的表情包数量（状态页可查）
 
     # ---------- HTTP ----------
 
@@ -98,6 +104,91 @@ class TelegramBot:
                 return res
             out.append(res)
         return {"ok": True, "sent": len(out)}
+
+    # ---------- 出站表情包 ----------
+
+    def _upload(self, method: str, field: str, chat_id, path: str,
+                mime: str) -> dict:
+        """multipart 上传本地文件（sendPhoto / sendAnimation）。
+
+        为什么不用 URL：Telegram 服务器要能公网访问到那个地址。内置图在
+        web/dist 下是有公网地址的，但落盘的 GIPHY 图在 agent-attachments，
+        走本站静态服务也能取——可一旦部署在内网/换了域名就全挂。
+        直接传字节最稳，也不依赖静态服务是否对外。
+        """
+        try:
+            with open(path, "rb") as fh:
+                raw = fh.read(MAX_MEDIA_BYTES + 1)
+        except OSError as exc:
+            return {"ok": False, "error": f"读不到文件: {exc}"}
+        if len(raw) > MAX_MEDIA_BYTES:
+            return {"ok": False, "error": "文件超过 2MB"}
+        boundary = "----oddd" + os.urandom(8).hex()
+        name = os.path.basename(path)
+        chunks = []
+        chunks.append(
+            (f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\""
+             f"\r\n\r\n{chat_id}\r\n").encode())
+        chunks.append(
+            (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\";"
+             f" filename=\"{name}\"\r\nContent-Type: {mime}\r\n\r\n").encode())
+        chunks.append(raw)
+        chunks.append(f"\r\n--{boundary}--\r\n".encode())
+        data = b"".join(chunks)
+        url = API.format(token=self.token, method=method)
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        opener = (urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": self.proxy, "https": self.proxy}))
+            if self.proxy else urllib.request.build_opener())
+        try:
+            with opener.open(req, timeout=TIMEOUT) as resp:
+                return json.loads(resp.read().decode("utf-8", "replace"))
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def send_sticker(self, chat_id, ref) -> dict:
+        """发一张表情包。本地文件走上传，远程 GIPHY 直链让 Telegram 自己取。"""
+        if not ref or not getattr(ref, "available", False):
+            return {"ok": False, "error": "表情不可用"}
+        method = "sendAnimation" if ref.kind == "animation" else "sendPhoto"
+        field = "animation" if method == "sendAnimation" else "photo"
+        if ref.local_path:
+            mime = _mime_from_path(ref.local_path)
+            res = self._upload(method, field, chat_id, ref.local_path, mime)
+        else:
+            res = self._request(method, {"chat_id": chat_id, field: ref.remote_url})
+        if res.get("ok"):
+            self.media_sent += 1
+        else:
+            self.last_error = str(res.get("error") or res.get("description") or "发送表情失败")
+        return res
+
+    def send_reply(self, chat_id, text: str) -> dict:
+        """发一条完整回复：正文 + 表情包。
+
+        必须先把标记从正文里剥掉再发文字——否则用户看到的就是
+        `[sticker:崩溃]` 这串代码（线上实测就是这样）。
+        只有表情没有正文时不再发一条"（空回复）"，直接发图。
+        """
+        from ai.stickers_media import split_stickers
+        body, refs = split_stickers(text, self.sticker_dir, self.attach_dir)
+        sent_text = {"ok": True}
+        if body:
+            sent_text = self.send(chat_id, body)
+            if not sent_text.get("ok"):
+                return sent_text
+        errors = []
+        for ref in refs:
+            res = self.send_sticker(chat_id, ref)
+            if not res.get("ok"):
+                errors.append(str(res.get("error") or "发送失败")[:80])
+        if errors and not body:
+            # 正文和表情都没发出去：至少让用户知道为什么，别静默吞掉
+            self.send(chat_id, "表情发送失败：" + "；".join(errors[:2]))
+        return {"ok": True, "text": bool(body), "stickers": len(refs),
+                "errors": errors}
 
     # ---------- 入站媒体 ----------
 
@@ -228,7 +319,9 @@ class TelegramBot:
         except Exception as exc:
             reply = f"处理失败：{type(exc).__name__}"
         if reply:
-            await asyncio.to_thread(self.send, chat_id, reply)
+            # 走 send_reply：正文和表情分开发。直接把整段塞 sendMessage 的话，
+            # `[sticker:xxx]` 会原样出现在聊天里（线上实测就是这样）。
+            await asyncio.to_thread(self.send_reply, chat_id, reply)
 
     @property
     def _accepts_attachments(self) -> bool:

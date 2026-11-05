@@ -3,9 +3,10 @@
    下发服务端热生效并持久化到 config.yaml（币种展示选择除外，存浏览器本地）。 */
 import { useEffect, useId, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
-import { X, Palette, Wallet, Activity, Image as ImageIcon, Plus, Bot, Send } from "lucide-react"
+import { X, Palette, Wallet, Activity, Image as ImageIcon, Plus, Bot, Send, MessageCircle } from "lucide-react"
 import AiPane from "./ai-pane"
 import TelegramPane from "./telegram-pane"
+import OpenclawPane from "./openclaw-pane"
 import Input from "@/components/arc/input/input"
 import ColorPicker from "@/components/arc/color-picker/color-picker"
 import MorphSelect from "@/components/arc/morph-select/morph-select"
@@ -20,6 +21,7 @@ const SECTIONS = [
   { id: "patterns", label: "形态", Icon: Activity },
   { id: "ai", label: "AI", Icon: Bot },
   { id: "telegram", label: "Telegram", Icon: Send },
+  { id: "openclaw", label: "微信 · OpenClaw", Icon: MessageCircle },
 ]
 
 const THEME_PRESETS = ["#f0b90b", "#3b82f6", "#16a34a", "#8b5cf6", "#f97316", "#06b6d4"]
@@ -193,7 +195,7 @@ function PatternsPane({ patternsEnabled, livePreview, onTogglePattern, onToggleL
 export function SettingsDialog({ open, onClose, section, onSectionChange,
   ui, onUpdateUi, patternsEnabled, livePreview, onTogglePattern, onToggleLivePreview,
   accounts, onSaveAccount, ai, onSaveAi, onAiAction, aiModelsResult, aiTestResult,
-  telegram, onSaveTelegram }) {
+  telegram, onSaveTelegram, openclaw, onSaveOpenclaw }) {
   const [hover, setHover] = useState(null)
   const groupId = useId()
 
@@ -248,6 +250,7 @@ export function SettingsDialog({ open, onClose, section, onSectionChange,
                 {section === "ai" && <AiPane ai={ai} onSave={onSaveAi} onAiAction={onAiAction}
                   aiModelsResult={aiModelsResult} aiTestResult={aiTestResult} />}
                 {section === "telegram" && <TelegramPane telegram={telegram} onSave={onSaveTelegram} />}
+                {section === "openclaw" && <OpenclawPane openclaw={openclaw} onSave={onSaveOpenclaw} />}
               </div>
             </div>
           </motion.div>

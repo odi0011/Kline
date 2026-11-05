@@ -411,10 +411,13 @@ class StickerCache:
             # 先看有没有真正相关的；完全没有时退回最新一张（总比不发强）
             related = [row for row in ranked if row[0] > 0]
             pool = related or ranked
-            # 相关性降序 → 同分时"刚用过的"靠后 → 再比新旧
+            # 相关性降序 → 同分时"刚用过的"靠后 → 再比新旧 → 最后按 id，
+            # 让"完全不相关时退回哪张"是确定的：同秒保存的三张图如果
+            # ts 相同，排序结果就取决于字典迭代顺序，测试和线上都会随机变
+            # （线上表现是"同一句情绪，两次收到不同的图"）。
             # 注意是**同分才让位**：相关性明显更高的那张照样优先，
             # 否则会出现"明明有精确匹配却因为刚发过而选了不相关的"。
-            pool.sort(key=lambda row: (row[0], -row[1], row[2]), reverse=True)
+            pool.sort(key=lambda row: (row[0], -row[1], row[2], row[3]), reverse=True)
             best = pool[0]
             if best[1] and len(pool) > 1 and pool[1][0] == best[0]:
                 best = pool[1]      # 同分且刚用过 → 换下一个
