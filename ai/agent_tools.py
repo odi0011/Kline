@@ -15,6 +15,33 @@ _SECRET = re.compile(r"key|secret|token|password|passwd|credential|authorization
 # 改一处要同步另一处（tests/test_stickers.py 会校验）。
 # 定义放在工具边界这一层：send_sticker 的 enum 与提示词都必须来自同一份名单。
 STICKER_NAMES = ("崩溃", "疑问", "嘲讽")
+
+# 内置图的"什么时候用"。手挑的二次元梗图，风格贴合中文对话，
+# 比 GIPHY 搜来的英文 meme 强得多，所以 list_stickers 会把它们
+# 排在最前面并带上场景说明。
+BUILTIN_STICKERS = (
+    {"name": "崩溃", "when": "亏麻了、被行情打爆、心态崩了的时候",
+     "tags": "崩溃 破防 麻了 亏了 爆仓 难受"},
+    {"name": "疑问", "when": "没看懂、想问怎么了、对方说了离谱的话",
+     "tags": "疑问 问号 啥 不明白"},
+    {"name": "嘲讽", "when": "调侃、看笑话、对方踏空或追高被套",
+     "tags": "嘲讽 笑 幸灾乐祸 调侃"},
+)
+
+
+def _builtin_sticker_catalog(query: str = "") -> list[dict]:
+    """内置图清单（可按 query 过滤）。给 list_stickers 用。"""
+    want = str(query or "").strip().lower()
+    out = []
+    for item in BUILTIN_STICKERS:
+        if want and want not in f"{item['name']} {item['when']} {item['tags']}".lower():
+            continue
+        out.append({
+            "id": f"builtin:{item['name']}", "name": item["name"],
+            "when": item["when"], "tags": item["tags"],
+            "uses": 0, "source": "builtin", "whenMissing": False,
+        })
+    return out
 _SYMBOL = re.compile(r"[A-Z0-9]{2,16}(?:USDT|USDC|USD|BTC|ETH)\Z")
 
 

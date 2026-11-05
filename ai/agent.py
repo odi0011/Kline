@@ -18,6 +18,7 @@ from datetime import datetime
 
 from ai import pricing, sandbox
 from ai.agent_tools import (TOOLS, TOOL_NAMES, PREFERENCE_KEYS, STICKER_NAMES,
+                            _builtin_sticker_catalog,
                             bounded, clean, preference_update, read_snapshot,
                             validate_preference)
 from ai.proactive import ProactiveEvent, ProactiveGate
@@ -138,7 +139,7 @@ def _auto_sticker_query(prompt: str) -> str:
     for pattern, query in _EMOTION_QUERY:
         if pattern.search(text):
             return query
-    return "shrug"
+    return "问号"
 
 
 
@@ -594,22 +595,26 @@ liquidation / sentiment / oi / funding。
    不要把「库里有几张」当成回答内容 —— 用户要的是表情，不是库存清单。
 
  · 怎么发（按顺序，能用前面的就别往下走）：
-   1) 库里有明显合适的 → 直接 send_sticker(sticker_id=...) 发出
-   2) 不太确定库里有啥 → list_stickers 看一眼，看到合适的立刻发
-   3) 都没有合适的 → search_stickers(query="英文情绪词") 拿 3~5 张候选，
-      按英文描述挑一张 → save_sticker(candidate_id, name, when) 定名入库
+   1) **先看内置图**，它们是手挑的二次元梗图，风格最贴中文对话：
+      {{STICKER_NAMES}} —— 用 send_sticker(sticker_id="builtin:名字")
+      或 send_sticker(name="名字")
+   2) 不太确定库里有啥 → list_stickers 看一眼（内置图排在清单最前），
+      看到合适的立刻发
+   3) 内置图和库里都不合适 → search_stickers(query="中文梗词") 拿 3~5 张
+      候选 → save_sticker(candidate_id, name, when) 定名入库
       → send_sticker(sticker_id) 发出
    4) 都不满意就不发 —— 不要为了发而发
 
- · 情绪词参考：facepalm（捂脸）、shrug（摊手）、mind blown（震撼）、
-   crying laughing（笑死）、dead inside（麻了）、thumbs up（认可）、
-   clown（小丑）、popcorn（吃瓜）、eye roll（翻白眼）、pray（祈祷）
- · 内置三张图 send_sticker(name=...) 只是最后手段，优先用库里的：
-   {{STICKER_NAMES}}
+ · 搜候选一律用**中文梗词**：无语 / 笑死 / 破防 / 麻了 / 牛啊 / 问号 /
+   点赞 / 我裂开 / 蚌埠住了。
+   **不要用英文**（dead inside、shrug、crying laughing）——GIPHY 的英文
+   标签搜出来是欧美 meme，跟中文对话完全不是一回事，用户明确说过不对味。
+ · GIPHY 的中文库很小，搜不到合适的是正常的：这时候优先用内置图，
+   不要拿一张风格不搭的图凑数。
  · 工具会自己处理标记和落地，你不用手写 `[sticker:...]`。
  · 一条回复最多一个表情包。发了表情包就可以少说话，甚至只发表情包。
    例：用户「发个表情包」→ 直接 send_sticker(sticker_id=库里那张)，不解释
-   例：用户「又亏了草」→ 搜 dead inside → 存 → 发，可以只说一句
+   例：用户「又亏了草」→ 发内置的崩溃图，可以只说一句
    例：用户「BTC 还能涨吗」→「不知道，别问我。」+ 一张摊手
 
 【什么时候分多条气泡】用「|||」切分，客户端会把每段发成一个独立气泡。
@@ -2345,6 +2350,10 @@ class AgentManager:
 
         返回的 name / when 都是 Agent 之前自己定下的，所以它能判断
         "这张已经存过、直接发就行"，而不用重新猜。
+
+        **内置图也一起列出来**：它们是手挑的二次元梗图，风格比 GIPHY
+        搜来的英文 meme 贴合中文对话得多。之前只列数据库里的，
+        Agent 根本不知道这三张存在，每次都被迫去 GIPHY 搜。
         """
         if not isinstance(arguments, dict):
             raise ValueError("list_stickers 参数需为对象")
@@ -2361,6 +2370,10 @@ class AgentManager:
             rows = cache.catalog(query=query, limit=limit)
         except Exception:
             rows = []
+        # 内置图放最前面：它们是手挑的，风格对，优先用
+        builtin = [dict(item, id=f"builtin:{item['name']}")
+                   for item in _builtin_sticker_catalog(query)]
+        rows = builtin + list(rows)[:max(0, limit - len(builtin))]
         total = 0
         store = getattr(cache, "store", None)
         if store is not None and getattr(store, "enabled", False):
@@ -2389,6 +2402,9 @@ class AgentManager:
                           "when": r.get("when", ""), "tags": r.get("tags", ""),
                           "width": r.get("width", 0), "height": r.get("height", 0),
                           "uses": r.get("uses", 0),
+                          # builtin / giphy / local：内置图排最前且风格最贴合，
+                          # 前端也据此决定要不要显示 GIPHY 署名
+                          "source": r.get("source") or "giphy",
                           # 早期存进来的坏数据（没写 when）：标出来，别让模型
                           # 把"没场景说明"当成"什么场合都能用"
                           "whenMissing": not str(r.get("when") or "").strip()}
@@ -2552,6 +2568,14 @@ class AgentManager:
         sticker_id = str(arguments.get("sticker_id") or "").strip()
         query = str(arguments.get("query") or "").strip()
         name = arguments.get("name")
+        # list_stickers 给内置图的 id 是 "builtin:崩溃"，这里要认。
+        # 不认的话 Agent 照清单里的 id 发送会一路掉到"库里找不到"分支。
+        if sticker_id.startswith("builtin:"):
+            builtin_name = sticker_id.split(":", 1)[1].strip()
+            if builtin_name in STICKER_NAMES:
+                target["pendingSticker"] = {"builtin": builtin_name}
+                return {"sent": True, "source": "builtin", "name": builtin_name,
+                        "note": "会附在本条回复末尾"}
         if sticker_id:
             picked = self._sticker_by_id(sticker_id)
             if picked:

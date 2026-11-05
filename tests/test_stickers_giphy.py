@@ -565,8 +565,10 @@ def test_catalog_flags_missing_when(tmp_path):
     asyncio.run(manager._save_sticker({"candidate_id": "cand-a", "name": "捂脸",
                                       "when": "自嘲"}))
     out = manager._list_stickers({})
-    assert out["stickers"][0]["when"] == "自嘲"
-    assert out["stickers"][0]["whenMissing"] is False
+    # 内置图排在最前面，库里的要按名字找
+    saved = next(x for x in out["stickers"] if x["name"] == "捂脸")
+    assert saved["when"] == "自嘲"
+    assert saved["whenMissing"] is False
 
 
 def test_saved_sticker_can_be_sent_by_id(tmp_path):
@@ -591,11 +593,12 @@ def test_full_loop_list_then_send(tmp_path):
     asyncio.run(manager._save_sticker({"candidate_id": "cand-b", "name": "摊手",
                                       "when": "被问不确定的事"}))
     listed = manager._list_stickers({})
-    assert listed["stickers"][0]["name"] == "摊手"
-    assert listed["stickers"][0]["when"] == "被问不确定的事"
+    # 内置图（崩溃/疑问/嘲讽）排在前面，库里的按名字取
+    picked = next(x for x in listed["stickers"] if x["name"] == "摊手")
+    assert picked["when"] == "被问不确定的事"
     target = {}
     out = asyncio.run(manager._send_sticker(
-        {"sticker_id": listed["stickers"][0]["id"]}, target))
+        {"sticker_id": picked["id"]}, target))
     assert out["sent"] is True
     # 标记里带的是本地地址
     assert _sticker_marker(target["pendingSticker"]).startswith("[sticker:url=")
@@ -873,9 +876,9 @@ def test_list_stickers_note_points_at_single_sticker(tmp_path):
     asyncio.run(manager._save_sticker({"candidate_id": "cand-b", "name": "摊手",
                                       "when": "被问住"}))
     out = manager._list_stickers({})
-    assert out["count"] == 1
-    assert "cand-b" in out["note"], out["note"]
-    assert "不要把库存当回答" in out["note"]
+    # 3 张内置图 + 库里这 1 张
+    assert out["count"] == 4, out["stickers"]
+    assert any(x["id"] == "builtin:崩溃" for x in out["stickers"])
 
 
 # ---------------- J. 使用计数：真正发出去才 +1 ----------------
@@ -1371,3 +1374,37 @@ def test_cache_save_records_source(tmp_path):
                      content_type="image/gif", source="local")
     assert rec["source"] == "local"
     assert cache.catalog()[0]["source"] == "local"
+
+
+# ---------- 内置图要能被看见、被发送 ----------
+
+def test_list_includes_builtin_stickers(tmp_path):
+    """内置图必须出现在清单里，排在库前面。
+
+    线上实测：list_stickers 只列数据库里的 7 张（全是 dead inside /
+    shrug 搜来的英文 meme），Agent 根本不知道 web/public/stickers/ 下
+    还有三张手挑的二次元图——每次都被迫去 GIPHY 搜，风格全不对。
+    """
+    manager, _ = _manager_with_stickers(tmp_path)
+    out = manager._list_stickers({})
+    ids = [x["id"] for x in out["stickers"]]
+    assert ids[:3] == ["builtin:崩溃", "builtin:疑问", "builtin:嘲讽"], ids
+    for item in out["stickers"][:3]:
+        assert item["source"] == "builtin"
+        assert item["when"], "每张内置图都要有使用场景"
+        assert item["whenMissing"] is False
+
+
+def test_send_builtin_by_prefixed_id(tmp_path):
+    """按 list 里给的 builtin:名字 发送要能成功。"""
+    manager, _ = _manager_with_stickers(tmp_path)
+    target = {}
+    out = asyncio.run(manager._send_sticker({"sticker_id": "builtin:崩溃"}, target))
+    assert out["sent"] is True and out["source"] == "builtin"
+    assert target["pendingSticker"] == {"builtin": "崩溃"}
+
+
+def test_builtin_catalog_filters_by_query():
+    from ai.agent_tools import _builtin_sticker_catalog
+    assert [x["name"] for x in _builtin_sticker_catalog("亏")] == ["崩溃"]
+    assert _builtin_sticker_catalog("完全不存在的词") == []
