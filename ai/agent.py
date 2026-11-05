@@ -1486,6 +1486,10 @@ class AgentManager:
 
     def state(self):
         tasks = sorted(self.tasks, key=lambda item: item.get("createdAt") or 0, reverse=True)
+        # 队列占用要能看见：名额泄漏（reserve 了不 release）会让 Agent 永久
+        # "队列已满"，而界面上只有一句错误提示，根本看不出是泄漏。
+        # 把 admitted 明细一起暴露，排障时能直接看到卡住的是哪个 id。
+        admitted = sorted(self._admitted)
         return {"tasks": copy.deepcopy(tasks), "chat": copy.deepcopy(self.chat[-40:]),
                 # memory 要暴露出来：否则"以后别问我"存没存进去，
                 # 前端和排障都看不见（只读副本，前端不写）。
@@ -1493,6 +1497,8 @@ class AgentManager:
                 "stats": self.stats(),
                 "persistenceError": self.persistence_error, "readOnly": bool(self.persistence_error),
                 "chatBusy": bool(self.chat_runners),
+                "queue": {"admitted": len(admitted), "owners": admitted[:20],
+                          "chatRunning": len(self.chat_runners)},
                 "limits": {"maxTasks": MAX_TASKS, "maxQueue": MAX_QUEUE,
                            "maxInflight": MAX_INFLIGHT, "maxRounds": MAX_ROUNDS}}
 
@@ -3519,32 +3525,43 @@ class AgentManager:
         _, selected = self._model("")
         message_id = uuid.uuid4().hex[:12]
         self._reserve(message_id)
-        message = {"id": message_id, "role": "assistant", "content": None,
-                   "status": "queued", "ts": now_ms(), "model": selected["id"],
-                   "kind": "proactive", "steps": [],
-                   "progress": {"phase": "queued", "round": 0, "maxRounds": MAX_ROUNDS}}
-        self.chat = (self.chat + [message])[-40:]
-        await self._emit()
-        runner = asyncio.create_task(
-            self._run_event_chat(message_id, prompt, selected["id"]))
-        self.chat_runners.add(runner)
-        runner.add_done_callback(self.chat_runners.discard)
-        return message_id
+        try:
+            message = {"id": message_id, "role": "assistant", "content": None,
+                       "status": "queued", "ts": now_ms(), "model": selected["id"],
+                       "kind": "proactive", "steps": [],
+                       "progress": {"phase": "queued", "round": 0, "maxRounds": MAX_ROUNDS}}
+            self.chat = (self.chat + [message])[-40:]
+            await self._emit()
+            runner = asyncio.create_task(
+                self._run_event_chat(message_id, prompt, selected["id"]))
+            self.chat_runners.add(runner)
+            runner.add_done_callback(self.chat_runners.discard)
+            return message_id
+        except Exception:
+            # 名额已占但任务没起来：必须立刻归还，否则永久泄漏
+            self._release(message_id)
+            raise
 
     async def _run_event_chat(self, message_id: str, prompt: str, model: str) -> None:
-        """主动发言的一轮：跑完发现是静默标记/空内容就把这条消息删掉。"""
+        """主动发言的一轮：跑完发现是静默标记/空内容就把这条消息删掉。
+
+        **必须在 finally 里 _release**：这里和普通对话一样占了一个队列名额
+        （_spawn_event_chat 里 _reserve）。曾经漏掉释放——每主动说一次就
+        永久占一个名额，18 次之后整个 Agent 报"队列已满，请稍后重试"，
+        用户发什么都发不出去。线上真实事故。
+        """
         message = next((m for m in self.chat if m["id"] == message_id), None)
         if message is None:
+            self._release(message_id)
             return
+        acquired = False
         try:
             await self._chat_slots.acquire()
-            try:
-                message.update(status="running", startedAt=now_ms())
-                await self._emit()
-                result = await asyncio.wait_for(
-                    self._agent_loop(message, prompt, model, None, None), TASK_TIMEOUT)
-            finally:
-                self._chat_slots.release()
+            acquired = True
+            message.update(status="running", startedAt=now_ms())
+            await self._emit()
+            result = await asyncio.wait_for(
+                self._agent_loop(message, prompt, model, None, None), TASK_TIMEOUT)
             reply = str(result.get("reply") or "")
             # 模型判断"没什么可说" → 把这条占位消息整条删掉，用户什么都看不到
             if _is_silent(reply) or (not reply.strip() and not message.get("pendingSticker")):
@@ -3575,13 +3592,22 @@ class AgentManager:
                 self._save()
             except PersistenceError:
                 pass
-            await self._emit()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             _LOG.warning("event chat failed: %s", str(exc)[:200])
             self.chat = [m for m in self.chat if m["id"] != message_id]
-            await self._emit()
+        finally:
+            message.pop("pendingSticker", None)
+            # 只有真正拿到槽位才归还，避免 release 次数多于 acquire
+            if acquired:
+                self._chat_slots.release()
+            # 队列名额必须还——漏这一步会把 Agent 永久锁死
+            self._release(message_id)
+            try:
+                await self._emit()
+            except Exception:
+                pass
 
     def _push_watch_notification(self, task, status="succeeded") -> bool:
         """后台任务跑完后把结果主动送进聊天（像工作机器人一样汇报）。

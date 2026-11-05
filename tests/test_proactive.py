@@ -253,3 +253,82 @@ def test_prob_one_is_never_discounted():
     for i in range(20):
         ev = ProactiveEvent(kind="pattern", summary=f"x{i}", symbol=f"s{i}")
         assert gate.should_speak(ev, now=night) is True, f"第 {i} 次被静默了"
+
+
+# ---------- 队列名额泄漏（线上事故） ----------
+
+def test_proactive_releases_queue_slot(tmp_path, monkeypatch):
+    """每轮主动发言都必须归还队列名额。
+
+    线上真实事故：_spawn_event_chat 里 _reserve 了 message_id，
+    但 _run_event_chat 从来没 _release——每主动说一次就永久占一个名额，
+    累计 MAX_INFLIGHT+MAX_QUEUE=18 次之后整个 Agent 报
+    "Agent 队列已满，请稍后重试"，用户发什么都发不出去。
+    """
+    import asyncio
+    from tests.test_agent import make_manager, wait_for
+
+    def provider(*a, **k):
+        return {"ok": True, "reply": "说了", "usage": {}, "model": "test-model"}
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch, provider=provider)
+        manager.proactive_gate.policy["position"] = {"cooldown": 0, "prob": 1.0,
+                                                     "dedupe": 0}
+        for i in range(3):
+            await manager.proactive(ProactiveEvent(
+                kind="position", summary=f"开仓{i}", symbol="btcusdt"))
+            assert await wait_for(lambda: not manager.chat_runners)
+            assert not manager._admitted, f"第 {i} 轮后名额没还: {manager._admitted}"
+        await manager.stop()
+    asyncio.run(scenario())
+
+
+def test_silent_turn_also_releases_slot(tmp_path, monkeypatch):
+    """静默那一轮最容易漏：消息被删掉了，但名额仍在 _admitted 里。"""
+    import asyncio
+    from tests.test_agent import make_manager, wait_for
+
+    def provider(*a, **k):
+        return {"ok": True, "reply": "[[静默]]", "usage": {}, "model": "test-model"}
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch, provider=provider)
+        manager.proactive_gate.policy["pattern"] = {"cooldown": 0, "prob": 1.0,
+                                                     "dedupe": 0}
+        for i in range(3):
+            await manager.proactive(ProactiveEvent(
+                kind="pattern", summary=f"命中{i}", symbol="btcusdt"))
+            assert await wait_for(lambda: not manager.chat_runners)
+            assert not manager._admitted, f"静默第 {i} 轮漏了: {manager._admitted}"
+        await manager.stop()
+    asyncio.run(scenario())
+
+
+def test_failing_turn_also_releases_slot(tmp_path, monkeypatch):
+    """模型报错那一轮也要归还名额。"""
+    import asyncio
+    from tests.test_agent import make_manager, wait_for
+
+    def provider(*a, **k):
+        return {"ok": False, "error": "boom"}
+
+    async def scenario():
+        manager, _ = make_manager(tmp_path, monkeypatch, provider=provider)
+        manager.proactive_gate.policy["position"] = {"cooldown": 0, "prob": 1.0,
+                                                      "dedupe": 0}
+        await manager.proactive(ProactiveEvent(
+            kind="position", summary="开仓", symbol="btcusdt"))
+        assert await wait_for(lambda: not manager.chat_runners)
+        assert not manager._admitted, f"失败轮漏了: {manager._admitted}"
+        await manager.stop()
+    asyncio.run(scenario())
+
+
+def test_queue_usage_is_observable():
+    """队列占用要能在 state 里看到，否则泄漏只能靠"队列已满"侧面发现。"""
+    from ai.agent import AgentManager
+    import inspect
+    src = inspect.getsource(AgentManager.state)
+    assert '"queue"' in src
+    assert "admitted" in src
