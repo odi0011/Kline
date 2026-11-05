@@ -1052,7 +1052,8 @@ def test_auto_sticker_uses_library(tmp_path):
     cache.remember_query("无语", "sad1")
     manager.chat = []
     picked = manager._auto_sticker("麻了")
-    assert picked and picked["id"] == "sad1", picked
+    # 内置图优先（手挑的二次元图，风格比库里的 GIPHY 图更贴）
+    assert picked == {"builtin": "无语"}, picked
 
 
 def test_auto_sticker_respects_cooldown(tmp_path):
@@ -1083,14 +1084,19 @@ def test_auto_sticker_after_cooldown_expires(tmp_path):
     assert manager._auto_sticker("麻了") is not None
 
 
-def test_auto_sticker_needs_library_match(tmp_path):
-    """库里没有匹配的情绪 → 不发（不硬塞内置图，风格差太远）。"""
+def test_auto_sticker_falls_back_to_builtin(tmp_path):
+    """库里没有匹配的情绪 → 用内置图（现在内置图是首选，风格也最贴）。
+
+    这条测试的前提变了：以前内置只有 3 张自绘图，和 GIPHY 贴纸风格差太远，
+    所以"库里没匹配就不发"。现在内置有 13 张手挑的二次元梗图，
+    风格反而是最对的，应该优先用它。
+    """
     manager, cache = _manager_with_stickers(tmp_path)
     cache.save("other", b"GIF89a" + b"o" * 16, 100, 100,
                url_hint="https://media.giphy.com/a.gif", content_type="image/gif")
     cache.remember_query("popcorn", "other")
     manager.chat = []
-    assert manager._auto_sticker("麻了") is None
+    assert manager._auto_sticker("麻了") == {"builtin": "无语"}
 
 
 def test_emotion_reply_gets_sticker_end_to_end(tmp_path, monkeypatch):
