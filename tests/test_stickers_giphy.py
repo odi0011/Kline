@@ -1025,7 +1025,7 @@ def test_attach_does_not_duplicate_when_marker_kept():
 def test_emotion_detection_triggers_sticker():
     """情绪词/纯标点要能被识别成"该配图"。"""
     from ai.agent import _auto_sticker_query
-    for text in ("？", "额", "笑死", "哈哈哈哈", "麻了", "又亏了草", "卧槽", "牛", "起飞"):
+    for text in ("？", "额", "笑死", "哈哈哈哈", "麻了", "又亏了草", "卧槽", "牛啊", "起飞"):
         assert _auto_sticker_query(text), f"{text!r} 应该触发表情包"
 
 
@@ -1417,3 +1417,62 @@ def test_builtin_catalog_filters_by_query():
     # 不带 query 时全部都在
     from ai.agent_tools import BUILTIN_STICKERS
     assert len(_builtin_sticker_catalog()) == len(BUILTIN_STICKERS)
+
+
+# ---------- 表情包触发规则：情绪优先于交易词 ----------
+
+def test_outburst_beats_trading_words():
+    """用户在骂人的时候提到"平掉/止损/强平"，那是情绪，不是在问价位。
+
+    线上实测：用户连发
+      「挂上啊，止损打到强平线旁边，就是空他，我不信了」
+      「平掉了你重新开啊，我操你妈了」
+    两句都被 _SERIOUS_TRADING（含"止损/平掉"）拦成"认真问行情"→ 一张图都不发。
+    对方正在气头上，最该配图的时候反而沉默。
+    """
+    from ai.agent import _auto_sticker_query
+    assert _auto_sticker_query("平掉了你重新开啊，我操你妈了") == "生气"
+    assert _auto_sticker_query("挂上啊，止损打到强平线旁边，就是空他，我不信了") == "生气"
+    assert _auto_sticker_query("妈的又亏了")  # 任意非空
+
+
+def test_trading_questions_still_get_no_sticker():
+    """正常问行情不能被情绪词误伤——这里曾经有个恒真的正则。"""
+    from ai.agent import _auto_sticker_query
+    for text in ("止损挂上了没", "BTC现在能做吗", "帮我看看BTC的4小时线怎么走",
+                 "这个币止损放哪合适", "牛市怎么走", "分析一下ETH",
+                 "BTC 4小时线怎么看", "好的"):
+        assert _auto_sticker_query(text) == "", f"{text} 不该发图"
+
+
+def test_social_cue_regex_has_no_empty_branch():
+    """多行 `|` 拼接会生成 `||` 空分支，正则就恒真。
+
+    原代码：
+        r"...|"
+        r"|..."
+    拼起来是 "…||…" —— 空分支匹配一切，于是 _SOCIAL_CUE.search() 永远 True，
+    连"BTC现在能做吗"都被判成要发表情包。
+    """
+    from ai.agent import _SOCIAL_CUE
+    assert not _SOCIAL_CUE.search("zzz完全不相关的句子xyz")
+    assert _SOCIAL_CUE.search("笑死")
+    assert _SOCIAL_CUE.search("？")
+
+
+def test_prompt_teaches_comfort_before_facts():
+    """用户上火时要先接情绪，不能念日志。
+
+    线上实测（用户截图）：他骂"平掉了你重新开啊，我操你妈了"，
+    Agent 回了三段技术说明：
+      「那个仓上一轮已经按 2420.34 平掉了，零盈亏。」
+      「开不了。上一单的成交记录里写着原因：**保护单缺失且补挂失败**…」
+      「再开一次还是同一个精度报错…」
+    一句都没接住情绪，还编了个已经修好的旧 bug。
+    """
+    from ai.agent import SYSTEM_PROMPT
+    for phrase in ("用户上火的时候，先接情绪，再讲事实",
+                   "绝不能在别人骂你的时候",
+                   "先接一句，短的、带态度的",
+                   "那个仓上一轮已经按"):
+        assert phrase in SYSTEM_PROMPT, f"缺少: {phrase}"
