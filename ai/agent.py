@@ -202,12 +202,15 @@ def _looks_like_data_reply(text: str) -> bool:
         if han / max(1, len(line)) >= 0.15:
             return False        # 这行有足够多汉字 → 是人话
     return True
-# 用时间而不是"条数"：并发回复时条数不可靠（上一条还在跑就开始了下一条）。
+# 节奏控制：**不连着两条都贴**，而不是"几分钟内只许一张"。
 #
-# 别设太长：8 分钟意味着聊十轮才可能出一张图，屏幕上看就是"它从来不发表情"。
-# 用户的要求是"正常说完话带个表情才是人类的习惯"，那冷却只需要挡住
-# **连续几条**连贴，不需要挡掉整段对话。3 分钟大约等于"隔一两轮来一张"。
-STICKER_COOLDOWN_MS = 3 * 60 * 1000      # 3 分钟内不再自动补图
+# 时间冷却挡不住真正的需求：用户连着说三句，按时间算就只出一张图，
+# 屏幕上还是"它不爱发表情"。人聊天的真实节奏是——这句配了图，下句通常
+# 就不配；下一轮想配再配。所以用"上一条回复有没有贴过"来判，
+# 外加一个很短的硬间隔，防止一次连发 5 条刷屏。
+STICKER_MIN_GAP_MS = 20 * 1000    # 20 秒内不重复贴（防连发刷屏）
+# 兼容旧名字：外部/测试引用过 STICKER_COOLDOWN_MS
+STICKER_COOLDOWN_MS = STICKER_MIN_GAP_MS
 
 
 def _auto_sticker_query(prompt: str) -> str:
@@ -1359,6 +1362,8 @@ class AgentManager:
         # 并发 2 轮时，前一条回复还在 running、content 还是空字符串，
         # 下一条就已经进入组装阶段了，检查 chat 永远看不到上一张图。
         self._recent_sticker_ts: list[int] = []
+        # 上一条回复有没有贴过图：贴了这条就跳过，形成"一张、不配"的节奏
+        self._sticker_last_turn = False
         # 从历史调用学到的"字符 → token"换算比。流式过程中拿不到 usage，
         # 状态栏需要用它估算输入/输出量。按真实 usage 滚动更新，
         # 比写死一个常数更准（不同服务商、中英文混排差异很大）。
@@ -2987,14 +2992,18 @@ class AgentManager:
         cache = self.sticker_cache
         if cache is None:
             return None
-        # 冷却：最近几条已经贴过就不再贴，避免连续刷图。
-        # 用独立的时间戳列表而不是翻 self.chat —— 并发回复时上一条
-        # 还在 running、content 为空，翻 chat 永远看不到上一张图，
-        # 冷却等于没写（线上实测连发三条都贴了）。
+        # 节奏：上一条回复刚贴过就不再贴（人不会每句都甩图），
+        # 并且 20 秒内不重复（防一次连发好几条时刷屏）。
         now_ms_value = now_ms()
         self._recent_sticker_ts = [t for t in self._recent_sticker_ts
-                                   if now_ms_value - t < STICKER_COOLDOWN_MS]
+                                   if now_ms_value - t < STICKER_MIN_GAP_MS]
         if self._recent_sticker_ts:
+            return None
+        if self._sticker_last_turn:
+            # 上一条配了图 → 这条跳过，并把标记清掉，让下一条能正常配。
+            # 这样连续聊天时是"一张、不配、一张、不配"的节奏，
+            # 而不是"三分钟才敢出一张"。
+            self._sticker_last_turn = False
             return None
         # 必须有真的相关的图。pick_for 在完全不匹配时会退一张最新的
         # （给"配额用尽"那条路径兜底），但自动发表情不能这样——
@@ -3752,6 +3761,8 @@ class AgentManager:
                 attached = any("[sticker:" in piece for piece in pieces)
                 if attached:
                     self._recent_sticker_ts.append(now_ms())
+                    # 让下一条回复主动让位，形成"一张、不配、一张"的节奏
+                    self._sticker_last_turn = True
                 # 真发出去了才记一次使用：模型选了又没用上的不算。
                 # 有了这个计数，list_stickers 才能按"最近常用"排序。
                 if (attached and isinstance(sticker, dict) and sticker.get("id")

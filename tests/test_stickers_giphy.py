@@ -1501,3 +1501,35 @@ def test_prompt_teaches_comfort_before_facts():
                    "先接一句，短的、带态度的",
                    "那个仓上一轮已经按"):
         assert phrase in SYSTEM_PROMPT, f"缺少: {phrase}"
+
+
+def test_sticker_alternates_between_turns(tmp_path):
+    """连聊时是"一张、不配、一张"，不是"三分钟才敢出一张"。
+
+    真实场景：用户连说三句，前一句配了图，后一句让位，第三句再配。
+    旧的时间冷却（8 分钟）会把后两句全挡掉——屏幕上就是"它不爱发表情"。
+    """
+    manager, cache = _manager_with_stickers(tmp_path)
+    manager.chat = []
+    a = manager._auto_sticker("行，知道了。", "行，知道了。")
+    assert a, "第一条该配图"
+    manager._recent_sticker_ts.append(0)      # 时间间隔视为已过
+    manager._sticker_last_turn = True
+    b = manager._auto_sticker("空仓了，没我的事。", "空仓了，没我的事。")
+    assert b is None, "上一条刚配过，这条该让位"
+    c = manager._auto_sticker("那就先看着吧。", "那就先看着吧。")
+    assert c, "再下一条应该恢复配图"
+
+
+def test_no_sticker_for_error_or_data_dump(tmp_path):
+    """报错和数据转储绝不能配图。"""
+    manager, _ = _manager_with_stickers(tmp_path)
+    manager.chat = []
+    for prompt, reply in (
+        ("止损挂上了没", "止损没挂上，这个仓现在裸着"),
+        ("read_orders 里几条", "STOP_MARKET 2700，TAKE_PROFIT_MARKET 2403.4"),
+        ("现在挂着哪些条件单", "3 条：2450，2402.3，2624.5"),
+    ):
+        manager._recent_sticker_ts.clear()
+        manager._sticker_last_turn = False
+        assert manager._auto_sticker(prompt, reply) is None, f"{reply!r} 不该配图"
