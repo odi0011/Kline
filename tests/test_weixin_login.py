@@ -55,15 +55,28 @@ def test_latest_link_wins_when_qr_refreshes(tmp_path):
     assert obj._link == new
 
 
-def test_expired_qr_is_not_served(tmp_path):
-    """超过 TTL 的码不再发出去，免得用户扫到废码。"""
+def test_qr_still_served_while_process_alive(tmp_path):
+    """进程活着就一直给这张码。
+
+    线上教训：微信拿到码后可能 100 秒内都不刷新，TTL 设太短会让
+    /weixin/qr.png 返回空图，用户看到的是"没有二维码"。
+    """
     obj, log = _login(tmp_path)
     log.write_text(LINK, encoding="utf-8")
     obj.status()
     assert obj.qr_png()
-    obj._link_at = time.time() - QR_TTL - 5
+    obj._link_at = time.time() - 120      # 两分钟没刷新
+    assert obj.qr_png()[:1] == bytes([0x89])
+
+
+def test_expired_qr_not_served_after_process_died(tmp_path):
+    """进程死了就别再发旧码——那时码肯定废了，等守护换新的。"""
+    obj, log = _login(tmp_path)
+    log.write_text(LINK, encoding="utf-8")
+    obj.status()
+    assert obj.qr_png()
+    obj._alive = lambda: False
     assert obj.qr_png() == b""
-    assert obj.status()["hasQr"] is False
 
 
 def test_process_death_marks_expired(tmp_path):

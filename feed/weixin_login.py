@@ -40,8 +40,10 @@ OK_MARKERS = ("登录成功", "绑定成功", "已连接", "已登录", "login s
 FAIL_MARKERS = ("二维码多次失效", "连接流程已停止", "登录失败", "login failed")
 # 登录进程最长节流：重启之间至少隔这么久，避免微信把我们当异常客户端
 RESTART_GAP = 6.0
-# 二维码最长缓存：超过这个时间没更新就当过期，不把旧图发给用户
-QR_TTL = 100.0
+# 二维码缓存上限：微信侧的码本身能用几分钟，这里给足余量。
+# 不能设太短——线上实测登录进程拿到码后可能 100 秒内都不刷新，
+# TTL 设 100 秒等于把一张还能扫的码藏起来，用户看到的是"没有二维码"。
+QR_TTL = 240.0
 
 
 class WeixinLogin:
@@ -210,8 +212,12 @@ class WeixinLogin:
             self._refresh()
             if not self._png:
                 return b""
+            # 只要登录进程还活着，手上这张就是当前唯一的码——直接给。
+            # 进程已经死了才停发（那时码肯定废了，等守护换新的）。
+            if not self._alive() and self.bound() is False:
+                return b""
             if time.time() - self._link_at > QR_TTL:
-                return b""      # 过期的不发，避免用户扫到废码
+                return b""
             return self._png
 
     def tick(self) -> None:
