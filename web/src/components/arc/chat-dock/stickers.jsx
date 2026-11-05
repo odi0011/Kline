@@ -18,16 +18,18 @@ export const STICKERS = {
   // 嘲讽 / 调侃：老实赚钱很枯燥吧？
   嘲讽: "/stickers/mock.png",
   // ---- 二次元梗图（GIPHY anime 类目里手挑的）----
-  笑死: "/stickers/笑死.gif",
-  问号: "/stickers/问号.gif",
-  困惑: "/stickers/困惑.gif",
-  生气: "/stickers/生气.gif",
-  大哭: "/stickers/大哭.gif",
-  无语: "/stickers/无语.gif",
-  开心: "/stickers/开心.gif",
-  点赞: "/stickers/点赞.gif",
-  得意: "/stickers/得意.gif",
-  惊吓: "/stickers/惊吓.gif",
+  // 文件名用英文：中文文件名在静态服务 + URL 编码这条路上不可靠
+  // （线上实测只有"笑死"能取到 200，其余全 000）。
+  笑死: "/stickers/laugh.gif",
+  问号: "/stickers/what.gif",
+  困惑: "/stickers/confused.gif",
+  生气: "/stickers/angry.gif",
+  大哭: "/stickers/cry.gif",
+  无语: "/stickers/speechless.gif",
+  开心: "/stickers/happy.gif",
+  点赞: "/stickers/thumbsup.gif",
+  得意: "/stickers/smug.gif",
+  惊吓: "/stickers/shocked.gif",
 }
 
 export const STICKER_NAMES = Object.keys(STICKERS)
