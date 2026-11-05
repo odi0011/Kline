@@ -1533,3 +1533,19 @@ def test_no_sticker_for_error_or_data_dump(tmp_path):
         manager._recent_sticker_ts.clear()
         manager._sticker_last_turn = False
         assert manager._auto_sticker(prompt, reply) is None, f"{reply!r} 不该配图"
+
+
+def test_builtin_sticker_works_without_giphy_key(tmp_path, monkeypatch):
+    """没配 GIPHY key（sticker_cache=None）时也必须能发内置图。
+
+    线上部署就是没配 key 的状态，而 _auto_sticker 早先第一行就
+    `if cache is None: return None` —— 整个表情包功能等于关掉。
+    内置那 13 张图是随仓库走的，不依赖任何外部服务。
+    """
+    from tests.test_agent import make_manager
+
+    manager, _ = make_manager(tmp_path, monkeypatch)
+    manager.sticker_cache = None
+    manager.chat = []
+    picked = manager._auto_sticker("行，知道了。", "行，知道了。")
+    assert picked and picked.get("builtin"), picked

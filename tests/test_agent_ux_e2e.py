@@ -287,7 +287,9 @@ def test_send_sticker_invalid_name_rejected(tmp_path, monkeypatch):
         manager, _ = make_manager(tmp_path, monkeypatch, provider)
         message = await chat_once(manager, "来个表情")
         assert message["steps"][0]["status"] == "failed"
-        assert "[sticker:" not in message["content"]
+        # 用户明确要表情 → 模型选错了名字，服务端兜底可以发**另一张**合法图，
+        # 但绝不能把"不存在的表情"这个名字渲染出去。
+        assert "不存在的表情" not in message["content"]
         # 直接调工具也拒绝（不写 pendingSticker）
         target = {}
         with pytest.raises(ValueError):

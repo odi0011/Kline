@@ -2990,8 +2990,10 @@ class AgentManager:
         if not query:
             return None
         cache = self.sticker_cache
-        if cache is None:
-            return None
+        # **cache 为 None 也要继续走**：没配 GIPHY key 时没有任何在线图，
+        # 但内置的 13 张二次元梗图是随仓库走的、必然可用。
+        # 早先这里直接 `if cache is None: return None`，等于把整个表情包
+        # 功能关掉（线上部署就是没配 key 的状态）。
         # 节奏：上一条回复刚贴过就不再贴（人不会每句都甩图），
         # 并且 20 秒内不重复（防一次连发好几条时刷屏）。
         now_ms_value = now_ms()
@@ -3016,6 +3018,9 @@ class AgentManager:
                    if item["name"] in STICKER_NAMES]
         if builtin:
             return {"builtin": builtin[0]["name"]}
+        # 内置图没匹配上：只有配了在线库才继续找 GIPHY 图
+        if cache is None:
+            return None
         try:
             rows = cache.catalog(query=query, limit=8)
         except Exception:

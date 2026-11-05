@@ -153,7 +153,8 @@ def test_chat_turn_uses_short_reply(tmp_path, monkeypatch):
         assert await wait_for(lambda: not manager.chat_runners)
         answers = [m for m in manager.chat if m.get("role") == "assistant" and m.get("content")]
         assert len(answers) == 1, f"短答不该被切成多条: {answers!r}"
-        assert answers[0]["content"] == "空。"
+        # 允许尾随一行的表情包标记（表情包是默认行为，不该算进"话多"）
+        assert answers[0]["content"].split("[sticker:")[0].strip() == "空。"
         await manager.stop()
     asyncio.run(scenario())
 
@@ -199,8 +200,9 @@ def test_model_split_becomes_multiple_messages(tmp_path, monkeypatch):
         answers = [m for m in manager.chat
                    if m.get("role") == "assistant" and m.get("content")]
         assert len(answers) == 2, f"应落成两条消息: {answers!r}"
-        assert answers[0]["content"] == "能，空。"
-        assert answers[1]["content"] == "79500 止损，20 倍。"
+        # 表情包标记挂在最后一条末尾，正文照旧
+        clean = [a["content"].split("[sticker:")[0].strip() for a in answers]
+        assert clean == ["能，空。", "79500 止损，20 倍。"], clean
         # 第二条必须能和第一条归到同一轮（前端按 id 前缀分组）
         base = answers[0]["id"]
         assert answers[1]["id"].startswith(base + "-")
