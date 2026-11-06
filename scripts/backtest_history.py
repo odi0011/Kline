@@ -23,6 +23,8 @@ from core.candle import Candle  # noqa: E402
 from decision.backtest import monte_carlo, run_backtest  # noqa: E402
 from decision.config import DecisionConfig  # noqa: E402
 from storage import Storage  # noqa: E402
+import patterns.builtin  # noqa: F401  导入即注册内置形态
+import patterns.structure  # noqa: F401  导入即注册结构形态
 from patterns.base import all_patterns  # noqa: E402
 
 
