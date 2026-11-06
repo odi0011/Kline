@@ -216,19 +216,23 @@ export default function StrategyPanel({ analysis, symbols, chartColors }) {
     return m
   }, [plans])
 
-  /** 与后端 adaptive_sl_tp 同一口径 */
+  /** 与后端 adaptive_sl_tp 同一口径（含 rr 下界联动，缺省值也跟新机制对齐） */
   const band = (st) => {
     const price = Number(st?.price) || 0
     const atr = Number(st?.atr) || 0
     const slMin = (params?.slMinPct ?? 0.4) / 100
     const slMax = (params?.slMaxPct ?? 2.0) / 100
-    const tpMin = (params?.tpMinPct ?? 0.18) / 100
-    const tpMax = (params?.tpMaxPct ?? 3.0) / 100
+    const tpMin = (params?.tpMinPct ?? 1.2) / 100
+    const tpMax = (params?.tpMaxPct ?? 6.0) / 100
+    const minRr = params?.minRr ?? 3.0
     let sl = slMin, tp = tpMin
     if (price > 0 && atr > 0) {
       sl = Math.min(slMax, Math.max(slMin, (atr * (params?.atrSlMult ?? 1.5)) / price))
-      tp = Math.min(tpMax, Math.max(tpMin, (atr * (params?.atrTpMult ?? 2.5)) / price))
+      tp = Math.min(tpMax, Math.max(tpMin, (atr * (params?.atrTpMult ?? 4.5)) / price))
     }
+    // 后端在夹紧之后强制 tp >= sl * minRr，前端必须同样处理，否则
+    // 参数页显示的止盈位和实际下单的对不上。
+    tp = Math.max(tp, sl * minRr)
     return { sl: sl * 100, tp: tp * 100 }
   }
 

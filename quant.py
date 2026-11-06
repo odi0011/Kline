@@ -3618,6 +3618,15 @@ class QuantEngine:
                 # 当前策略参数（前端展示"系统在用哪些规则"）
                 "params": {
                     "calcIntervalSec": 5,
+                    # 2026-11-06 按 scripts/param_sweep.py 回放重定的机制开关。
+                    # Agent 的 read_risk(what="params") 与前端参数页都读这里，
+                    # 别让它们还拿着旧的 0.18% 止盈 / 55 分门槛去解释行为。
+                    "allowLong": self.decision_cfg.allow_long,
+                    "scoreGateEnabled": self.decision_cfg.score_gate_enabled,
+                    "minRr": MIN_RR,
+                    "policyNote": (
+                        "只做空 / 评分硬门槛关闭 / 盈亏比≥3.0；"
+                        "依据 scripts/param_sweep.py 的 7 天与 30 天线上回放"),
                     "minScore": self.decision_cfg.minimum_score,
                     "minScoreGap": self.decision_cfg.minimum_score_gap,
                     "atrSlMult": ATR_SL_MULT, "atrTpMult": ATR_TP_MULT,

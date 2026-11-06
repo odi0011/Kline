@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import inspect
 import sys
 import threading
 from pathlib import Path
@@ -155,3 +156,21 @@ def test_replay_target_only_is_win():
 def test_replay_short_window_returns_none():
     assert replay(_bars((60_000, 100.0, 100.1, 99.9, 100.0)),
                   0, 100.0, "bullish", 0.004, 3.0, 10, 0.1) is None
+
+
+def test_system_prompt_documents_current_mechanism():
+    """Agent 不能拿历史聊天里的旧参数解释当前行为。"""
+    from ai.agent import SYSTEM_PROMPT
+    for token in ("allowLong=false", "scoreGateEnabled=false", "minRr=3.0",
+                  "只做空", "不再市价平仓", "已过期", "read_risk"):
+        assert token in SYSTEM_PROMPT, token
+    # 旧的「补挂失败就平仓」示例必须已经改掉
+    assert "系统自己把它平掉了" not in SYSTEM_PROMPT
+
+
+def test_snapshot_params_expose_new_switches():
+    """read_risk(what=params) 的数据源必须带着新机制字段。"""
+    src = inspect.getsource(QuantEngine.snapshot)
+    for token in ('"allowLong"', '"scoreGateEnabled"', '"minRr"',
+                  '"policyNote"'):
+        assert token in src, token
