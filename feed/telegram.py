@@ -49,6 +49,10 @@ class TelegramBot:
         self.last_error = ""
         self.bot_info: dict = {}
         self.media_sent = 0        # 成功发出去的表情包数量（状态页可查）
+        # 主动推送要发到哪：记住最近来消息的会话。
+        # 白名单为空时 Telegram 不做限制，但"推给谁"仍需要具体 chat_id——
+        # 只能从来信里学，没有别的来源。
+        self.last_chats: list[str] = []
 
     # ---------- HTTP ----------
 
@@ -114,6 +118,30 @@ class TelegramBot:
         return {"ok": True, "sent": len(out)}
 
     # ---------- 出站表情包 ----------
+
+    def remember_chat(self, chat_id) -> None:
+        """记下最近来过信的会话（主动推送用）。最多留 5 个，最近的排前。"""
+        key = str(chat_id)
+        if not key:
+            return
+        rest = [c for c in self.last_chats if c != key]
+        self.last_chats = [key] + rest[:4]
+
+    def push(self, text: str) -> dict:
+        """主动推进会话 —— 不是回复，是"我找你说句话"。
+
+        发给谁：配置了白名单就发给白名单里的每个会话；否则发给
+        **最近来消息的那几个**。Telegram 不允许 bot 主动给陌生人发消息，
+        所以从来没交互过的会话这里也发不出去，这是平台限制。
+        """
+        targets = sorted(self.allowed) or list(self.last_chats)
+        if not targets:
+            return {"ok": False, "error": "还没有任何会话来过消息，无法主动推送"}
+        results = []
+        for chat_id in targets[:5]:
+            res = self.send_reply(chat_id, text)
+            results.append({"chat": chat_id, "ok": bool(res.get("ok"))})
+        return {"ok": any(r["ok"] for r in results), "results": results}
 
     def _upload(self, method: str, field: str, chat_id, path: str,
                 mime: str) -> dict:
@@ -311,6 +339,9 @@ class TelegramBot:
         chat_id = chat.get("id")
         if chat_id is None:
             return
+        # 记住这个会话：主动推送（形态命中/开平仓）只能发到"来过信的会话"，
+        # Telegram bot 无法主动给陌生人发消息。
+        self.remember_chat(chat_id)
         # 文字、图片、文件都接：只读 text 会让用户发的图直接被丢掉，
         # 界面上表现就是"带媒体的发不出去"。
         text, attachments = await asyncio.to_thread(self.read_incoming, message)

@@ -1473,6 +1473,53 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                 print(f"[telegram] 监督任务异常: {e}")
             await asyncio.sleep(5)
 
+    # ---- 主动发言推到外部渠道 ----
+    #
+    # 事件驱动的那条消息（形态命中/开平仓/数据异常）原本只写进 self.chat，
+    # 也就是**只有网页端能看到**。用户手机上（Telegram/微信）永远收不到——
+    # 线上原话："自动发的消息，为啥没推到微信和飞机"。
+    #
+    # 这里注册两个出站：Telegram 直接推，微信走 openclaw message send
+    # （官方入口，自带账号上下文和重试）。表情包作为**图片**发，
+    # 不是 Markdown 链接。
+    _oc_push_box: dict = {"push": None}
+    try:
+        from feed.openclaw_push import OpenClawPush
+        _oc_push_box["push"] = OpenClawPush(
+            openclaw_bin=os.environ.get(
+                "OPENCLAW_BIN", "/opt/openclaw/node_modules/.bin/openclaw"),
+            openclaw_home=os.environ.get("OPENCLAW_HOME", "/opt/openclaw-home"),
+            node_bin_dir=os.environ.get("OPENCLAW_NODE_BIN", "/opt/node26/bin"))
+    except Exception as e:
+        print(f"[openclaw] 主动推送不可用: {e}")
+
+    def _push_telegram(text: str) -> dict:
+        bot = tg_box.get("bot")
+        if bot is None:
+            return {"ok": False, "error": "Telegram 未运行"}
+        return bot.push(text)
+
+    def _push_weixin(text: str) -> dict:
+        push = _oc_push_box.get("push")
+        if push is None:
+            return {"ok": False, "error": "OpenClaw 推送未接入"}
+        # 把 [sticker:x] 拆出来当媒体发：正文里留着只会显示成代码
+        try:
+            from ai.stickers_media import split_stickers
+            cfg_dir = os.path.dirname(os.path.abspath(config_path))
+            body, refs = split_stickers(
+                text, os.path.join("web", "public", "stickers"),
+                os.path.join(cfg_dir, "agent-attachments"))
+        except Exception:
+            body, refs = text, []
+        if refs:
+            return push.send_sticker(body, refs[0],
+                                     public_dir=os.path.join("web", "public", "stickers"),
+                                     dist_dir=os.path.join("web", "dist", "stickers"))
+        return push.send(body)
+
+    agent.outbound_fns = [_push_telegram, _push_weixin]
+
     limit = int(bcfg.get("backfill_bars", 300))
     for (sym, iv), agg in {**aggs, **watch_aggs}.items():
         try:

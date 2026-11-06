@@ -1326,6 +1326,10 @@ class AgentManager:
         #   equity(days, hours) -> {"account","daily","series"}
         #   trades(days, symbol, limit) -> {"trades","stats","allTime","total","source"}
         self.data_fns: dict = {}
+        # 主动发言的出站推送（main 注入）：(text) -> {"ok": bool}。
+        # 只写进 self.chat 的话，消息只在网页端可见——Telegram/微信
+        # 那边永远收不到（线上原话："自动发的消息，为啥没推到微信和飞机"）。
+        self.outbound_fns: list = []
         # 模型没给 count 时的默认条数，main 从 config.search.count 注入；仍按 1..10 校验
         self.search_default_count = 5
         self.state_path = state_path
@@ -4003,6 +4007,10 @@ class AgentManager:
                 self._save()
             except PersistenceError:
                 pass
+            # 推到外部渠道（Telegram / 微信）。
+            # 只落 self.chat 的话，这条消息只有网页端能看到——
+            # 用户在手机上是收不到的。
+            await self._push_outbound(pieces)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -4019,6 +4027,26 @@ class AgentManager:
                 await self._emit()
             except Exception:
                 pass
+
+    async def _push_outbound(self, pieces: list[str]) -> None:
+        """把一条主动消息推到所有外部渠道（Telegram / 微信）。
+
+        失败只记日志，绝不影响主流程：推送不出去是渠道问题，
+        不该让"这条消息在网页端也消失了"。
+
+        多个气泡按顺序发，保持"说完一句再补一句"的节奏——合并成一整段
+        会丢掉模型刻意分条的意图。
+        """
+        if not self.outbound_fns:
+            return
+        text = "\n\n".join(p for p in (pieces or []) if str(p or "").strip())
+        if not text.strip():
+            return
+        for fn in list(self.outbound_fns):
+            try:
+                await asyncio.to_thread(fn, text)
+            except Exception as exc:
+                _LOG.warning("outbound push failed: %s", str(exc)[:160])
 
     def _push_watch_notification(self, task, status="succeeded") -> bool:
         """后台任务跑完后把结果主动送进聊天（像工作机器人一样汇报）。
