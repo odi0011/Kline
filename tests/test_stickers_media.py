@@ -171,3 +171,37 @@ def test_http_error_body_is_surfaced(monkeypatch):
     res = bot._request("getMe")
     assert res["ok"] is False
     assert "chat not found" in res["error"]
+
+
+# ---------- 空白图 / 加载圈不能用 ----------
+#
+# 线上真实事故：GIPHY 用「无语」搜出来的第一张是**加载圈动画**
+# （480×480、10 帧、99.6% 全透明），在白底上就是一片空白。
+# 用户看到"白框+小圆圈"，以为是图没加载出来。
+
+def test_transparent_spinner_is_rejected():
+    """99.6% 透明的加载圈：字节合法，但不能当表情包。"""
+    from ai.sticker_cache import _usable_image
+    import pathlib
+    path = pathlib.Path(__file__).resolve().parents[1] / "spinner.gif"
+    if not path.exists():
+        pytest.skip("样例图不在仓库里")
+    assert _usable_image(path.read_bytes()) is False
+
+
+def test_all_builtin_stickers_are_usable():
+    """内置图必须全部可用——它们是兜底的最后一道。"""
+    from ai.sticker_cache import _usable_image
+    base = pathlib.Path(__file__).resolve().parents[1] / "web" / "public" / "stickers"
+    for f in sorted(base.glob("*")):
+        if f.suffix.lower() not in (".gif", ".png", ".jpg", ".webp"):
+            continue
+        assert _usable_image(f.read_bytes()), f"{f.name} 被判成空图"
+
+
+def test_non_image_bytes_are_left_to_sniff():
+    """非图片字节不在这里判死：那是 _sniff_image 的职责，两层分工明确。"""
+    from ai.sticker_cache import _sniff_image, _usable_image
+    assert _usable_image(b"<html>404</html>") is True    # 放行给下层
+    assert _sniff_image(b"<html>404</html>") == ""       # 下层拦掉
+    assert _usable_image(b"") is False                   # 空字节直接否

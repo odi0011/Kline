@@ -74,6 +74,48 @@ def _safe_id(sticker_id: str) -> str:
     return cleaned
 
 
+def _usable_image(data: bytes) -> bool:
+    """这张图能不能当表情包用——内容上"有东西"才算。
+
+    **线上真实事故**：GIPHY 用「无语」搜出来的第一张是一个**加载圈动画**
+    （480×480、10 帧、99.6% 像素全透明，实际内容只有中间一个小圆圈）。
+    它在白底上就是一片空白，用户看到的是"图片加载不出来"。
+    从字节层面它完全合法 GIF，所以 `_sniff_image` 拦不住。
+
+    判据：把首帧铺到白底上，看有多少像素**既不是透明也不是纯白**。
+    低于 2% 就认为是一张"空图"——正常表情包不会这样。
+    没有 Pillow 时一律放行（宁可少拦，也不能因为缺依赖让发表情挂掉）。
+    """
+    if not data:
+        return False
+    try:
+        import io
+
+        from PIL import Image
+    except ImportError:
+        return True
+    try:
+        im = Image.open(io.BytesIO(data))
+        im.seek(0)
+        rgba = im.convert("RGBA")
+        # 大图缩到小尺寸再算，几十万像素全遍历太慢
+        rgba.thumbnail((96, 96))
+        pixels = list(rgba.getdata())
+        if not pixels:
+            return False
+        solid = 0
+        for r, g, b, a in pixels:
+            if a < 16:
+                continue                      # 透明：白底上看不见
+            if r > 245 and g > 245 and b > 245:
+                continue                      # 近白：白底上看不见
+            solid += 1
+        return solid / len(pixels) >= 0.02
+    except Exception:
+        # 解析失败不代表图坏了（可能是 Pillow 不认识的变体），放行
+        return True
+
+
 class StickerCache:
     """线程安全的贴纸落盘缓存（搜索/下载在 to_thread 里跑，必须加锁）。
 
@@ -211,7 +253,23 @@ class StickerCache:
                 head = handle.read(16)
         except OSError:
             return False
-        return bool(_sniff_image(head))
+        if not _sniff_image(head):
+            return False
+        # 内容层校验：线上有过"99.6% 透明的加载圈"被当表情缓存进库，
+        # 白底上就是一片空白，用户看到的是"图加载不出来"。
+        # 只校验一次（记录上打标记），别每次挑图都重新解码。
+        if not record.get("usableChecked"):
+            try:
+                with open(path, "rb") as handle:
+                    raw = handle.read(2_000_000)
+                ok = _usable_image(raw)
+            except OSError:
+                return False
+            if not ok:
+                self._drop_record(str(record.get("id") or ""))
+                return False
+            record["usableChecked"] = True
+        return True
 
     def _drop_record(self, sid: str) -> None:
         """删掉一条不可用的记录及其索引引用（调用方已持锁）。"""
@@ -483,6 +541,9 @@ class StickerCache:
         # 字节层面确认真的是图；对不上的话按真实类型纠正扩展名
         real = _sniff_image(data)
         if not real:
+            return None
+        # 内容层面确认"有东西"：GIPHY 的加载圈/空白图在白底上等于没图
+        if not _usable_image(data):
             return None
         ext = real
         filename = f"{sid}{ext}"
