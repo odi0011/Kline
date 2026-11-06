@@ -106,6 +106,9 @@ class DecisionConfig:
     maker_first: bool = False
     exchange_protection: bool = True
 
+    # 影子模式：False = 只记录信号/模拟仓，不下真实单。回放显示除"只做空"外
+    # 所有组合都是负期望，实盘也出现连续几分钟被扫损；需要时可以一键停手。
+    auto_trade_enabled: bool = True
     # Signal scoring / directional edge
     # scripts/param_sweep.py 线上回放（7 天 2809 笔 + 30 天 4094 笔）一致显示：
     # 只做空 +0.071 / +0.389 %每笔，做多 -0.185 / -1.231 %每笔。
@@ -177,6 +180,10 @@ class DecisionConfig:
     watch_min_h1_rules: int = 2
     watch_sl_atr_mult: float = 1.5
     watch_tp_atr_mult: float = 4.5
+    # watch_plan 的止损距离必须和 adaptive_sl_tp 一样夹紧。之前没有这个下限，
+    # 低波动时 ATR×1.5 只有 0.1~0.2%，几分钟就被噪声扫掉（线上 ADA/DOGE 实盘事故）。
+    watch_sl_min_pct: float = 0.004
+    watch_sl_max_pct: float = 0.020
     hmm_shadow: bool = True
     hmm_use_in_score: bool = False
     hmm_min_confidence: float = 0.60
@@ -217,6 +224,7 @@ class DecisionConfig:
                 events.append(MacroEventWindow(start, end, str(item.get("label") or "")))
         return cls(
             enabled=bool(d.get("enabled", True)),
+            auto_trade_enabled=bool(d.get("auto_trade_enabled", True)),
             allow_long=bool(d.get("allow_long", False)),
             score_gate_enabled=bool(d.get("score_gate_enabled", False)),
             risk_enabled=bool(d.get("risk_enabled", True)),
@@ -276,6 +284,8 @@ class DecisionConfig:
             watch_min_h1_rules=max(1, _integer(d.get("watch_min_h1_rules"), 2)),
             watch_sl_atr_mult=max(0.1, _number(d.get("watch_sl_atr_mult"), 1.5)),
             watch_tp_atr_mult=max(0.1, _number(d.get("watch_tp_atr_mult"), 4.5)),
+            watch_sl_min_pct=_fraction(d.get("watch_sl_min_pct"), 0.004),
+            watch_sl_max_pct=_fraction(d.get("watch_sl_max_pct"), 0.020),
             hmm_shadow=bool(d.get("hmm_shadow", True)),
             hmm_use_in_score=bool(d.get("hmm_use_in_score", False)),
             hmm_min_confidence=_fraction(d.get("hmm_min_confidence"), 0.60),

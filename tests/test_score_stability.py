@@ -175,13 +175,18 @@ def test_score_adapter_rejects_opposite_direction():
 
 
 def test_score_adapter_applies_thresholds():
-    """复用评估时仍要按当前阈值复核，不能绕过刚刚调高的门槛。"""
+    """门槛打开时复用评估仍要复核；关闭时只记分不 veto。"""
     from decision.config import DecisionConfig
     from quant import _ScoreFromEvaluation
-    cfg = DecisionConfig.from_dict({"minimum_score": 70, "minimum_score_gap": 25})
     ev = {"direction": "bullish", "score": 62.0, "oppositeScore": 40.0, "gap": 22.0,
           "grade": "medium", "vetoes": []}
+    cfg = DecisionConfig.from_dict({"minimum_score": 70, "minimum_score_gap": 25,
+                                    "score_gate_enabled": True})
     score = _ScoreFromEvaluation(ev, "bullish", cfg)
     assert score.allowed is False
     assert any("共鸣分" in v for v in score.vetoes)
     assert any("分离度" in v for v in score.vetoes)
+    # 默认关闭硬门槛：同一份评估只用于展示/分档，不能拦截
+    relaxed = DecisionConfig.from_dict({"minimum_score": 70,
+                                        "minimum_score_gap": 25})
+    assert _ScoreFromEvaluation(ev, "bullish", relaxed).allowed is True

@@ -201,12 +201,15 @@ class _ScoreFromEvaluation:
         # 直接判不通过，让调用方走现场重算，而不是拿反方向的分数开仓。
         if ev.get("direction") and ev["direction"] != direction:
             vetoes.append("信号方向与当前评估方向不一致，需重新评估")
-        min_score = float(getattr(config, "minimum_score", 55.0) or 55.0)
-        min_gap = float(getattr(config, "minimum_score_gap", 15.0) or 15.0)
-        if self.score < min_score:
-            vetoes.append(f"共鸣分 {self.score:.0f} < {min_score:.0f}")
-        if self.gap < min_gap:
-            vetoes.append(f"多空分离度 {self.gap:.1f} < {min_gap:.1f}")
+        # 与 scoring.py / risk.py 共用同一个开关。之前这条"复用页面评估"的
+        # 主路径漏改，导致门槛关了却仍按 55/15 veto，两条评分路径行为不一致。
+        if getattr(config, "score_gate_enabled", False):
+            min_score = float(getattr(config, "minimum_score", 55.0) or 55.0)
+            min_gap = float(getattr(config, "minimum_score_gap", 15.0) or 15.0)
+            if self.score < min_score:
+                vetoes.append(f"共鸣分 {self.score:.0f} < {min_score:.0f}")
+            if self.gap < min_gap:
+                vetoes.append(f"多空分离度 {self.gap:.1f} < {min_gap:.1f}")
         self.vetoes = vetoes
         self.allowed = not vetoes
 
@@ -1703,6 +1706,14 @@ class QuantEngine:
             # +0.071 / +0.389%。默认只做空，可用 quant.decision.allow_long 打开。
             if direction == "bullish" and not self.decision_cfg.allow_long:
                 self._event("skip", "数据回放显示做多无 edge，当前只做空",
+                            account=self._primary_account(), symbol=symbol,
+                            pattern=hit.get("pattern"))
+                return
+            # 影子模式：信号/模拟仓/决策流水照常，只是不下真实单。
+            # 回放显示自动开仓整体负期望，必要时用 quant.decision.auto_trade_enabled
+            # 一键停手，避免继续付手续费和被扫损。
+            if not self.decision_cfg.auto_trade_enabled:
+                self._event("skip", "影子模式：信号已记录，未真实下单",
                             account=self._primary_account(), symbol=symbol,
                             pattern=hit.get("pattern"))
                 return
@@ -3622,8 +3633,11 @@ class QuantEngine:
                     # Agent 的 read_risk(what="params") 与前端参数页都读这里，
                     # 别让它们还拿着旧的 0.18% 止盈 / 55 分门槛去解释行为。
                     "allowLong": self.decision_cfg.allow_long,
+                    "autoTradeEnabled": self.decision_cfg.auto_trade_enabled,
                     "scoreGateEnabled": self.decision_cfg.score_gate_enabled,
                     "minRr": MIN_RR,
+                    "watchSlMinPct": self.decision_cfg.watch_sl_min_pct * 100,
+                    "watchSlMaxPct": self.decision_cfg.watch_sl_max_pct * 100,
                     "policyNote": (
                         "只做空 / 评分硬门槛关闭 / 盈亏比≥3.0；"
                         "依据 scripts/param_sweep.py 的 7 天与 30 天线上回放"),

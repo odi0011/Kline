@@ -29,6 +29,9 @@ def test_defaults_follow_replay_data():
     assert cfg.allow_long is False
     assert cfg.score_gate_enabled is False
     assert cfg.watch_tp_atr_mult == 4.5
+    assert cfg.watch_sl_min_pct == 0.004
+    assert cfg.watch_sl_max_pct == 0.020
+    assert cfg.auto_trade_enabled is True
 
 
 def test_switches_can_be_reenabled_from_config():
@@ -171,6 +174,64 @@ def test_system_prompt_documents_current_mechanism():
 def test_snapshot_params_expose_new_switches():
     """read_risk(what=params) 的数据源必须带着新机制字段。"""
     src = inspect.getsource(QuantEngine.snapshot)
-    for token in ('"allowLong"', '"scoreGateEnabled"', '"minRr"',
-                  '"policyNote"'):
+    for token in ('"allowLong"', '"autoTradeEnabled"', '"scoreGateEnabled"',
+                  '"minRr"', '"watchSlMinPct"', '"policyNote"'):
         assert token in src, token
+
+
+def _mk_bars(n, step, interval):
+    from core.candle import Candle
+    return [Candle(i * 60_000, 100 + i * step, 100 + i * step + 0.05,
+                   100 + i * step - 0.05, 100 + i * step, volume=100,
+                   interval=interval, closed=True) for i in range(n)]
+
+
+def test_watch_plan_clamps_stop_distance():
+    """watch_plan 是 _decide_open 首选分支，低 ATR 时也必须 ≥0.4%。"""
+    from decision.watch import build_watch_plan
+    entry = _mk_bars(80, 0.05, "3m")
+    h1 = _mk_bars(120, 0.35, "1h")
+    h4 = _mk_bars(120, 1.2, "4h")
+    plan = build_watch_plan(
+        "btcusdt", "bullish", entry, h1, h4,
+        equity=10_000, available=5_000,
+        config=DecisionConfig(watch_sl_atr_mult=0.0001))
+    assert plan.allowed, plan.reason
+    sl_pct = abs(plan.entry - plan.sl) / plan.entry
+    tp_pct = abs(plan.tp - plan.entry) / plan.entry
+    assert sl_pct >= 0.004 - 1e-9, sl_pct
+    assert tp_pct >= sl_pct * 3.0 - 1e-9, (tp_pct, sl_pct)
+
+
+def test_reused_evaluation_respects_gate_switch():
+    """复用页面评估的主路径不能绕过 score_gate_enabled。"""
+    from quant import _ScoreFromEvaluation
+    ev = {"score": 40.0, "oppositeScore": 60.0, "gap": 5.0, "grade": "weak",
+          "confidence": 0.4, "breakdown": {}, "reasons": [], "vetoes": [],
+          "direction": "bearish"}
+    off = _ScoreFromEvaluation(ev, "bearish",
+                               DecisionConfig(score_gate_enabled=False))
+    assert off.allowed and off.vetoes == []
+    on = _ScoreFromEvaluation(ev, "bearish",
+                              DecisionConfig(score_gate_enabled=True))
+    assert not on.allowed
+    assert any("共鸣分" in v for v in on.vetoes)
+
+
+def test_shadow_mode_blocks_real_orders():
+    eng = object.__new__(QuantEngine)
+    eng.enabled = True
+    eng._op_lock = threading.Lock()
+    eng.decision_cfg = DecisionConfig(auto_trade_enabled=False)
+    eng.symbol_filter = None
+    eng.feed_is_live_fn = None
+    eng.stats = {"signals": 0}
+    eng._primary_account = lambda: "acct"
+    eng._event = MagicMock()
+    eng._trace_start = MagicMock()
+    eng.price_fn = lambda s: 100.0
+    eng.on_signal({"symbol": "btcusdt", "direction": "bearish",
+                   "pattern": "hammer", "price": 100.0})
+    eng._event.assert_called_once()
+    assert "影子模式" in eng._event.call_args.args[1]
+    eng._trace_start.assert_not_called()

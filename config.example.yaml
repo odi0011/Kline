@@ -158,6 +158,13 @@ quant:
     # 当前 55/15 门槛选出的信号 -0.142 %每笔，比不过滤 -0.071 更差 → 关硬门槛。
     allow_long: false
     score_gate_enabled: false
+    # 一键影子模式：false = 信号 / 模拟仓 / 决策流水照常，但停止真实下单。
+    # 回放显示自动开仓整体仍是负期望，确认策略前可先关掉，别继续付手续费。
+    auto_trade_enabled: true
+    # watch_plan 的止损夹紧区间（小数，0.004 = 0.4%）。这是 _decide_open 的
+    # 首选分支，不夹紧的话低波动时止损只剩 0.1~0.2%，几分钟就被噪声扫掉。
+    watch_sl_min_pct: 0.004
+    watch_sl_max_pct: 0.020
     # 阈值仍保留用于分档与影子对照；要复核旧逻辑把 score_gate_enabled 打开。
     minimum_score: 55
     minimum_score_gap: 15
