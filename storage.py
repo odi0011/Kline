@@ -210,6 +210,13 @@ class Storage:
         # 评分 / 质量门判定算好落库，**永久保留、不参与 prune**。
         # 以前这些只能事后靠历史K线重算，滚动窗口一过就凑不够前置K线，
         # 回放只剩几天样本；有了这张表，任何时刻做分析都不依赖历史窗口。
+        self._ddl("""CREATE TABLE IF NOT EXISTS candle_history(
+            symbol VARCHAR(16), `interval` VARCHAR(8), open_time BIGINT,
+            open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, volume DOUBLE,
+            trades INT, buy_vol DOUBLE, sell_vol DOUBLE,
+            source VARCHAR(10) NOT NULL DEFAULT 'futures',
+            PRIMARY KEY(symbol, `interval`, open_time),
+            INDEX idx_ch_time(open_time)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         self._ddl("""CREATE TABLE IF NOT EXISTS signal_features(
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             ts BIGINT NOT NULL,
@@ -1239,6 +1246,83 @@ class Storage:
         return [{"t": int(r[0]), "o": _safe_float(r[1]), "h": _safe_float(r[2]),
                  "l": _safe_float(r[3]), "c": _safe_float(r[4]),
                  "v": _safe_float(r[5]), "trades": _safe_int(r[6], 0)}
+                for r in rows]
+
+    # ---- 历史K线（后复权数据仓，永久保留） ----
+    #
+    # 和 candle_archive 分开存：那张表是**实时归档**（每根收线写一行，
+    # 从部署那天起才有数据），这张表是**外部导入的历史**（回测用）。
+    # 混在一起会让"数据从哪来、覆盖到哪"彻底说不清。
+
+    def save_candle_history(self, symbol: str, interval: str, rows: list[dict],
+                            source: str = "futures") -> int:
+        """批量写入历史K线（REPLACE，反复导入同一段是幂等的）。
+
+        rows 每项：{t,o,h,l,c,v,trades,buyVol,sellVol}，t 为毫秒开盘时间。
+        source: futures=永续合约 / spot=现货（合约上线前的补历史用）。
+        """
+        if not self.enabled or not rows:
+            return 0
+        sym = str(symbol or "")[:16]
+        iv = str(interval or "")[:8]
+        src = str(source or "futures")[:10]
+        if not sym or not iv:
+            return 0
+        payload = []
+        for r in rows:
+            t = _safe_int(r.get("t"), 0)
+            if t <= 0:
+                continue
+            payload.append((sym, iv, t, _safe_float(r.get("o")), _safe_float(r.get("h")),
+                            _safe_float(r.get("l")), _safe_float(r.get("c")),
+                            _safe_float(r.get("v")), _safe_int(r.get("trades"), 0),
+                            _safe_float(r.get("buyVol")), _safe_float(r.get("sellVol")),
+                            src))
+        if not payload:
+            return 0
+        self._qmany(
+            "REPLACE INTO candle_history(symbol,`interval`,open_time,open,high,low,"
+            "close,volume,trades,buy_vol,sell_vol,source) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", payload)
+        return len(payload)
+
+    def candle_history_range(self, symbol: str, interval: str, start_ms: int,
+                             end_ms: int, limit: int = 200_000) -> list[dict]:
+        """按范围读历史K线，升序。字段带 source，调用方据此判断复权拼接点。"""
+        limit = max(1, min(500_000, _safe_int(limit, 200_000)))
+        if not self.enabled:
+            return []
+        rows = self._qall(
+            "SELECT open_time,open,high,low,close,volume,trades,buy_vol,sell_vol,source "
+            "FROM candle_history WHERE symbol=%s AND `interval`=%s "
+            "AND open_time>=%s AND open_time<=%s ORDER BY open_time ASC LIMIT %s",
+            (str(symbol or "")[:16], str(interval or "")[:8],
+             _safe_int(start_ms, 0), _safe_int(end_ms, 0), limit))
+        return [{"t": int(r[0]), "o": _safe_float(r[1]), "h": _safe_float(r[2]),
+                 "l": _safe_float(r[3]), "c": _safe_float(r[4]),
+                 "v": _safe_float(r[5]), "trades": _safe_int(r[6], 0),
+                 "buyVol": _safe_float(r[7]), "sellVol": _safe_float(r[8]),
+                 "source": str(r[9] or "futures")}
+                for r in rows]
+
+    def candle_history_span(self, symbol: str = "", interval: str = "") -> list[dict]:
+        """每 (symbol, interval, source) 的时间跨度与根数——回测前先看有没有数据。"""
+        if not self.enabled:
+            return []
+        where, args = [], []
+        if symbol:
+            where.append("symbol=%s")
+            args.append(str(symbol)[:16])
+        if interval:
+            where.append("`interval`=%s")
+            args.append(str(interval)[:8])
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = self._qall(
+            "SELECT symbol,`interval`,source,COUNT(*) c,MIN(open_time) mn,MAX(open_time) mx "
+            f"FROM candle_history {clause} GROUP BY symbol,`interval`,source "
+            "ORDER BY symbol,`interval`,source", tuple(args))
+        return [{"symbol": r[0], "interval": r[1], "source": r[2],
+                 "count": int(r[3]), "from": int(r[4] or 0), "to": int(r[5] or 0)}
                 for r in rows]
 
     # ---- 信号实时特征（永久保留） ----
