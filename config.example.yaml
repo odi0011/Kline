@@ -165,6 +165,19 @@ quant:
     # 首选分支，不夹紧的话低波动时止损只剩 0.1~0.2%，几分钟就被噪声扫掉。
     watch_sl_min_pct: 0.004
     watch_sl_max_pct: 0.020
+    # 信号质量门（scripts/signal_quality.py，1904 笔 / 前后半样本外验证）。
+    # 结论：没有任何组合能两段都转正，所以这里只剔除"稳定更差"的条件。
+    # UTC 12-18 两段 -0.190/-0.267；高影线噪声两段 -0.139/-0.157；
+    # trend 两段 -0.131/-0.109（range 最好）；score>=55 / gap>=30 反向。
+    quality_enabled: true
+    quality_blackouts_utc: ["12:00-18:00"]
+    quality_noise_reject: 0.45      # 影线占比 q75，硬拒
+    quality_noise_low: 0.36         # q33，只降仓
+    quality_trend_size_factor: 0.5
+    quality_extreme_vol_size_factor: 0.7
+    quality_high_score_size_factor: 0.8
+    quality_high_gap: 30
+    quality_pattern_blacklist: [morning_star, hammer, bullish_harami, tweezer_bottom]
     # 阈值仍保留用于分档与影子对照；要复核旧逻辑把 score_gate_enabled 打开。
     minimum_score: 55
     minimum_score_gap: 15

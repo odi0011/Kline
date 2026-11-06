@@ -109,6 +109,19 @@ class DecisionConfig:
     # 影子模式：False = 只记录信号/模拟仓，不下真实单。回放显示除"只做空"外
     # 所有组合都是负期望，实盘也出现连续几分钟被扫损；需要时可以一键停手。
     auto_trade_enabled: bool = True
+    # 信号质量门（scripts/signal_quality.py 回放，1904 笔 / 前后半样本外验证）。
+    # 注意：没有任何组合能两段都转正，这个门只负责剔除"稳定更差"的条件。
+    quality_enabled: bool = True
+    quality_blackouts: tuple[SessionWindow, ...] = field(
+        default_factory=lambda: (SessionWindow.parse("12:00-18:00"),))
+    quality_noise_reject: float = 0.45      # 影线占比 q75，两段 -0.139 / -0.157
+    quality_noise_low: float = 0.36         # q33，低噪声只降仓不拒
+    quality_trend_size_factor: float = 0.5  # trend 两段 -0.131 / -0.109
+    quality_extreme_vol_size_factor: float = 0.7
+    quality_high_score_size_factor: float = 0.8   # 评分反向，只降仓不 veto
+    quality_high_gap: float = 30.0
+    quality_pattern_blacklist: tuple[str, ...] = (
+        "morning_star", "hammer", "bullish_harami", "tweezer_bottom")
     # Signal scoring / directional edge
     # scripts/param_sweep.py 线上回放（7 天 2809 笔 + 30 天 4094 笔）一致显示：
     # 只做空 +0.071 / +0.389 %每笔，做多 -0.185 / -1.231 %每笔。
@@ -225,6 +238,27 @@ class DecisionConfig:
         return cls(
             enabled=bool(d.get("enabled", True)),
             auto_trade_enabled=bool(d.get("auto_trade_enabled", True)),
+            quality_enabled=bool(d.get("quality_enabled", True)),
+            quality_blackouts=tuple(
+                SessionWindow.parse(str(item))
+                for item in (d.get("quality_blackouts_utc") or ["12:00-18:00"])
+                if str(item).strip()),
+            quality_noise_reject=min(1.0, max(0.0, _number(
+                d.get("quality_noise_reject"), 0.45))),
+            quality_noise_low=min(1.0, max(0.0, _number(
+                d.get("quality_noise_low"), 0.36))),
+            quality_trend_size_factor=min(1.0, max(0.0, _number(
+                d.get("quality_trend_size_factor"), 0.5))),
+            quality_extreme_vol_size_factor=min(1.0, max(0.0, _number(
+                d.get("quality_extreme_vol_size_factor"), 0.7))),
+            quality_high_score_size_factor=min(1.0, max(0.0, _number(
+                d.get("quality_high_score_size_factor"), 0.8))),
+            quality_high_gap=_number(d.get("quality_high_gap"), 30.0),
+            quality_pattern_blacklist=tuple(
+                str(item).lower() for item in
+                (d.get("quality_pattern_blacklist") or
+                 ["morning_star", "hammer", "bullish_harami", "tweezer_bottom"])
+                if str(item).strip()),
             allow_long=bool(d.get("allow_long", False)),
             score_gate_enabled=bool(d.get("score_gate_enabled", False)),
             risk_enabled=bool(d.get("risk_enabled", True)),

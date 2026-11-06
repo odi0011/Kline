@@ -45,6 +45,7 @@ from decision.features import (
 from decision.risk import PositionRiskInput, RiskEngine, RiskInput, TradeRecord
 from decision.regime import hmm_regime
 from decision.scoring import score_signal
+from decision.quality import evaluate_quality
 from decision.watch import build_watch_plan, ema_direction
 from feed.sentiment import aggregate_news_sentiment
 
@@ -245,6 +246,7 @@ class QuantEngine:
         self.equity_fn = None              # main 注入：() -> list[float]（回撤熔断用）
         # 决策 trace/gate 与风控/漂移状态持久化（main 注入 storage；None = 纯内存）
         self.trace_storage_fn = None       # main 注入：storage.save_decision_trace(trace, kind)
+        self.feature_storage_fn = None     # main 注入：storage.save_signal_feature(row)
         self.trace_read_fn = None          # main 注入：storage.decision_traces(limit, kind)，newest-first
         self.state_storage_fn = None       # main 注入：storage.save_quant_state(name, data)
         self.state_read_fn = None          # main 注入：storage.quant_state(name)
@@ -1837,6 +1839,11 @@ class QuantEngine:
                                 account=self._primary_account(), symbol=symbol,
                                 pattern=hit.get("pattern"), score=signal_score.score,
                                 gap=signal_score.gap)
+                    # 被评分拦下的信号也要留特征快照，否则样本只剩"放行的"，
+                    # 以后无法复盘"被拦掉的是不是其实更好"。
+                    self._persist_signal_features(
+                        hit, symbol, direction, price, st, features,
+                        signal_score, bars, None)
                     self._finish_trace(trace, "blocked", "评分未通过", why,
                                        score=trace["score"])
                     return
@@ -1868,6 +1875,35 @@ class QuantEngine:
                                 symbol=symbol, pattern=hit.get("pattern"))
                     self._finish_trace(trace, "blocked", "环境未通过", why)
                     return
+            # ---- 实时特征永久落库 + 信号质量门（震荡 / 噪声 / 假信号） ----
+            # 所有指标都用"信号这一刻已经算好的值"，不再事后拿历史K线重算。
+            quality = evaluate_quality(
+                cfg=self.decision_cfg,
+                direction=direction,
+                pattern=str(hit.get("pattern") or ""),
+                regime=str((st or {}).get("regime") or "unknown"),
+                atr_pct=(st or {}).get("atrPct"),
+                bars=bars or (),
+                score=signal_score.score if signal_score else None,
+                gap=signal_score.gap if signal_score else None,
+                now_ms=_now_ms(),
+            )
+            self._persist_signal_features(
+                hit, symbol, direction, price, st, features,
+                signal_score, bars, quality)
+            if not quality.allowed:
+                why = "；".join(quality.reasons) or "质量门拒绝"
+                self._append_gate({
+                    "ts": _now_ms(), "symbol": symbol, "direction": direction,
+                    "reason": why, "code": "quality_gate", "metrics": quality.tags,
+                })
+                self._event("skip", f"信号质量门：{why}",
+                            account=self._primary_account(), symbol=symbol,
+                            pattern=hit.get("pattern"))
+                self._finish_trace(trace, "blocked", "质量门未通过", why,
+                                   quality=quality.tags)
+                return
+            trace["quality"] = quality.tags
             # 「收到信号」记录已在入口处统一落库，这里不再重复发。
             side = "BUY" if direction == "bullish" else "SELL"
             accounts = self._tradable_accounts()
@@ -1882,7 +1918,8 @@ class QuantEngine:
                     account_trace["account"] = name
                     self._decide_open(name, a, symbol, side, direction, float(price), hit,
                                       features=features, signal_score=signal_score,
-                                      bars=bars, trace=account_trace)
+                                      bars=bars, trace=account_trace,
+                                      quality_size_factor=quality.size_factor)
                 except Exception as e:
                     self.stats["errors"] += 1
                     self._event("error", f"决策异常({name}/{symbol}): {e}", symbol=symbol)
@@ -1894,8 +1931,48 @@ class QuantEngine:
             self.stats["errors"] += 1
             self._event("error", f"信号处理异常: {e}")
 
+    def _persist_signal_features(self, hit, symbol, direction, price, st,
+                                 features, signal_score, bars, quality) -> None:
+        """信号产生那一刻的实时特征快照，永久落库、不依赖事后重算历史K线。
+
+        以前复盘只能拿 hits + candle_archive 现场算 regime/噪声，需要前置
+        30 根K线；滚动数据一过期就凑不够，回放样本只剩几天。这里把当时
+        已经算好的指标直接记下来，之后任何分析都用这份"当时的事实"。
+        """
+        if not self.feature_storage_fn:
+            return
+        try:
+            from decision.quality import noise_ratio
+            mark = st or {}
+            row = {
+                "ts": _now_ms(), "symbol": symbol,
+                "interval": hit.get("interval"), "pattern": hit.get("pattern"),
+                "direction": direction, "mode": hit.get("mode"),
+                "price": float(price) if price else None,
+                "bar_open_time": hit.get("bar_open_time"),
+                "regime": mark.get("regime"), "adx": mark.get("adx"),
+                "atr": mark.get("atr"), "atr_pct": mark.get("atrPct"),
+                "vol_state": mark.get("volState"), "rsi": mark.get("rsi"),
+                "zscore": mark.get("z"), "squeeze": mark.get("squeeze"),
+                "noise_ratio": noise_ratio(bars or ()),
+                "score": signal_score.score if signal_score else None,
+                "gap": signal_score.gap if signal_score else None,
+                "grade": signal_score.grade if signal_score else None,
+                "confidence": signal_score.confidence if signal_score else None,
+            }
+            if quality is not None:
+                row["quality_allowed"] = quality.allowed
+                row["quality_size_factor"] = quality.size_factor
+                row["quality_reason"] = ("；".join(quality.reasons) or None)
+                if row["quality_reason"]:
+                    row["quality_reason"] = row["quality_reason"][:250]
+            self.feature_storage_fn(row)
+        except Exception as e:
+            self._event("error", f"信号特征落库失败: {e}", symbol=symbol)
+
     def _decide_open(self, name, a, symbol, side, direction, price, hit,
-                     features=None, signal_score=None, bars=None, trace=None):
+                     features=None, signal_score=None, bars=None, trace=None,
+                     quality_size_factor: float = 1.0):
         if trace is None:
             trace = self._trace_start(hit, price)
             trace["account"] = name
@@ -2038,6 +2115,8 @@ class QuantEngine:
             signal_score=signal_score.score if signal_score else None,
             signal_grade=signal_score.grade if signal_score else None,
             confidence=signal_score.confidence if signal_score else None,
+            # 质量门给出的降仓系数（趋势市 / 高分反向 / 极端波动等）
+            size_factor_override=quality_size_factor,
             atr_pct=st_ind.get("atrPct"),
             liquidation_cascade=bool(cascade.get("blocked") or cascade.get("active")),
             funding_blocked=bool((features or {}).get("funding", {}).get("blocked")),
@@ -3634,6 +3713,10 @@ class QuantEngine:
                     # 别让它们还拿着旧的 0.18% 止盈 / 55 分门槛去解释行为。
                     "allowLong": self.decision_cfg.allow_long,
                     "autoTradeEnabled": self.decision_cfg.auto_trade_enabled,
+                    "qualityEnabled": self.decision_cfg.quality_enabled,
+                    "qualityNoiseReject": self.decision_cfg.quality_noise_reject,
+                    "qualityTrendSizeFactor": self.decision_cfg.quality_trend_size_factor,
+                    "featureArchive": "signal_features：信号产生即落库、永久保留",
                     "scoreGateEnabled": self.decision_cfg.score_gate_enabled,
                     "minRr": MIN_RR,
                     "watchSlMinPct": self.decision_cfg.watch_sl_min_pct * 100,

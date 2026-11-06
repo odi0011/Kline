@@ -75,15 +75,18 @@ def _json_load(raw, default):
 
 class Storage:
     def __init__(self, mysql: dict, keep_minutes: int = 30,
-                 hit_days: int = 90, eval_minutes: int = 10,
+                 hit_days: int = 0, eval_minutes: int = 10,
                  eval_threshold: float = 0.0015, eval_batch: int = 50,
                  stats_days: int = 7, stats_alpha: float = 0.94,
                  paper_keep_days: int = 0,
-                 quant_trade_days: int = 365, quant_event_days: int = 30,
-                 news_days: int = 7, trace_days: int = 30,
+                 quant_trade_days: int = 0, quant_event_days: int = 0,
+                 news_days: int = 7, trace_days: int = 0,
+                 equity_days: int = 30,
                  candle_archive_days: int = 0, agent_chat_days: int = 0):
         # 保留期统一按"天"配置：负数/脏值归一化成 0，0 = 永久保留（prune 跳过）。
-        hit_days = _keep_days(hit_days, 90)
+        # 关键量化数据（命中/成交/事件/决策流水）默认永久：这些是策略校准的
+        # 唯一证据，按时间周期丢弃会让每次复盘只剩几天样本。
+        hit_days = _keep_days(hit_days, 0)
         self.keep_ms = keep_minutes * 60 * 1000
         self.hit_ms = hit_days * 86400 * 1000
         self.hit_days = hit_days                # 形态命中保留天数（默认 90）
@@ -95,10 +98,11 @@ class Storage:
         self.stats_days = max(1, int(stats_days))
         self.stats_alpha = min(0.999, max(0.50, float(stats_alpha)))
         self.paper_keep_days = _keep_days(paper_keep_days)          # 0 = 永久保留
-        self.trade_keep_days = _keep_days(quant_trade_days, 365)    # 实盘成交（原硬编码 7 天）
-        self.quant_event_days = _keep_days(quant_event_days, 30)    # 决策事件（原 3 天）
-        self.news_days = _keep_days(news_days, 7)                   # 新闻存档（原 3 天）
-        self.trace_days = _keep_days(trace_days, 30)                # 决策 trace/gate
+        self.trade_keep_days = _keep_days(quant_trade_days, 0)      # 实盘成交：永久
+        self.quant_event_days = _keep_days(quant_event_days, 0)      # 决策事件：永久
+        self.news_days = _keep_days(news_days, 7)                   # 新闻存档（非关键量化数据）
+        self.trace_days = _keep_days(trace_days, 0)                  # 决策 trace/gate：永久
+        self.equity_days = _keep_days(equity_days, 30)               # 30 秒权益采样；日线永久
         self.candle_archive_days = _keep_days(candle_archive_days)  # K线归档（0=永久）
         self.agent_chat_days = _keep_days(agent_chat_days)          # Agent 聊天（0=永久）
         self._lock = threading.Lock()
@@ -202,6 +206,27 @@ class Storage:
             outcome VARCHAR(10) DEFAULT 'pending', eval_price DOUBLE,
             INDEX idx_hits_bar(symbol, `interval`, bar_open_time),
             INDEX idx_hits_pat(pattern)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+        # 信号实时特征快照：在信号产生的那一刻就把 regime / ATR / 噪声 /
+        # 评分 / 质量门判定算好落库，**永久保留、不参与 prune**。
+        # 以前这些只能事后靠历史K线重算，滚动窗口一过就凑不够前置K线，
+        # 回放只剩几天样本；有了这张表，任何时刻做分析都不依赖历史窗口。
+        self._ddl("""CREATE TABLE IF NOT EXISTS signal_features(
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            ts BIGINT NOT NULL,
+            symbol VARCHAR(16), `interval` VARCHAR(8),
+            pattern VARCHAR(40), direction VARCHAR(10), mode VARCHAR(10),
+            price DOUBLE, bar_open_time BIGINT,
+            regime VARCHAR(12), adx DOUBLE, atr DOUBLE, atr_pct DOUBLE,
+            vol_state VARCHAR(12), rsi DOUBLE, zscore DOUBLE, squeeze TINYINT,
+            noise_ratio DOUBLE,
+            score DOUBLE, gap DOUBLE, grade VARCHAR(12), confidence DOUBLE,
+            quality_allowed TINYINT, quality_size_factor DOUBLE,
+            quality_reason VARCHAR(255),
+            INDEX idx_sf_ts(ts),
+            INDEX idx_sf_sym(symbol, ts),
+            INDEX idx_sf_pattern(pattern),
+            INDEX idx_sf_bar(symbol, `interval`, bar_open_time)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
         # 账户权益采样：卡片迷你曲线用（服务端持久化，刷新页面/换设备都保留历史）
         self._ddl("""CREATE TABLE IF NOT EXISTS equity(
             acct VARCHAR(64), ts BIGINT, bal DOUBLE, upnl DOUBLE,
@@ -1216,6 +1241,52 @@ class Storage:
                  "v": _safe_float(r[5]), "trades": _safe_int(r[6], 0)}
                 for r in rows]
 
+    # ---- 信号实时特征（永久保留） ----
+
+    def save_signal_feature(self, row: dict) -> None:
+        """信号产生那一刻的实时特征快照；不参与 prune，永远可回溯。"""
+        def val(key):
+            return row.get(key)
+
+        def flag(key):
+            v = row.get(key)
+            return None if v is None else int(bool(v))
+
+        self._q(
+            "INSERT INTO signal_features(ts,symbol,`interval`,pattern,direction,mode,"
+            "price,bar_open_time,regime,adx,atr,atr_pct,vol_state,rsi,zscore,squeeze,"
+            "noise_ratio,score,gap,grade,confidence,quality_allowed,"
+            "quality_size_factor,quality_reason) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (val("ts"), val("symbol"), val("interval"), val("pattern"),
+             val("direction"), val("mode"), val("price"), val("bar_open_time"),
+             val("regime"), val("adx"), val("atr"), val("atr_pct"),
+             val("vol_state"), val("rsi"), val("zscore"), flag("squeeze"),
+             val("noise_ratio"), val("score"), val("gap"), val("grade"),
+             val("confidence"), flag("quality_allowed"),
+             val("quality_size_factor"), val("quality_reason")))
+
+    def signal_features(self, since_ms: int = 0, symbol: str = "",
+                        limit: int = 200_000) -> list[dict]:
+        """按时间升序读实时特征快照，供离线回放/校准直接消费。"""
+        limit = max(1, min(1_000_000, _safe_int(limit, 200_000)))
+        sql = ("SELECT ts,symbol,`interval`,pattern,direction,mode,price,bar_open_time,"
+               "regime,adx,atr,atr_pct,vol_state,rsi,zscore,squeeze,noise_ratio,"
+               "score,gap,grade,confidence,quality_allowed,quality_size_factor,"
+               "quality_reason FROM signal_features WHERE ts>=%s")
+        args: list = [_safe_int(since_ms, 0)]
+        if symbol:
+            sql += " AND symbol=%s"
+            args.append(str(symbol)[:16])
+        sql += " ORDER BY ts ASC LIMIT %s"
+        args.append(limit)
+        keys = ("ts", "symbol", "interval", "pattern", "direction", "mode", "price",
+                "bar_open_time", "regime", "adx", "atr", "atr_pct", "vol_state",
+                "rsi", "zscore", "squeeze", "noise_ratio", "score", "gap", "grade",
+                "confidence", "quality_allowed", "quality_size_factor",
+                "quality_reason")
+        return [dict(zip(keys, r)) for r in self._qall(sql, tuple(args))]
+
     # ---- 形态命中 ----
 
     def save_hit(self, hit) -> None:
@@ -1593,8 +1664,11 @@ class Storage:
         if self.hit_days > 0:
             self._q("DELETE FROM hits WHERE ts < %s",
                     (self._keep_since(now_ms, self.hit_days),))
-        # 权益采样保留 2 天（曲线只看最近 8 小时，多留一天便于回看）
-        self._q("DELETE FROM equity WHERE ts < %s", (self._keep_since(now_ms, 2),))
+        # 权益 30 秒采样按 equity_days 保留（0=永久）；equity_daily 日线永久。
+        if self.equity_days > 0:
+            self._q("DELETE FROM equity WHERE ts < %s",
+                    (self._keep_since(now_ms, self.equity_days),))
+        # signal_features 是实时特征快照，永久保留，绝不参与任何清理。
         for table, days in (
             ("quant_events", self.quant_event_days),   # 决策流水（原硬编码 3 天）
             ("quant_trades", self.trade_keep_days),    # 实盘成交（原硬编码 7 天）

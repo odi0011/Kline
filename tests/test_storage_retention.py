@@ -133,10 +133,12 @@ def test_startup_creates_tables_and_normalizes_retention(make_store):
     assert s.decision_traces() == []
     assert s.quant_state("risk") is None
 
-    # 默认保留期：命中 90 天（长期形态分析）、实盘成交 365、事件 30、新闻 7、trace 30
-    assert (s.hit_days, s.hit_ms) == (90, 90 * DAY)
-    assert (s.trade_keep_days, s.quant_event_days) == (365, 30)
-    assert (s.news_days, s.trace_days, s.paper_keep_days) == (7, 30, 0)
+    # 关键量化数据默认永久保留（0），新闻 7 天；权益 30 秒采样 30 天、日线永久
+    assert (s.hit_days, s.hit_ms) == (0, 0)
+    assert (s.trade_keep_days, s.quant_event_days) == (0, 0)
+    assert (s.news_days, s.trace_days, s.paper_keep_days) == (7, 0, 0)
+    assert s.equity_days == 30
+    assert "signal_features" in names
 
     # 表结构：decision_traces 带自增 id + payload；quant_state 以 name 为主键
     dt_cols = [row[1] for row in s._conn.db.execute("PRAGMA table_info('decision_traces')")]
@@ -158,7 +160,7 @@ def test_init_is_idempotent_and_retention_normalized(make_store):
     assert s2.trade_keep_days == 0
     assert s2.quant_event_days == 0
     assert s2.news_days == 8
-    assert s2.trace_days == 30       # None 回落到默认 30
+    assert s2.trace_days == 0        # None 回落到默认 0（永久保留）
     assert s2.paper_keep_days == 0
 
 

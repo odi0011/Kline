@@ -346,11 +346,17 @@ def _markers(store, table: str, ts_col: str = "ts", col: str = "symbol") -> list
         "SELECT %s FROM %s ORDER BY %s" % (col, table, ts_col))]
 
 
-def test_prune_defaults_match_90_365_30_7_30(make_store):
-    store = make_store()
-    assert (store.hit_days, store.trade_keep_days, store.quant_event_days,
-            store.news_days, store.trace_days, store.paper_keep_days) == \
-        (90, 365, 30, 7, 30, 0)
+def test_prune_defaults_keep_critical_data_forever(make_store):
+    default_store = make_store()
+    # 关键量化数据（命中/成交/事件/决策流水）默认永久，新闻仍 7 天
+    assert (default_store.hit_days, default_store.trade_keep_days,
+            default_store.quant_event_days, default_store.news_days,
+            default_store.trace_days, default_store.paper_keep_days) == \
+        (0, 0, 0, 7, 0, 0)
+    assert default_store.equity_days == 30
+    # 显式配旧保留期，验证按天清理的逻辑本身没坏
+    store = make_store(hit_days=90, quant_trade_days=365, quant_event_days=30,
+                       news_days=7, trace_days=30, equity_days=2)
 
     _insert_rows(store, [
         ("hits", NOW - 200 * DAY, "hit-old"), ("hits", NOW - 1 * DAY, "hit-new"),
@@ -387,7 +393,7 @@ def test_prune_defaults_match_90_365_30_7_30(make_store):
 
 def test_prune_zero_days_keeps_forever_but_candles_equity_still_clean(make_store):
     store = make_store(hit_days=0, quant_trade_days=0, quant_event_days=0,
-                       news_days=0, trace_days=0)
+                       news_days=0, trace_days=0, equity_days=2)
     ancient = NOW - 500 * DAY
     _insert_rows(store, [
         ("hits", ancient, "hit"),
@@ -415,7 +421,8 @@ def test_prune_zero_days_keeps_forever_but_candles_equity_still_clean(make_store
 
 
 def test_prune_zero_days_skips_only_that_table(make_store):
-    store = make_store(hit_days=0)          # 只有 hits 永久，其他用默认值
+    store = make_store(hit_days=0, news_days=7, quant_event_days=30,
+                       trace_days=30)       # 只让 hits 永久，其余显式按天清理
     ancient = NOW - 500 * DAY
     _insert_rows(store, [
         ("hits", ancient, "hit"), ("news", ancient, "news"),

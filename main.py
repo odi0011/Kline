@@ -381,14 +381,16 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                       eval_threshold=float(scfg.get("eval_threshold", 0.0015)),
                       stats_days=decision_cfg.pattern_window_days,
                       stats_alpha=decision_cfg.pattern_winrate_alpha,
-                      # 保留期（天；0 = 永久保留）。长期策略分析不能再 7 天就删光。
-                      hit_days=int(scfg.get("hit_days", 90) or 0),
+                      # 关键量化数据默认永久保留：命中 / 成交 / 事件 / 决策流水。
+                      # 按时间周期删掉会让每次复盘只剩几天样本、结论不可信。
+                      hit_days=int(scfg.get("hit_days", 0) or 0),
                       # 模拟仓平仓记录保留天数：0 = 永久保留（策略复盘要长期样本）
                       paper_keep_days=int(scfg.get("paper_keep_days", 0) or 0),
-                      quant_trade_days=int(scfg.get("quant_trade_days", 365) or 0),
-                      quant_event_days=int(scfg.get("quant_event_days", 30) or 0),
+                      quant_trade_days=int(scfg.get("quant_trade_days", 0) or 0),
+                      quant_event_days=int(scfg.get("quant_event_days", 0) or 0),
                       news_days=int(scfg.get("news_days", 7) or 0),
-                      trace_days=int(scfg.get("trace_days", 30) or 0),
+                      trace_days=int(scfg.get("trace_days", 0) or 0),
+                      equity_days=int(scfg.get("equity_days", 30) or 0),
                       # K线长期归档（回测用）与 Agent 聊天长期归档：0 = 永久保留
                       candle_archive_days=int(scfg.get("candle_archive_days", 0) or 0),
                       agent_chat_days=int(scfg.get("agent_chat_days", 0) or 0))
@@ -409,7 +411,11 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
             loop.run_in_executor(None, quant.on_signal,
                                  {"symbol": hit.symbol, "direction": hit.direction,
                                   "pattern": hit.pattern, "name_zh": hit.name_zh,
-                                  "geometry": hit.geometry})
+                                  "geometry": hit.geometry,
+                                  # 实时特征快照要用：周期 / 价格 / K线开盘 / 模式
+                                  "interval": hit.interval, "price": hit.price,
+                                  "bar_open_time": hit.bar_open_time,
+                                  "mode": hit.mode})
             # 形态命中也是"可能值得主动说一句"的事件。
             # 方向和强度交给 Agent 自己判断要不要开口（闸门会给低概率），
             # 这里只如实把命中内容推过去。
@@ -717,6 +723,9 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     # 决策 trace / gate 拦截明细、风控与漂移保护状态：同样落库，重启不清零
     quant.trace_storage_fn = storage.save_decision_trace
     quant.trace_read_fn = storage.decision_traces
+    # 信号实时特征快照：在信号产生的那一刻算好并永久落库，
+    # 之后做回放/校准不再依赖"事后凑 30 根历史K线"。
+    quant.feature_storage_fn = storage.save_signal_feature
     quant.state_storage_fn = storage.save_quant_state
     quant.state_read_fn = storage.quant_state
     try:

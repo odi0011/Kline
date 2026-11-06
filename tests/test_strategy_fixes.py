@@ -161,6 +161,91 @@ def test_replay_short_window_returns_none():
                   0, 100.0, "bullish", 0.004, 3.0, 10, 0.1) is None
 
 
+# ---------- 信号质量门 / 实时特征永久化 ----------
+
+from datetime import datetime, timezone  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+
+def _utc_ms(hour: int) -> int:
+    return int(datetime(2026, 11, 6, hour, 0, tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def _noise_bars(body: float, span: float, n: int = 30):
+    return [SimpleNamespace(open=100.0, high=100.0 + span / 2,
+                            low=100.0 - span / 2, close=100.0 + body,
+                            volume=0.0) for _ in range(n)]
+
+
+def test_quality_gate_rejects_noise_session_and_pattern():
+    from decision.config import DecisionConfig
+    from decision.quality import evaluate_quality
+    cfg = DecisionConfig()
+    common = dict(cfg=cfg, direction="bearish", regime="range", atr_pct=50)
+    v = evaluate_quality(**common, pattern="bearish_engulfing", now_ms=_utc_ms(13),
+                         bars=_noise_bars(0.6, 1.0))
+    assert not v.allowed and "12:00-18:00" in v.reasons[0]
+    v = evaluate_quality(**common, pattern="bearish_engulfing", now_ms=_utc_ms(3),
+                         bars=_noise_bars(0.0, 2.0))
+    assert not v.allowed and "噪声" in v.reasons[0]
+    v = evaluate_quality(**common, pattern="hammer", now_ms=_utc_ms(3),
+                         bars=_noise_bars(0.6, 1.0))
+    assert not v.allowed and "形态" in v.reasons[0]
+
+
+def test_quality_gate_downsizes_trend_and_high_score():
+    from decision.config import DecisionConfig
+    from decision.quality import evaluate_quality
+    v = evaluate_quality(
+        cfg=DecisionConfig(), direction="bearish", pattern="bearish_engulfing",
+        regime="trend", atr_pct=50, bars=_noise_bars(0.6, 1.0),
+        score=70.0, gap=10.0, now_ms=_utc_ms(3))
+    assert v.allowed
+    assert v.size_factor == round(0.5 * 0.8, 4)
+    assert v.tags["sizeFactor"] == v.size_factor
+
+
+def test_quality_gate_can_be_disabled():
+    from decision.config import DecisionConfig
+    from decision.quality import evaluate_quality
+    v = evaluate_quality(
+        cfg=DecisionConfig(quality_enabled=False), direction="bearish",
+        pattern="hammer", regime="trend", atr_pct=None,
+        bars=_noise_bars(0.0, 2.0), now_ms=_utc_ms(13))
+    assert v.allowed and v.size_factor == 1.0
+
+
+def test_signal_feature_snapshot_is_persisted():
+    from quant import QuantEngine
+    eng = object.__new__(QuantEngine)
+    sink = MagicMock()
+    eng.feature_storage_fn = sink
+    eng._event = MagicMock()
+    hit = {"symbol": "btcusdt", "interval": "1m", "pattern": "hammer",
+           "mode": "confirmed", "price": 100.0, "bar_open_time": 123}
+    st = {"regime": "range", "adx": 12.0, "atr": 0.5, "atrPct": 40.0,
+          "volState": "normal", "rsi": 50.0, "z": 0.2, "squeeze": False}
+    from decision.quality import QualityVerdict
+    verdict = QualityVerdict(True, 0.5, ["趋势市降仓"], {"regime": "trend"})
+    eng._persist_signal_features(hit, "btcusdt", "bearish", 100.0, st, {},
+                                 None, _noise_bars(0.6, 1.0), verdict)
+    sink.assert_called_once()
+    row = sink.call_args.args[0]
+    for key in ("ts", "symbol", "regime", "noise_ratio", "price",
+                "bar_open_time", "quality_allowed", "quality_size_factor"):
+        assert key in row, key
+    assert row["regime"] == "range"
+    assert row["noise_ratio"] is not None
+
+
+def test_prune_never_deletes_signal_features_or_critical_tables():
+    from storage import Storage
+    src = inspect.getsource(Storage.prune)
+    assert "DELETE FROM signal_features" not in src
+    # 关键表默认永久：0 天时 prune 跳过清理
+    assert Storage({"user": "x"}).hit_days == 0
+
+
 def test_system_prompt_documents_current_mechanism():
     """Agent 不能拿历史聊天里的旧参数解释当前行为。"""
     from ai.agent import SYSTEM_PROMPT

@@ -18,7 +18,7 @@ def engine(tmp_path):
     eng = QuantEngine(
         accts, str(tmp_path / "quant.yaml"), price_fn=lambda s: 100.0,
         min_pattern_winrate=0.35, min_pattern_samples=5,
-        decision_config=DecisionConfig(allow_long=True,
+        decision_config=DecisionConfig(allow_long=True, quality_enabled=False,
             scoring_enabled=False, watch_enabled=False,
             exchange_protection=False,
         ),
@@ -98,7 +98,7 @@ def test_watch_and_risk_engine_open_path(engine):
     h1 = trend(120, 0.35, "1h")
     h4 = trend(120, 1.2, "4h")
     acct = engine.accts_box["list"][0]
-    engine.decision_cfg = DecisionConfig(allow_long=True,
+    engine.decision_cfg = DecisionConfig(allow_long=True, quality_enabled=False,
         scoring_enabled=False, watch_enabled=True, exchange_protection=False,
     )
     engine.risk = RiskEngine(engine.decision_cfg)
@@ -133,7 +133,7 @@ def test_scored_signal_path_uses_confluence_gate(engine):
         h4.append(Candle(i * 60_000, close, close + 0.2, close - 0.2,
                          close, volume=100 + i, interval="4h", closed=True))
     acct = engine.accts_box["list"][0]
-    engine.decision_cfg = DecisionConfig(allow_long=True,
+    engine.decision_cfg = DecisionConfig(allow_long=True, quality_enabled=False,
         scoring_enabled=True, watch_enabled=True, exchange_protection=False,
     )
     engine.risk = RiskEngine(engine.decision_cfg)

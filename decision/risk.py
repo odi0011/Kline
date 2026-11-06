@@ -64,6 +64,8 @@ class RiskInput:
     atr_pct: float | None = None
     liquidation_cascade: bool = False
     funding_blocked: bool = False
+    # 信号质量门给出的降仓系数（1.0 = 不降）。与高波动/组合热度叠加。
+    size_factor_override: float = 1.0
     symbol_healthy: bool = True
     max_positions_override: int | None = None
     cooldown_extra_sec: int = 0
@@ -470,7 +472,8 @@ class RiskEngine:
             return RiskResult(False, "insufficient_available", "sizing",
                               f"可用余额不足 {self.config.margin_min_usdt:.0f} USDT")
         qty = min(risk_qty, capital_notional / req.entry)
-        size_factor = 1.0
+        size_factor = min(1.0, max(0.0, float(
+            getattr(req, "size_factor_override", 1.0) or 1.0)))
         warnings = []
         if req.atr_pct is not None:
             if req.atr_pct >= self.config.extreme_vol_atr_pct:

@@ -172,6 +172,7 @@ def test_backfill_uses_same_precision_as_live_total(make_store):
 
 def test_prune_keeps_daily_permanently_and_raw_exact_two_day_boundary(make_store):
     s = make_store()
+    s.equity_days = 2          # 本用例验证 2 天边界的清理逻辑；默认已改为 30 天
     now = ts("2026-05-01")
     for t in [now - 400 * DAY, now - 2 * DAY - 1, now - 2 * DAY, now]:
         s.save_equity("a", t, 100, 20)
