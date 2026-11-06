@@ -60,8 +60,9 @@ def report(title: str, res, mc=None) -> None:
           f"盈亏比 {m['profitFactor'] or 0:.2f}")
     print(f"  回撤     {m['maxDrawdownPct']:.2f}%  平均持仓 {m['avgHoldBars']:.1f} 根")
     if mc:
-        print(f"  蒙特卡洛 5% 分位回撤 {mc.get('p05DrawdownPct')}%  "
-              f"爆仓概率 {mc.get('ruinProbability')}")
+        ruin = mc.get("ruinProbability")
+        print(f"  蒙特卡洛 中位回撤 {mc.get('p50')}%  95% 分位 {mc.get('p95')}%  "
+              f"爆仓概率（回撤超 20%）{ruin:.1%}" if ruin is not None else "")
 
 
 def main() -> int:
