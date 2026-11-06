@@ -64,7 +64,6 @@ class RiskInput:
     atr_pct: float | None = None
     liquidation_cascade: bool = False
     funding_blocked: bool = False
-    macro_blackout: str = ""
     symbol_healthy: bool = True
     max_positions_override: int | None = None
     cooldown_extra_sec: int = 0
@@ -401,12 +400,13 @@ class RiskEngine:
         if req.liquidation_cascade:
             return RiskResult(False, "liquidation_cascade", "market",
                               "清算级联进行中，暂停开仓")
+        # 黑窗唯一数据源是 quant.decision.macro_events。旧版 RiskInput 上的
+        # macro_blackout 字段从未被赋值（死参数），已移除，免得误以为有外部注入。
         configured_event = next(
             (event for event in self.config.macro_events if event.contains(now)), None)
-        if configured_event or req.macro_blackout:
-            label = configured_event.label if configured_event else req.macro_blackout
+        if configured_event:
             return RiskResult(False, "macro_blackout", "event",
-                              f"宏观事件黑窗：{label or 'scheduled event'}")
+                              f"宏观事件黑窗：{configured_event.label or 'scheduled event'}")
         minute = session_minute(now)
         for window in self.config.session_blackouts:
             if window.contains(minute):

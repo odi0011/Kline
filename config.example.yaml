@@ -135,6 +135,9 @@ accounts:
 csv_log: signals.csv
 
 # 量化决策层（纯后端；不会改变前端布局）
+# 注意：decision 必须挂在 quant 下（main.py 读的是 quant.decision）。整段省略时
+# 所有阈值走 DecisionConfig 默认值：minimum_score=55 / gap=15 / 黑窗为空。
+# 阈值有没有区分力，先跑 scripts/signal_lift.py 做对照，再按证据调整。
 quant:
   enabled: true
   min_pattern_winrate: 0.35
@@ -149,6 +152,10 @@ quant:
     exchange_protection: true
     maker_first: false
 
+    # 校准状态（2026-11-06 线上 7 天 / 754 条带评分决策，scripts/signal_lift.py）：
+    # 共鸣分越高，10 分钟方向胜率反而越低 —— <55 为 53.8%、>=55 为 44.5%，
+    # 随机入场基线 43.6%；分离度 >=30 仅 39.9%。默认阈值未经校准。
+    # 调高/调低前务必用 signal_lift.py 在更长窗口复核，别直接照这组数字反转。
     minimum_score: 55
     minimum_score_gap: 15
     pattern_min_samples: 5
@@ -213,8 +220,11 @@ quant:
     pool_max_spread: 0.0005   # fraction = 0.05%
     pool_blacklist: []
 
-    # UTC 时段；示例：["23:00-01:00"]。默认不启用，验证时段效应后再打开。
+    # UTC 时段黑窗，支持跨午夜。[] = 完全不启用（线上当前状态）。
+    # 启用示例：session_blackouts_utc: ["23:00-01:00", "12:00-13:00"]
     session_blackouts_utc: []
-    # 静态宏观事件黑窗；ISO 时间示例：
-    # - {start: "2026-11-05T21:15:00Z", end: "2026-11-05T22:00:00Z", label: "FOMC"}
+    # 静态宏观事件黑窗（UTC ISO 时间）。[] = 完全不启用（线上当前状态）。
+    # 启用示例：
+    # macro_events:
+    #   - {start: "2026-11-05T21:15:00Z", end: "2026-11-05T22:00:00Z", label: "FOMC"}
     macro_events: []
