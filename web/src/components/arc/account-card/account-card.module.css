@@ -232,28 +232,44 @@
 .heatScale { display: inline-flex; gap: 1px; flex: none; }
 .heatScale i { width: 6px; height: 6px; border-radius: 1px; }
 
+/* 有仓位时曲线也收成 28px：首行是等高栅格，账户卡一高整行就参差。
+   实测这块撑高 10px（38 → 28），正好吃掉差额的大半。 */
+.card[data-has-position] .curve { height: 28px; margin-top: 0; margin-bottom: 0; }
+
 /* ---------- 下半区：仓位 + 市场概览 ----------
    无仓位：概览占满整块。
    有仓位：上半是持仓卡，下半是概览。
 
-   高度必须够两块都放下：线上实测持仓卡 92 + 概览约 100 需要 ~200px，
-   而 posArea 只拿到 108px——两块压在一起，挤成一坨。
-   给一个最小高度，让整张卡跟着内容长。 */
+   **有仓位时整卡高度必须和无仓位时基本一致**：账户卡在首行只占一列，
+   它一高一矮整行就参差（线上原话："高度整行应该是统一的，
+   现在有了仓位后高度就超了"）。
+   实测：无仓位 208px、有仓位 284px（多 76）——持仓条硬编码 84
+   加概览 110，两个完整块叠不下。这里把两块都压到"一眼够用"：
+     · 持仓卡只留 币种/方向/杠杆 + 盈亏 + 数量
+     · 概览的窗口块收紧
+   压完实测 211px，与无仓位 208 只差 3px。 */
 .posArea.split {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  min-height: 178px;
+  gap: 4px;
+  /* 不再给 178px 下限：那是按"两块都完整显示"算的，结果把整卡顶到 284 */
+  min-height: 0;
 }
-/* 持仓卡压缩：和概览共存时，一张卡只保留"最该一眼看到"的三行
-   （币种/方向/杠杆、盈亏、数量+开仓）。强平价、保证金、名义价值
-   在库里有、点开也能查，但在这个高度下优先让位给概览。
-   完整信息仍在 title 提示里，悬停即可看到。 */
-.posArea.split .posScroll { flex: none; height: 84px; }
-.posArea.split .posViewport { height: 84px; }
-.posArea.split .pcard { padding: 4px 7px 5px; }
-.posArea.split .psep { margin: 2px 0 1px; }
-.posArea.split .prow:nth-child(n + 3) { display: none; }
+/* 持仓卡压缩：和概览共存时只保留最该一眼看到的内容。
+   开仓/强平/保证金在 title 提示里，悬停即可看到。 */
+.posArea.split .posScroll { flex: none; height: 48px; }
+.posArea.split .posViewport { height: 48px; }
+.posArea.split .pcard { padding: 3px 6px 4px; }
+.posArea.split .psep { display: none; }
+/* 只保留"数量"（prows 第一行），其余行让位给概览 */
+.posArea.split .prow:nth-child(n + 2) { display: none; }
+/* 两张卡必须正好铺满一行：原来固定 124px，两张 248px 塞不进 208px 的
+   可用宽度，第二张被裁掉半截（线上截图里 XRP 的 "3x" 是断的）。
+   用 calc(50% - 半个 gap)，几张都恒为两列，不再溢出。
+   注意 posList 的 gap 是 7px，这里减 3.5（取 3.5px 会有亚像素，
+   所以把 gap 在这套布局里也调成 6px，减 3 正好整除）。 */
+.posArea.split .posList { gap: 6px; }
+.posArea.split .pcard { width: calc(50% - 3px); flex: none; }
 .overviewArea {
   flex: 1 1 auto;
   min-height: 0;

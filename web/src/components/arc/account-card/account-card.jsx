@@ -95,7 +95,9 @@ export default function AccountCard({ account, series, chartColors, accent = "#f
   }
 
   return (
-    <section className={`${styles.card}${showHistory ? ` ${styles.historyCard}` : ""}`} aria-label="账户">
+    <section className={`${styles.card}${showHistory ? ` ${styles.historyCard}` : ""}`}
+      data-has-position={positions.length > 0 || undefined}
+      aria-label="账户">
       <header className={styles.head}>
         <span className={styles.avatar}>
           {account.icon
@@ -109,7 +111,11 @@ export default function AccountCard({ account, series, chartColors, accent = "#f
           <span className={styles.sub}>USDT 本位合约 · 实盘</span>
         </div>
         <div className={styles.curve}>
-          <EquityCurve samples={series || []} hue={hue} height={showHistory ? 28 : 46} onHover={setHoverS} />
+          {/* 曲线高度跟着布局走：有仓位时整卡要压回"无仓位"的高度
+              （首行是等高栅格，卡高一变整行就参差），所以这里统一 28。
+              只有账户出错、什么都没有时才给 46 占位。 */}
+          <EquityCurve samples={series || []} hue={hue}
+            height={showHistory || positions.length > 0 ? 28 : 46} onHover={setHoverS} />
         </div>
       </header>
 

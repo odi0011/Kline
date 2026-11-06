@@ -148,4 +148,23 @@
 }
 
 /* 有持仓时这块被仓位卡挤到下面，稍微收紧留白 */
-.wrap[data-has-position] { gap: 4px; }
+.wrap[data-has-position] { gap: 3px; }
+
+/* ---- 有持仓：把整块压到和"无仓位"接近的高度 ----
+   线上实测：有持仓整卡 284px、无仓位 208px，差 76px——持仓条 48
+   加概览 110 叠起来就超了。这里把窗口块从 26px 压到约 21px，
+   指标仍是一行四列，只是字号和留白收紧。 */
+.wrap[data-has-position] .sentiment { gap: 2px; }
+.wrap[data-has-position] .sentValue { font-size: 12px; }
+.wrap[data-has-position] .windows { gap: 2px; }
+.wrap[data-has-position] .block { padding: 1px 6px; }
+.wrap[data-has-position] .blockTitle { width: 40px; font-size: 7.5px; line-height: 1.05; }
+.wrap[data-has-position] .statLabel { font-size: 7px; line-height: 1.05; }
+.wrap[data-has-position] .statValue { font-size: 9.5px; line-height: 1.05; }
+.wrap[data-has-position] .mix { font-size: 6.5px; }
+/* 情绪条：数值和明细同一行已经够用，压缩行距 */
+.wrap[data-has-position] .sentRow { gap: 5px; }
+.wrap[data-has-position] .sentLabel,
+.wrap[data-has-position] .sentDetail,
+.wrap[data-has-position] .sentScore { font-size: 8.5px; }
+.wrap[data-has-position] .sentBar { height: 3px; }
