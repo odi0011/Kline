@@ -254,6 +254,22 @@ def test_session_winrate_uses_decided_denominator():
     assert session["winrate"] == 60.0, session
 
 
+def test_db_session_winrate_uses_decided_denominator():
+    """线上走的是 DB 汇总路径，不能用 wins/closed 把平价流水算进分母。"""
+    from decision.paper import PaperBook
+    book = PaperBook()
+    out = book._db_summary(
+        {"count": 100, "wins": 3, "losses": 2, "timeouts": 95, "pnl": 1.0},
+        [{"symbol": "btcusdt", "closed": 100, "wins": 3, "losses": 2,
+          "timeouts": 95, "netPnl": 1.0}],
+        0, 0)
+    session = out["session"]
+    assert session["closed"] == 100
+    assert session["decided"] == 5
+    assert session["winrate"] == 60.0, session
+    assert out["bySymbol"][0]["winrate"] == 60.0
+
+
 # ---------- 历史必须能在截断预算内读到 ----------
 
 def test_recent_closed_survives_payload_trim():

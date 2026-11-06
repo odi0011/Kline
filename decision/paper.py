@@ -635,6 +635,8 @@ class PaperBook:
         """数据库口径的汇总：全量聚合，按胜率排序。"""
         closed = int(agg.get("count") or 0)
         wins = int(agg.get("wins") or 0)
+        losses = int(agg.get("losses") or 0)
+        decided = wins + losses
         ranked = []
         for item in symbols:
             if not isinstance(item, dict):
@@ -672,9 +674,13 @@ class PaperBook:
             "openCount": open_count,
             "session": {
                 "closed": closed, "wins": wins,
-                "losses": int(agg.get("losses") or 0),
+                "losses": losses,
                 "timeouts": int(agg.get("timeouts") or 0),
-                "winrate": (round(wins / closed * 100, 1) if closed else None),
+                # 与 bySymbol / 内存降级路径同口径：分母只算有明确输赢的笔数。
+                # 线上 paper_trades 里大量 reason='removed' 的平价离场流水，
+                # 用 wins/closed 会把约 5 成的真实胜率显示成 10% 出头。
+                "decided": decided,
+                "winrate": (round(wins / decided * 100, 1) if decided else None),
                 "netPnl": round(float(agg.get("pnl") or 0), 4),
             },
             # window 现在只是"内存里缓存了多少条最近记录"，统计口径看 session/bySymbol

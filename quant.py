@@ -2712,11 +2712,20 @@ class QuantEngine:
         keep = self.symbol_filter
         if not keep:
             return []
+        scope = frozenset(keep)
+        # 展示范围没变就别每 5 秒重跑：symbol_filter 是前端勾选的展示币种，
+        # 不是交易池。旧实现每轮都把范围外的纸仓平掉、下轮信号又立刻重建，
+        # 线上因此刷出占 paper_trades 九成以上的 reason='removed' 平价流水，
+        # 把胜率分母和所有统计都污染了。只在范围真正变化时收尾一次。
+        if scope == getattr(self, "_last_paper_scope", None):
+            return []
         try:
-            return self.paper.close_missing(set(keep))
+            done = self.paper.close_missing(set(keep))
         except Exception as e:
             self._event("error", f"模拟仓监控范围清理失败: {e}")
             return []
+        self._last_paper_scope = scope
+        return done
 
     def _paper_by_symbol(self) -> dict:
         """按币种的累计已平仓战绩：{symbol: {closed,wins,losses,winrate,netPnl}}。
