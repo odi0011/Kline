@@ -92,9 +92,15 @@ def run_backtest(
     if len(bars) <= warmup + 2 or not patterns:
         return BacktestResult(trades, _metrics(trades, initial_equity),
                               initial_equity, initial_equity)
+    # **滑动窗口，不是 bars[:i+1]**。
+    # 形态只看最近 WINDOW 根（引擎里 WINDOW=120），传全量切片在 8 万根
+    # 历史上是 O(n²)：每步复制 i 个元素，累计几十亿次复制，
+    # 9 年回测 10 分钟都不出结果（线上实测）。固定窗口后降为 O(n)。
+    window_size = 120
     i = warmup - 1
     while i < len(bars) - 2:
-        window = bars[:i + 1]
+        lo = max(0, i + 1 - window_size)
+        window = bars[lo:i + 1]
         candidates = []
         for pattern in patterns:
             try:
