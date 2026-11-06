@@ -8,10 +8,6 @@
      回撤/夏普就是这么没的）。改成"至少 188，内容多就撑开"。 */
   min-height: 188px;
   height: 100%;
-  /* **必须撑满 wallet-zone 的宽度**：卡片是 flex 子项，默认 flex:0 1 auto
-     会按内容宽度收缩，右侧就空出一条（线上实测 wallet 296px、
-     卡片只有 237px，空 59px）。撑满后这块空间才能用来放平仓记录。 */
-  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -247,40 +243,19 @@
    实测这块撑高 10px（38 → 28），正好吃掉差额的大半。 */
 .card[data-has-position] .curve { height: 28px; margin-top: 0; margin-bottom: 0; }
 
-/* ---------- 下半区：仓位 + 市场概览 ----------
-   无仓位：概览占满整块。
-   有仓位：上半是持仓卡，下半是概览。
-
-   **有仓位时整卡高度必须和无仓位时基本一致**：账户卡在首行只占一列，
-   它一高一矮整行就参差（线上原话："高度整行应该是统一的，
-   现在有了仓位后高度就超了"）。
-   实测：无仓位 208px、有仓位 284px（多 76）——持仓条硬编码 84
-   加概览 110，两个完整块叠不下。这里把两块都压到"一眼够用"：
-     · 持仓卡只留 币种/方向/杠杆 + 盈亏 + 数量
-     · 概览的窗口块收紧
-   压完实测 211px，与无仓位 208 只差 3px。 */
+/* ---------- 下半区：市场概览 ----------
+   **持仓不再放在卡内**：卡片本来就窄（236px），横排两张只能靠裁字段
+   才放得下。线上原话："你他妈的给权益板块拉宽干啥，仓位还给我简化了，
+   需要你简化吗？竖着排绝对够了啊"——所以仓位挪到 wallet-zone 右侧
+   独立一列竖排（见 PositionStack），卡内这块只留给市场概览。
+   这样字段一个都不用省，卡片也不会被撑高。 */
 .posArea.split {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  /* 不再给 178px 下限：那是按"两块都完整显示"算的，结果把整卡顶到 284 */
   min-height: 0;
 }
-/* 持仓卡压缩：和概览共存时只保留最该一眼看到的内容。
-   开仓/强平/保证金在 title 提示里，悬停即可看到。 */
-.posArea.split .posScroll { flex: none; height: 48px; }
-.posArea.split .posViewport { height: 48px; }
-.posArea.split .pcard { padding: 3px 6px 4px; }
-.posArea.split .psep { display: none; }
-/* 只保留"数量"（prows 第一行），其余行让位给概览 */
-.posArea.split .prow:nth-child(n + 2) { display: none; }
-/* 两张卡必须正好铺满一行：原来固定 124px，两张 248px 塞不进 208px 的
-   可用宽度，第二张被裁掉半截（线上截图里 XRP 的 "3x" 是断的）。
-   用 calc(50% - 半个 gap)，几张都恒为两列，不再溢出。
-   注意 posList 的 gap 是 7px，这里减 3.5（取 3.5px 会有亚像素，
-   所以把 gap 在这套布局里也调成 6px，减 3 正好整除）。 */
-.posArea.split .posList { gap: 6px; }
-.posArea.split .pcard { width: calc(50% - 3px); flex: none; }
+
 .overviewArea {
   flex: 1 1 auto;
   min-height: 0;

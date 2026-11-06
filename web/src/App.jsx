@@ -8,6 +8,8 @@ import { Card } from '@/components/arc/card/card'
 import { ScrollArea } from '@/components/arc/scroll-area/scroll-area'
 import { GlassMenu } from '@/components/arc/glass-menu/glass-menu'
 import AccountCard from '@/components/arc/account-card/account-card'
+import PositionStack from '@/components/arc/account-card/position-stack'
+import '@/components/arc/account-card/position-stack.css'
 import { Badge } from '@/components/base/badges/badge'
 import { AnimatedCounter } from '@/components/arc/animated-counter/animated-counter'
 import CoinAvatar from '@/components/ui/coin-avatar'
@@ -867,8 +869,11 @@ export default function App() {
           <div className="wallet-zone">
             <AccountCard account={account} series={accountSeries} accent={ui.themeColor}
               chartColors={chartColors}
-              overview={quantSnap?.analysis?.overview}
-              trades={quantTrades} />
+              overview={quantSnap?.analysis?.overview} />
+            {/* 仓位竖排在账户卡右侧：卡内横排两张要裁字段，用户不要裁。
+                已平仓也排在这里，标签写「已平」。 */}
+            <PositionStack positions={account?.positions || []} trades={quantTrades}
+              chartColors={chartColors} />
           </div>
         </div>
       {/* 第二行：币种分析 / 计算流水（3D 编排场景已移除：

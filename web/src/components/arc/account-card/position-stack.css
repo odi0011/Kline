@@ -1,0 +1,124 @@
+/* 第一行右侧的仓位竖排栏：贴在账户卡右边，占满 wallet-zone 的剩余宽度。
+
+为什么用全局样式而不是 CSS Module：这个列表要跨组件（App 渲染它，
+卡片只管自己），用一套短类名更好读，也避免和卡片内部的 .prow/.pcard
+命名撞车。
+
+高度约束：整列高度 = wallet-zone 高度（197px @ 1080p），
+超出部分内部滚动，绝不撑高首行——首行一旦不等高整排就参差
+（线上出过"有了仓位后高度就超了"的反馈）。
+*/
+.pos-stack {
+  flex: 0 0 168px;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* 自定义滚动条太细会看不清，但默认条在窄列里又占宽——用极细的自定义条 */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(28, 35, 51, 0.18) transparent;
+  padding-right: 2px;
+}
+.pos-stack::-webkit-scrollbar { width: 4px; }
+.pos-stack::-webkit-scrollbar-thumb {
+  background: rgba(28, 35, 51, 0.18);
+  border-radius: 2px;
+}
+
+/* 一张仓位卡：和账户卡同一套浅色材质，字段完整（用户明确不要简化） */
+.stack-card {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px 7px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid rgba(28, 35, 51, 0.09);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.03);
+  font-variant-numeric: tabular-nums;
+}
+/* 已平仓：整卡降一档视觉权重，颜色在中性灰那一档，不抢"还在仓"的注意力 */
+.stack-card[data-closed] {
+  background: rgba(255, 255, 255, 0.62);
+  border-style: dashed;
+}
+
+.stack-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 14px;
+}
+.stack-sym {
+  min-width: 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #1c2333;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stack-tag {
+  flex: none;
+  font-size: 8.5px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 1.5px 3.5px;
+  border-radius: 3px;
+}
+.stack-tag[data-side="long"] { background: rgba(22, 163, 74, 0.12); color: #15803d; }
+.stack-tag[data-side="short"] { background: rgba(220, 38, 38, 0.12); color: #b91c1c; }
+/* 「已平」用中性灰：已平仓没有方向，用涨跌色会误导 */
+.stack-tag-closed { background: rgba(28, 35, 51, 0.07); color: rgba(28, 35, 51, 0.55); }
+
+.stack-lev {
+  flex: none;
+  margin-left: auto;
+  font-size: 8.5px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 1.5px 3.5px;
+  border-radius: 3px;
+  background: rgba(240, 185, 11, 0.16);
+  color: #8a6a00;
+}
+
+.stack-pnl {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+.stack-pct { font-size: 9.5px; font-weight: 600; opacity: 0.85; }
+
+.stack-sep {
+  height: 1px;
+  background: rgba(28, 35, 51, 0.07);
+  margin: 4px 0 3px;
+}
+
+.stack-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.stack-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 8.8px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.stack-key { flex: none; color: rgba(16, 24, 40, 0.4); }
+.stack-val { color: rgba(28, 35, 51, 0.78); }

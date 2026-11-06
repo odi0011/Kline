@@ -172,14 +172,20 @@ def test_overview_is_in_wire_whitelist():
 # ---------- 前端接线 ----------
 
 def test_account_card_renders_overview_not_heatmap():
-    """账户卡下半区：无仓位显示概览，有仓位显示仓位 + 概览。"""
+    """账户卡下半区只放概览；仓位在卡外独立竖排。
+
+    用户明确否掉了"卡内横排 + 裁字段"的方案（"仓位还给我简化了，
+    需要你简化吗？竖着排绝对够了啊"），所以卡内不再有 split 布局，
+    仓位改由 position-stack.jsx 渲染。
+    """
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent
     card = (root / "web/src/components/arc/account-card/account-card.jsx").read_text(encoding="utf-8")
     assert "MarketOverview" in card
     assert "EquityHeatmap" not in card
-    # 有仓位时仓位卡优先，概览不藏起来
-    assert "styles.split" in card
+    # 卡内不该再渲染持仓卡；仓位在独立组件里
+    assert "PositionCard" not in card
+    assert (root / "web/src/components/arc/account-card/position-stack.jsx").exists()
     compass = (root / "web/src/components/arc/account-card/market-overview.jsx").read_text(encoding="utf-8")
     for phrase in ("情绪", "胜率", "盈亏", "回撤", "夏普"):
         assert phrase in compass, f"概览缺少: {phrase}"
