@@ -1219,10 +1219,15 @@ class Storage:
     # ---- 形态命中 ----
 
     def save_hit(self, hit) -> None:
-        self._q("INSERT INTO hits(ts,symbol,`interval`,pattern,name_zh,direction,mode,price,bar_open_time) "
-                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        # 只有"收线确认 + 有方向"的命中才需要 10 分钟后判胜负；盘中预警 live
+        # 和中性形态从落库起就标 neutral，别让 pending 被永不判定的记录占满。
+        judged = (hit.mode == "confirmed"
+                  and hit.direction in ("bullish", "bearish"))
+        outcome = "pending" if judged else "neutral"
+        self._q("INSERT INTO hits(ts,symbol,`interval`,pattern,name_zh,direction,mode,price,bar_open_time,outcome) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (hit.ts, hit.symbol, hit.interval, hit.pattern, hit.name_zh,
-                 hit.direction, hit.mode, hit.price, hit.bar_open_time))
+                 hit.direction, hit.mode, hit.price, hit.bar_open_time, outcome))
 
     def hits_for_bar(self, symbol: str, interval: str, bar_open_time: int) -> list[dict]:
         rows = self._qall(
@@ -1237,16 +1242,18 @@ class Storage:
     # 窗口内价格先向形态方向走满 eval_threshold → win；先反向走满 → loss；
     # 两侧都没触及（横盘）→ flat，不计入胜率。判定只统计收线确认信号。
 
-    def _mark_directionless_hits(self) -> None:
-        """无方向形态（十字星等）不参与胜负判定，别让它们永远占着 pending。
+    def _mark_non_judged_hits(self) -> None:
+        """不参与胜负判定的历史命中别一直挂着 pending。
 
-        线上曾积累上万条中性十字星的 pending，把"待判定"数字彻底淹没。
-        一个服务生命周期内只发一次 UPDATE；失败则下次继续重试。
+        两类：中性形态（十字星等没有方向）、盘中预警 live（只有收线
+        confirmed 才判胜负）。线上这两类加起来上万条，把"待判定"数字
+        彻底淹没，报表看不出判定链路到底健不健康。新数据由 save_hit
+        直接落 neutral，这里只清存量；一个生命周期只发一次 UPDATE。
         """
         if self._directionless_marked:
             return
-        self._q("UPDATE hits SET outcome='neutral' "
-                "WHERE outcome='pending' AND direction NOT IN ('bullish','bearish')")
+        self._q("UPDATE hits SET outcome='neutral' WHERE outcome='pending' "
+                "AND (direction NOT IN ('bullish','bearish') OR mode<>'confirmed')")
         self._directionless_marked = True
 
     def eval_outcomes(self, symbol: str, interval: str, iv_ms: int, candle) -> None:
@@ -1258,7 +1265,7 @@ class Storage:
         全表扫描；归档仍缺窗口的标记 no_data，不让它饿死后面的命中。
         candle / iv_ms 保留是为了兼容 on_evt 的回调签名，到期改用墙钟时间判断。
         """
-        self._mark_directionless_hits()
+        self._mark_non_judged_hits()
         now = int(time.time() * 1000)
         cutoff = now - self.hit_ms if self.hit_ms else 0
         rows = self._qall(

@@ -174,6 +174,7 @@ def render(d: dict) -> None:
             print(f"    {k:<10} {h['outcomes'][k]:>7}  ({h['outcomes'][k]/total:5.1%})")
     print(f"    合计 {h['total']} 条；最老 pending {h['oldest_pending_days']} 天；"
           f"K线归档 {d['archive']['bars']} 根")
+    print("    neutral = 不参与判定（中性形态 / 盘中预警 live）")
     if h["outcomes"].get("pending", 0) / total > 0.3:
         print("    !! pending 占比过高，胜率样本不完整")
 

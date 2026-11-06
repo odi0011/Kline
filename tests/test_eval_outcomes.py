@@ -6,6 +6,8 @@ FakeStore 锁住修复后的行为：读归档、限流、无数据要记账、�
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 import storage
@@ -81,13 +83,14 @@ def test_missing_archive_is_recorded_not_left_pending():
                for sql, a in s.updates)
 
 
-def test_directionless_hits_are_marked_once():
+def test_non_judged_hits_are_marked_once():
     s = FakeStore([], WIN_BARS)
     s.eval_outcomes("BTCUSDT", "1m", 60_000, None)
     s.eval_outcomes("BTCUSDT", "1m", 60_000, None)
 
-    marks = [1 for sql, _ in s.updates if "outcome='neutral'" in sql]
-    assert sum(marks) == 1
+    marks = [(sql, a) for sql, a in s.updates if "outcome='neutral'" in sql]
+    assert len(marks) == 1
+    assert "mode<>'confirmed'" in marks[0][0]
 
 
 def test_query_is_batched_and_time_bounded():
@@ -108,3 +111,29 @@ def test_not_due_hit_is_skipped():
     s.eval_outcomes("BTCUSDT", "1m", 60_000, None)
 
     assert not any("outcome=%s" in sql for sql, _ in s.updates)
+
+
+def _hit(mode, direction):
+    return SimpleNamespace(
+        ts=NOW - 3_600_000, symbol="BTCUSDT", interval="1m",
+        pattern="doji", name_zh="十字星", direction=direction, mode=mode,
+        price=100.0, bar_open_time=NOW - 3_600_000)
+
+
+def test_save_hit_marks_live_as_neutral():
+    s = FakeStore([], WIN_BARS)
+    s.save_hit(_hit("live", "bullish"))
+    sql, args = s.updates[-1]
+    assert "outcome" in sql and args[-1] == "neutral"
+
+
+def test_save_hit_marks_directionless_as_neutral():
+    s = FakeStore([], WIN_BARS)
+    s.save_hit(_hit("confirmed", "neutral"))
+    assert s.updates[-1][1][-1] == "neutral"
+
+
+def test_save_hit_keeps_judgeable_pending():
+    s = FakeStore([], WIN_BARS)
+    s.save_hit(_hit("confirmed", "bullish"))
+    assert s.updates[-1][1][-1] == "pending"
