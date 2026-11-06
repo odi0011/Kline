@@ -198,8 +198,14 @@ def collect(conn, days: int, cost: float) -> dict:
             "direction": direction, "pattern": pattern,
             "hour": datetime.fromtimestamp(ts / 1000, timezone.utc).hour,
             "score": score, "gap": gap,
+            # 历史回填里归档K线不足的样本只有"信号事实"、没有特征，
+            # 混进分组会把基准算歪。事实仍永久保留，只是不纳入统计。
+            "complete": not (str(feat.get("regime") or "unknown") == "unknown"
+                             and feat.get("noise") is None),
         })
 
+    incomplete = sum(1 for e in events if not e["complete"])
+    events = [e for e in events if e["complete"]]
     atr_lo, atr_hi = _quantile_bands([e["atrPct"] for e in events])
     noise_lo, noise_hi = _quantile_bands([e["noise"] for e in events])
     # 归档实际只覆盖约 10 天，早期样本常因 K 线不足被跳过。用命中时间的
@@ -307,7 +313,7 @@ def collect(conn, days: int, cost: float) -> dict:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "days": days, "costPct": cost,
         "hits": len(hits), "replayed": len(events),
-        "fromArchive": from_archive,
+        "incomplete": incomplete, "fromArchive": from_archive,
         "spanDays": span_days,
         "splitAt": datetime.fromtimestamp(split_ts / 1000, timezone.utc).isoformat(),
         "atrBands": [atr_lo, atr_hi], "noiseBands": [noise_lo, noise_hi],
@@ -318,9 +324,10 @@ def collect(conn, days: int, cost: float) -> dict:
 
 def render(d: dict) -> None:
     print(f"\n=== 信号质量多维回放（{d['days']} 天，{d['generated_at'][:19]} UTC）===")
-    print(f"命中 {d['hits']} 条，可回放 {d['replayed']} 条"
-          f"（其中 {d.get('fromArchive', 0)} 条用永久特征快照，无需前置K线）；"
-          f"动态止损 0.4~2.0% / rr 3.0 / 扣双边 {d['costPct']}%")
+    print(f"命中 {d['hits']} 条，纳入统计 {d['replayed']} 条"
+          f"（{d.get('fromArchive', 0)} 条用永久特征快照、无需前置K线）；"
+          f"另有 {d.get('incomplete', 0)} 条历史因归档不足缺特征，事实已永久保留但不计分")
+    print(f"动态止损 0.4~2.0% / rr 3.0 / 扣双边 {d['costPct']}%")
     b = d["baseline"]
     print(f"实际可回放跨度 {d['spanDays']} 天，前后半切分点 {d['splitAt'][:16]} UTC")
     print(f"基准：{b['n']} 笔，胜率 {b['winrate']:.1%}，"

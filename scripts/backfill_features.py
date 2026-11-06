@@ -53,10 +53,10 @@ def main() -> None:
     cur = conn.cursor()
 
     try:
-        cur.execute("SELECT symbol,`interval`,mode,bar_open_time,pattern,direction "
-                    "FROM signal_features")
-        existing = {(r[0], r[1], r[2], int(r[3] or 0), r[4], r[5])
-                    for r in cur.fetchall()}
+        cur.execute("SELECT id,symbol,`interval`,mode,bar_open_time,pattern,"
+                    "direction,regime,noise_ratio FROM signal_features")
+        existing = {(r[1], r[2], r[3], int(r[4] or 0), r[5], r[6]):
+                    (r[0], r[7], r[8]) for r in cur.fetchall()}
     except Exception as ex:
         sys.exit(f"signal_features 表不可用（先部署一次让服务建表）: {ex}")
 
@@ -97,25 +97,34 @@ def main() -> None:
             cache_times[key] = [b[0] for b in cache[key]]
         return cache[key], cache_times[key]
 
-    inserted = skipped = 0
+    inserted = skipped = refreshed = 0
     for ts, sym, iv, pattern, direction, mode, price, bar_open in hits:
         key = (sym, iv, mode, int(bar_open or 0), pattern, direction)
-        if key in existing:
-            skipped += 1
-            continue
         regime = adx = atr = atr_pct = vol_state = rsi = z = squeeze = nr = None
         bars, times = bars_for(sym, iv)
         idx = bisect.bisect_left(times, int(bar_open or 0))
-        if 31 <= idx < len(bars):
-            window = bars[idx - 30:idx + 1]
+        if 0 <= idx < len(bars) and idx + 1 >= 5:
+            # 够 30 根用完整 market_state；不足时退回宽松指标（ATR/ADX 各要
+            # 15 根、噪声 5 根），尽量让历史样本也带上当时的特征。
+            window = bars[max(0, idx - 29):idx + 1]
             objs = [SimpleNamespace(open_time=b[0], open=b[1], high=b[2],
                                     low=b[3], close=b[4], volume=0.0)
                     for b in window]
             try:
-                st = IND.market_state(objs)
-                regime, adx, atr = st.get("regime"), st.get("adx"), st.get("atr")
-                atr_pct, vol_state = st.get("atrPct"), st.get("volState")
-                rsi, z, squeeze = st.get("rsi"), st.get("z"), st.get("squeeze")
+                if len(objs) >= 30:
+                    st = IND.market_state(objs)
+                    regime, adx, atr = st.get("regime"), st.get("adx"), st.get("atr")
+                    atr_pct, vol_state = st.get("atrPct"), st.get("volState")
+                    rsi, z, squeeze = st.get("rsi"), st.get("z"), st.get("squeeze")
+                else:
+                    atr = IND.atr(objs, 14) if len(objs) >= 15 else None
+                    ax = IND.adx(objs, 14) if len(objs) >= 15 else None
+                    if ax:
+                        adx = ax["adx"]
+                        regime = ("trend" if adx >= IND.ADX_TREND else
+                                  "range" if adx <= IND.ADX_RANGE else "mixed")
+                    rsi = IND.rsi(objs, 14) if len(objs) >= 15 else None
+                    vol_state = "unknown"
                 nr = noise_ratio(objs)
             except Exception:
                 pass
@@ -134,18 +143,42 @@ def main() -> None:
             if best:
                 score, gap, grade, confidence = (best[1][1], best[1][2],
                                                   best[1][3], best[1][4])
+        vals = (regime, adx, atr, atr_pct, vol_state, rsi, z,
+                None if squeeze is None else int(bool(squeeze)), nr,
+                score, gap, grade, confidence)
+        old = existing.get(key)
+        if old is not None:
+            # 幂等：已存在则跳过。但早期回填因归档不足留空的行，重跑时
+            # 用宽松指标补齐特征（COALESCE 保证不会把已有值清成 NULL）。
+            old_id, old_regime, old_noise = old
+            needs = ((not old_regime or old_regime == "unknown")
+                     and regime not in (None, "", "unknown")) or (
+                         old_noise is None and nr is not None)
+            if needs:
+                cur.execute(
+                    "UPDATE signal_features SET "
+                    "regime=COALESCE(%s,regime), adx=COALESCE(%s,adx), "
+                    "atr=COALESCE(%s,atr), atr_pct=COALESCE(%s,atr_pct), "
+                    "vol_state=COALESCE(%s,vol_state), rsi=COALESCE(%s,rsi), "
+                    "zscore=COALESCE(%s,zscore), squeeze=COALESCE(%s,squeeze), "
+                    "noise_ratio=COALESCE(%s,noise_ratio), score=COALESCE(%s,score), "
+                    "gap=COALESCE(%s,gap), grade=COALESCE(%s,grade), "
+                    "confidence=COALESCE(%s,confidence) WHERE id=%s",
+                    vals + (old_id,))
+                refreshed += 1
+            else:
+                skipped += 1
+            continue
         cur.execute(
             f"INSERT INTO signal_features({COLS}) VALUES({PLACEHOLDERS})",
             (int(ts), sym, iv, pattern, direction, mode,
-             float(price) if price else None, int(bar_open or 0),
-             regime, adx, atr, atr_pct, vol_state, rsi, z,
-             None if squeeze is None else int(bool(squeeze)), nr,
-             score, gap, grade, confidence, None, None, None))
-        existing.add(key)
+             float(price) if price else None, int(bar_open or 0)) + vals +
+            (None, None, None))
+        existing[key] = (0, regime, nr)
         inserted += 1
     conn.commit()
     print(f"回填完成：命中 {len(hits)} 条，新写入 {inserted} 条，"
-          f"已存在跳过 {skipped} 条")
+          f"补齐特征 {refreshed} 条，已存在跳过 {skipped} 条")
     cur.execute("SELECT COUNT(*), MIN(ts), MAX(ts) FROM signal_features")
     print("signal_features 当前：", cur.fetchone())
     conn.close()
