@@ -76,7 +76,7 @@ def _json_load(raw, default):
 class Storage:
     def __init__(self, mysql: dict, keep_minutes: int = 30,
                  hit_days: int = 90, eval_minutes: int = 10,
-                 eval_threshold: float = 0.0015,
+                 eval_threshold: float = 0.0015, eval_batch: int = 50,
                  stats_days: int = 7, stats_alpha: float = 0.94,
                  paper_keep_days: int = 0,
                  quant_trade_days: int = 365, quant_event_days: int = 30,
@@ -89,6 +89,9 @@ class Storage:
         self.hit_days = hit_days                # 形态命中保留天数（默认 90）
         self.eval_ms = eval_minutes * 60_000    # 命中后10分钟的走势判定胜负
         self.eval_threshold = eval_threshold    # 窗口内有效波动门槛（先触及判定）
+        # 每根收线最多补判多少条历史命中：1m×多币的高频回调不能每次全表扫描。
+        self.eval_batch = max(1, min(500, _safe_int(eval_batch, 50)))
+        self._directionless_marked = False
         self.stats_days = max(1, int(stats_days))
         self.stats_alpha = min(0.999, max(0.50, float(stats_alpha)))
         self.paper_keep_days = _keep_days(paper_keep_days)          # 0 = 永久保留
@@ -1234,21 +1237,51 @@ class Storage:
     # 窗口内价格先向形态方向走满 eval_threshold → win；先反向走满 → loss；
     # 两侧都没触及（横盘）→ flat，不计入胜率。判定只统计收线确认信号。
 
+    def _mark_directionless_hits(self) -> None:
+        """无方向形态（十字星等）不参与胜负判定，别让它们永远占着 pending。
+
+        线上曾积累上万条中性十字星的 pending，把"待判定"数字彻底淹没。
+        一个服务生命周期内只发一次 UPDATE；失败则下次继续重试。
+        """
+        if self._directionless_marked:
+            return
+        self._q("UPDATE hits SET outcome='neutral' "
+                "WHERE outcome='pending' AND direction NOT IN ('bullish','bearish')")
+        self._directionless_marked = True
+
     def eval_outcomes(self, symbol: str, interval: str, iv_ms: int, candle) -> None:
+        """判定已到期的形态命中，并用长期归档补判历史遗留。
+
+        旧实现只读滚动表 candles（保留 30 分钟）：服务重启或窗口被 prune
+        之后取不满 3 根就 continue，那些命中再也不会被判定，形成永久 pending。
+        现在改读 candle_archive（默认永久保留），按批限流，避免每根收线
+        全表扫描；归档仍缺窗口的标记 no_data，不让它饿死后面的命中。
+        candle / iv_ms 保留是为了兼容 on_evt 的回调签名，到期改用墙钟时间判断。
+        """
+        self._mark_directionless_hits()
+        now = int(time.time() * 1000)
+        cutoff = now - self.hit_ms if self.hit_ms else 0
         rows = self._qall(
             "SELECT id, direction, price, bar_open_time FROM hits "
-            "WHERE symbol=%s AND `interval`=%s AND mode='confirmed' AND outcome='pending' "
-            "AND direction IN ('bullish','bearish')", (symbol, interval))
-        due = [r for r in rows if (candle.open_time + iv_ms) >= r[3] + self.eval_ms]
-        for hit_id, direction, price, bar_open_time in due:
+            "WHERE symbol=%s AND `interval`=%s AND mode='confirmed' "
+            "AND outcome='pending' AND direction IN ('bullish','bearish') "
+            "AND ts>=%s AND ts<=%s ORDER BY ts DESC LIMIT %s",
+            (symbol, interval, cutoff, now - self.eval_ms, self.eval_batch))
+        for hit_id, direction, price, bar_open_time in rows:
+            bar_open_time = int(bar_open_time)
+            if bar_open_time + self.eval_ms > now:
+                continue        # 还没走完判定窗口
             price = float(price)
             wrows = self._qall(
-                "SELECT high, low, close FROM candles "
-                "WHERE symbol=%s AND `interval`=%s AND open_time > %s AND open_time <= %s "
+                "SELECT high, low, close FROM candle_archive "
+                "WHERE symbol=%s AND `interval`=%s AND open_time>%s AND open_time<=%s "
                 "ORDER BY open_time",
                 (symbol, interval, bar_open_time, bar_open_time + self.eval_ms))
             if len(wrows) < 3:
-                continue        # 窗口内K线数据不足（如服务中途重启），留待下次评估
+                # 归档也没有这段行情（例如辅助周期未归档）：明确记账，
+                # 不再留 pending 反复重试、也不占用后续批次的名额。
+                self._q("UPDATE hits SET outcome='no_data' WHERE id=%s", (hit_id,))
+                continue
             up_lvl = price * (1 + self.eval_threshold)
             dn_lvl = price * (1 - self.eval_threshold)
             result = "flat"

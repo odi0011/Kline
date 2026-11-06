@@ -1,15 +1,18 @@
 """结构形态检测器自测：用合成K线构造标准形态，验证识别与几何点位。
 
 不依赖网络/数据库，直接跑：python tests/test_structure.py
+
+pytest 收集时改为在**子进程**里跑完整脚本：导入 patterns.structure 会把
+结构形态注册进全局 registry，若在 pytest 主进程导入，会污染 test_patterns
+对「19 个内置形态」的完整性断言。
 """
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.candle import Candle, INTERVAL_MS  # noqa: E402
-import patterns.structure as S  # noqa: E402
-from analysis.structure import analyze  # noqa: E402
 
 
 def mk(prices, iv="1m"):
@@ -37,6 +40,7 @@ def V(seq):
 
 
 def check(name, cs, expect_key):
+    import patterns.structure as S
     piv = S.pivots_of(cs)
     r = S.detect_best(cs, require_break=True)
     got = r["key"] if r else None
@@ -47,41 +51,54 @@ def check(name, cs, expect_key):
     return ok
 
 
-fails = 0
+def run() -> int:
+    from analysis.structure import analyze
+    fails = 0
 
-# 头肩底：下跌 → 左肩(低) ↑ 颈 → 头(更低) ↑ 颈 → 右肩(与左肩齐) → 突破颈线
-hsb = V([120, 108, 112, 96, 116, 112, 118, 130])
-fails += not check("头肩底", mk(hsb), "head_shoulders_bottom")
+    # 头肩底：下跌 → 左肩(低) ↑ 颈 → 头(更低) ↑ 颈 → 右肩(与左肩齐) → 突破颈线
+    hsb = V([120, 108, 112, 96, 116, 112, 118, 130])
+    fails += not check("头肩底", mk(hsb), "head_shoulders_bottom")
 
-# 头肩顶：上涨 → 左肩(高) ↓ 颈 → 头(更高) ↓ 颈 → 右肩 → 跌破颈线
-hst = V([100, 112, 106, 120, 104, 108, 102, 90])
-fails += not check("头肩顶", mk(hst), "head_shoulders_top")
+    # 头肩顶：上涨 → 左肩(高) ↓ 颈 → 头(更高) ↓ 颈 → 右肩 → 跌破颈线
+    hst = V([100, 112, 106, 120, 104, 108, 102, 90])
+    fails += not check("头肩顶", mk(hst), "head_shoulders_top")
 
-# 三重底：下跌 → 三次同一低位 → 突破
-tb = V([125, 100, 112, 100, 112, 100, 118])
-fails += not check("三重底", mk(tb), "triple_bottom")
+    # 三重底：下跌 → 三次同一低位 → 突破
+    tb = V([125, 100, 112, 100, 112, 100, 118])
+    fails += not check("三重底", mk(tb), "triple_bottom")
 
-# 三重顶：上涨 → 三次同一高位 → 跌破
-tt = V([95, 120, 108, 120, 108, 120, 102])
-fails += not check("三重顶", mk(tt), "triple_top")
+    # 三重顶：上涨 → 三次同一高位 → 跌破
+    tt = V([95, 120, 108, 120, 108, 120, 102])
+    fails += not check("三重顶", mk(tt), "triple_top")
 
-# 双底
-db = V([120, 100, 114, 100, 122])
-fails += not check("双底", mk(db), "double_bottom")
+    # 双底
+    db = V([120, 100, 114, 100, 122])
+    fails += not check("双底", mk(db), "double_bottom")
 
-# 双顶
-dt = V([100, 120, 106, 120, 98])
-fails += not check("双顶", mk(dt), "double_top")
+    # 双顶
+    dt = V([100, 120, 106, 120, 98])
+    fails += not check("双顶", mk(dt), "double_top")
 
-# 结构分析产出
-cs = mk(hsb)
-a = analyze(cs)
-print(f"\nanalysis keys: levels={len(a['levels'])} trendlines={len(a['trendlines'])} "
-      f"zones={len(a['zones'])} pattern={a['pattern']['key'] if a['pattern'] else None} atr={a['atr']}")
-if a["levels"]:
-    print("  top level:", a["levels"][0])
-if a["zones"]:
-    print("  zone:", a["zones"][0])
+    # 结构分析产出
+    cs = mk(hsb)
+    a = analyze(cs)
+    print(f"\nanalysis keys: levels={len(a['levels'])} trendlines={len(a['trendlines'])} "
+          f"zones={len(a['zones'])} pattern={a['pattern']['key'] if a['pattern'] else None} atr={a['atr']}")
+    if a["levels"]:
+        print("  top level:", a["levels"][0])
+    if a["zones"]:
+        print("  zone:", a["zones"][0])
 
-print("\n" + ("全部通过" if fails == 0 else f"{fails} 个用例失败"))
-sys.exit(1 if fails else 0)
+    print("\n" + ("全部通过" if fails == 0 else f"{fails} 个用例失败"))
+    return 1 if fails else 0
+
+
+def test_structure_smoke() -> None:
+    """独立进程跑完整自测，避免结构形态注册污染 pytest 主进程。"""
+    done = subprocess.run([sys.executable, __file__],
+                          capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+if __name__ == "__main__":
+    sys.exit(run())

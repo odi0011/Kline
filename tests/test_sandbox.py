@@ -103,6 +103,8 @@ def test_timeout_is_enforced(root):
     assert "超时" in (out.get("error") or "") or out.get("code") not in (0, None)
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="RLIMIT_AS 依赖 Unix resource，Windows 上沙盒按设计跳过内存上限")
 def test_memory_limit_is_enforced(root):
     # 申请远超 512MB 的内存应被 RLIMIT_AS 挡住
     code = "python3 -c 'x = bytearray(1024*1024*1024)'"
