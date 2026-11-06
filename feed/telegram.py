@@ -35,7 +35,8 @@ def _mime_from_path(path: str) -> str:
 class TelegramBot:
     def __init__(self, token: str = "", allowed: list[str] | None = None,
                  on_message=None, proxy: str | None = None,
-                 sticker_dir: str = "", attach_dir: str = ""):
+                 sticker_dir: str = "", attach_dir: str = "",
+                 chats_path: str = ""):
         self.token = (token or "").strip()
         self.allowed = {str(x).strip() for x in (allowed or []) if str(x).strip()}
         self.on_message = on_message          # async (chat_id, text) -> str
@@ -51,8 +52,10 @@ class TelegramBot:
         self.media_sent = 0        # 成功发出去的表情包数量（状态页可查）
         # 主动推送要发到哪：记住最近来消息的会话。
         # 白名单为空时 Telegram 不做限制，但"推给谁"仍需要具体 chat_id——
-        # 只能从来信里学，没有别的来源。
+        # 只能从来信里学，没有别的来源。**必须落盘**，否则重启就丢。
         self.last_chats: list[str] = []
+        self.chats_path = chats_path
+        self._load_chats()
 
     # ---------- HTTP ----------
 
@@ -117,15 +120,46 @@ class TelegramBot:
             out.append(res)
         return {"ok": True, "sent": len(out)}
 
-    # ---------- 出站表情包 ----------
+    # ---------- 出站 ----------
+
+    def _load_chats(self) -> None:
+        """从磁盘恢复"最近来过信的会话"。
+
+        为什么要落盘：主动推送只能发给聊过的会话，而"聊过"的唯一证据
+        是来信。只存内存的话服务一重启这份记录就没了——线上实测重启后
+        `last_chats` 是空的，白名单也为空，于是主动消息哪里都推不出去。
+        """
+        path = self.chats_path
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, list):
+                self.last_chats = [str(x) for x in data if str(x).strip()][:5]
+        except (OSError, ValueError):
+            pass
+
+    def _save_chats(self) -> None:
+        path = self.chats_path
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(self.last_chats, fh)
+        except OSError:
+            pass
 
     def remember_chat(self, chat_id) -> None:
         """记下最近来过信的会话（主动推送用）。最多留 5 个，最近的排前。"""
         key = str(chat_id)
         if not key:
             return
+        if self.last_chats and self.last_chats[0] == key:
+            return                          # 没变化就不写盘
         rest = [c for c in self.last_chats if c != key]
         self.last_chats = [key] + rest[:4]
+        self._save_chats()
 
     def push(self, text: str) -> dict:
         """主动推进会话 —— 不是回复，是"我找你说句话"。

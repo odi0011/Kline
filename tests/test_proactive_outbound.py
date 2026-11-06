@@ -164,3 +164,45 @@ def test_main_wires_both_channels():
     assert "agent.outbound_fns = [_push_telegram, _push_weixin]" in src
     # 微信侧表情包要当媒体发
     assert "push.send_sticker(" in src
+
+
+# ---------- Telegram 主动推送的收件人 ----------
+
+def test_telegram_chat_is_persisted_across_restart(tmp_path):
+    """"谁聊过"必须落盘：重启后还要能主动推送。
+
+    线上实测：服务重启后 last_chats 是空的、白名单也为空，
+    主动消息哪里都推不出去。
+    """
+    from feed.telegram import TelegramBot
+
+    path = tmp_path / "tg-chats.json"
+    bot = TelegramBot("tok", [], None, None, chats_path=str(path))
+    bot.remember_chat(123456)
+    assert path.exists()
+
+    # 模拟重启：新实例从同一个文件恢复
+    again = TelegramBot("tok", [], None, None, chats_path=str(path))
+    assert again.last_chats == ["123456"]
+
+
+def test_telegram_push_targets_learned_chats(tmp_path, monkeypatch):
+    from feed.telegram import TelegramBot
+
+    path = tmp_path / "tg-chats.json"
+    bot = TelegramBot("tok", [], None, None, chats_path=str(path))
+    bot.remember_chat("111")
+    sent = []
+    monkeypatch.setattr(bot, "send_reply",
+                        lambda chat_id, text: sent.append((chat_id, str(text))) or {"ok": True})
+    res = bot.push("形态命中")
+    assert res["ok"] is True
+    assert sent and sent[0][0] == "111"
+
+
+def test_telegram_push_without_history_explains(tmp_path):
+    from feed.telegram import TelegramBot
+
+    bot = TelegramBot("tok", [], None, None, chats_path=str(tmp_path / "x.json"))
+    res = bot.push("hi")
+    assert res["ok"] is False and "会话" in res["error"]

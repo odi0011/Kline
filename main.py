@@ -1460,7 +1460,12 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
                                       sticker_dir=os.path.join("web", "public", "stickers"),
                                       attach_dir=os.path.join(
                                           os.path.dirname(os.path.abspath(config_path)),
-                                          "agent-attachments"))
+                                          "agent-attachments"),
+                                      # 记住"谁聊过"：主动推送要知道发给谁，
+                                      # 而且必须跨重启保留
+                                      chats_path=os.path.join(
+                                          os.path.dirname(os.path.abspath(config_path)),
+                                          "telegram-chats.json"))
                     tg_box["bot"] = bot
                     info = await asyncio.to_thread(bot.verify)
                     if info.get("ok"):
