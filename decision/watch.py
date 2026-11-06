@@ -140,7 +140,9 @@ def build_watch_plan(
                          h4_direction=h4["direction"], h1_direction=direction,
                          h1_rules=rules, metrics={"h4": h4})
     sl_distance = atr * config.watch_sl_atr_mult
-    tp_distance = atr * config.watch_tp_atr_mult
+    # 与 adaptive_sl_tp 同一个 rr 下界：旧值 2.5×ATR / 1.5×ATR 只有 1.67，
+    # 回放显示 rr 3.0 才是扫描网格里的最优档。
+    tp_distance = max(atr * config.watch_tp_atr_mult, sl_distance * 3.0)
     if direction == "bullish":
         sl = entry - sl_distance
         tp = entry + tp_distance

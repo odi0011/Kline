@@ -106,7 +106,14 @@ class DecisionConfig:
     maker_first: bool = False
     exchange_protection: bool = True
 
-    # Signal scoring
+    # Signal scoring / directional edge
+    # scripts/param_sweep.py 线上回放（7 天 2809 笔 + 30 天 4094 笔）一致显示：
+    # 只做空 +0.071 / +0.389 %每笔，做多 -0.185 / -1.231 %每笔。
+    allow_long: bool = False
+    # 当前 55 分 / gap 15 门槛选出的信号比不过滤更差
+    # （-0.142 vs -0.071 %每笔，signal_lift.py 的分箱也单调递减），
+    # 默认关闭硬门槛，评分只作记录与分档，不 veto。
+    score_gate_enabled: bool = False
     minimum_score: float = 55.0
     minimum_score_gap: float = 15.0
     strong_score: float = 75.0
@@ -169,7 +176,7 @@ class DecisionConfig:
     watch_ema_slow: int = 50
     watch_min_h1_rules: int = 2
     watch_sl_atr_mult: float = 1.5
-    watch_tp_atr_mult: float = 2.5
+    watch_tp_atr_mult: float = 4.5
     hmm_shadow: bool = True
     hmm_use_in_score: bool = False
     hmm_min_confidence: float = 0.60
@@ -210,6 +217,8 @@ class DecisionConfig:
                 events.append(MacroEventWindow(start, end, str(item.get("label") or "")))
         return cls(
             enabled=bool(d.get("enabled", True)),
+            allow_long=bool(d.get("allow_long", False)),
+            score_gate_enabled=bool(d.get("score_gate_enabled", False)),
             risk_enabled=bool(d.get("risk_enabled", True)),
             scoring_enabled=bool(d.get("scoring_enabled", True)),
             watch_enabled=bool(d.get("watch_enabled", True)),
@@ -266,7 +275,7 @@ class DecisionConfig:
             watch_ema_slow=max(3, _integer(d.get("watch_ema_slow"), 50)),
             watch_min_h1_rules=max(1, _integer(d.get("watch_min_h1_rules"), 2)),
             watch_sl_atr_mult=max(0.1, _number(d.get("watch_sl_atr_mult"), 1.5)),
-            watch_tp_atr_mult=max(0.1, _number(d.get("watch_tp_atr_mult"), 2.5)),
+            watch_tp_atr_mult=max(0.1, _number(d.get("watch_tp_atr_mult"), 4.5)),
             hmm_shadow=bool(d.get("hmm_shadow", True)),
             hmm_use_in_score=bool(d.get("hmm_use_in_score", False)),
             hmm_min_confidence=_fraction(d.get("hmm_min_confidence"), 0.60),

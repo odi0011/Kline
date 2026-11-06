@@ -452,7 +452,10 @@ class RiskEngine:
             return RiskResult(False, "correlation_bucket", "portfolio",
                               f"与 {corr_symbol.upper()} 相关性 {corr:.2f}，视为同一敞口",
                               correlation_max=corr)
-        if req.signal_score is not None and req.signal_score < self.config.minimum_score:
+        # 与 scoring.py 同一个开关：硬门槛默认关闭（回放显示它在制造负 alpha），
+        # 否则 scoring 放行了、风控这里又按 55 分拦一次，等于没关。
+        if (self.config.score_gate_enabled and req.signal_score is not None
+                and req.signal_score < self.config.minimum_score):
             return RiskResult(False, "signal_score", "signal",
                               f"信号共鸣分 {req.signal_score:.0f} 不足",
                               correlation_max=corr)

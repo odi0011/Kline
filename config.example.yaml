@@ -152,10 +152,13 @@ quant:
     exchange_protection: true
     maker_first: false
 
-    # 校准状态（2026-11-06 线上 7 天 / 754 条带评分决策，scripts/signal_lift.py）：
-    # 共鸣分越高，10 分钟方向胜率反而越低 —— <55 为 53.8%、>=55 为 44.5%，
-    # 随机入场基线 43.6%；分离度 >=30 仅 39.9%。默认阈值未经校准。
-    # 调高/调低前务必用 signal_lift.py 在更长窗口复核，别直接照这组数字反转。
+    # 校准状态（2026-11-06，scripts/param_sweep.py + signal_lift.py 实机回放）：
+    # 7 天 2809 笔 / 30 天 4094 笔，同根双触判止损、扣双边 0.1% 成本。
+    # 只做空 +0.071 / +0.389 %每笔；做多 -0.185 / -1.231 %每笔 → 只做空。
+    # 当前 55/15 门槛选出的信号 -0.142 %每笔，比不过滤 -0.071 更差 → 关硬门槛。
+    allow_long: false
+    score_gate_enabled: false
+    # 阈值仍保留用于分档与影子对照；要复核旧逻辑把 score_gate_enabled 打开。
     minimum_score: 55
     minimum_score_gap: 15
     pattern_min_samples: 5

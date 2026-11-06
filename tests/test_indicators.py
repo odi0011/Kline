@@ -113,21 +113,27 @@ check("drawdown 最大", dd["max"], (90 - 120) / 120 * 100, 1e-9)
 check("drawdown 峰值", dd["peak"], 120.0)
 
 # ---------------- 自适应止损止盈 ----------------
-# ATR=100，入场 10000，1.5 倍止损 → 1.5%，2.5 倍止盈 → 2.5%
+# ATR=100，入场 10000，1.5 倍止损 → 1.5%；rr 下界 3.0 → 止盈 4.5%
 r = I.adaptive_sl_tp(10000, 100, "BUY", sl_mult=1.5, tp_mult=2.5,
                      sl_min_pct=0.001, tp_min_pct=0.001, sl_max_pct=0.05, tp_max_pct=0.05)
 check("adaptive BUY slPct", r["slPct"], 1.5, 1e-9)
-check("adaptive BUY tpPct", r["tpPct"], 2.5, 1e-9)
+check("adaptive BUY tpPct", r["tpPct"], 4.5, 1e-9)
 check("adaptive BUY sl 价", r["sl"], 10000 * (1 - 0.015), 1e-6)
-check("adaptive BUY tp 价", r["tp"], 10000 * (1 + 0.025), 1e-6)
+check("adaptive BUY tp 价", r["tp"], 10000 * (1 + 0.045), 1e-6)
 # SELL 镜像
 r2 = I.adaptive_sl_tp(10000, 100, "SELL", sl_mult=1.5, tp_mult=2.5,
                       sl_min_pct=0.001, tp_min_pct=0.001, sl_max_pct=0.05, tp_max_pct=0.05)
 check("adaptive SELL sl 价", r2["sl"], 10000 * (1 + 0.015), 1e-6)
-check("adaptive SELL tp 价", r2["tp"], 10000 * (1 - 0.025), 1e-6)
-# 夹紧到下限（ATR 极小时）
+check("adaptive SELL tp 价", r2["tp"], 10000 * (1 - 0.045), 1e-6)
+# 夹紧到下限（ATR 极小时）：止盈必须跟着止损联动，不能再出现 rr 0.45
 r3 = I.adaptive_sl_tp(10000, 0.1, "BUY", sl_min_pct=0.004, tp_min_pct=0.0018)
 check("adaptive 触发止损下限", r3["slPct"], 0.4, 1e-9)
+check("adaptive rr 下界生效", r3["tpPct"] / r3["slPct"], 3.0, 1e-9)
+# min_rr=0 可回滚到旧行为
+r_legacy = I.adaptive_sl_tp(10000, 100, "BUY", sl_mult=1.5, tp_mult=2.5,
+                            sl_min_pct=0.001, tp_min_pct=0.001,
+                            sl_max_pct=0.05, tp_max_pct=0.05, min_rr=0)
+check("adaptive min_rr=0 保持旧行为", r_legacy["tpPct"], 2.5, 1e-9)
 # 夹紧到上限（ATR 极大时）
 r4 = I.adaptive_sl_tp(10000, 5000, "BUY", sl_max_pct=0.02, tp_max_pct=0.03)
 check("adaptive 触发止损上限", r4["slPct"], 2.0, 1e-9)

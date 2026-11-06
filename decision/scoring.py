@@ -218,11 +218,14 @@ def score_signal(
     funding = features.get("funding") or {}
     if funding.get("blocked"):
         vetoes.append("资金费率结算前方向不利，暂缓开仓")
-    if selected < config.minimum_score:
-        vetoes.append(f"共鸣分 {selected:.0f} < {config.minimum_score:.0f}")
-    if gap < config.minimum_score_gap:
-        # 保留一位小数：用 .0f 会把 14.6 < 15.2 显示成"15 < 15"，看着像 bug
-        vetoes.append(f"多空分离度 {gap:.1f} < {config.minimum_score_gap:.1f}")
+    # 7 天 / 30 天回放都显示高分信号反而更差，硬门槛在制造负 alpha。
+    # 默认只记录分数与档位、不 veto；需要复核时把 score_gate_enabled 打开。
+    if config.score_gate_enabled:
+        if selected < config.minimum_score:
+            vetoes.append(f"共鸣分 {selected:.0f} < {config.minimum_score:.0f}")
+        if gap < config.minimum_score_gap:
+            # 保留一位小数：用 .0f 会把 14.6 < 15.2 显示成"15 < 15"，看着像 bug
+            vetoes.append(f"多空分离度 {gap:.1f} < {config.minimum_score_gap:.1f}")
     if selected >= config.strong_score and gap >= config.strong_score_gap:
         grade = "strong"
     elif selected >= config.minimum_score and gap >= config.minimum_score_gap:

@@ -914,10 +914,19 @@ class PaperBook:
         direction = str(ctx.get("direction") or "")
         if direction not in ("bullish", "bearish"):
             return
+        # 与实盘决策链共用方向开关：实盘不会开的做多信号，模拟仓也不许开，
+        # 否则两套战绩没有可比性（线上曾出现"共鸣分 54 < 55"却仍开纸仓）。
+        if direction == "bullish" and not ctx.get("allowLong", True):
+            return
         atr = _num(ctx.get("atr"))
         sl_pct = (atr * 1.5 / price) if (atr and atr > 0) else 0.008
         sl_pct = min(0.02, max(0.004, sl_pct))
-        tp_pct = max(sl_pct * 1.6, min(0.03, (atr * 2.5 / price) if (atr and atr > 0) else 0.018))
+        # 回放扫描最优 rr 3.0；ctx 可覆盖，回归测试用来锁住旧口径。
+        min_rr = float(ctx.get("minRr") or 3.0)
+        atr_tp_mult = float(ctx.get("atrTpMult") or 4.5)
+        tp_pct = max(sl_pct * min_rr,
+                     min(0.06, (atr * atr_tp_mult / price)
+                         if (atr and atr > 0) else 0.018))
 
         lev = int(_num(ctx.get("maxLeverage")) or 20)
         lev = max(1, min(MAX_PAPER_LEV, lev))

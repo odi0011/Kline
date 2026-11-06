@@ -93,6 +93,8 @@ def ctx(price, atr=1.0, direction="bullish", score=70.0, gap=20.0,
         "grade": "medium", "direction": direction, "reason": "e2e",
         "regime": regime, "pattern": pattern, "patternStats": {},
         "maxLeverage": max_lev,
+        # 回归测试锁住旧口径；生产默认 allowLong=False / rr 3.0 由配置决定
+        "allowLong": True, "minRr": 1.6, "atrTpMult": 2.5,
     }
     if bars is not None:
         data["bars"] = bars

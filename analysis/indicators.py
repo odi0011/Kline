@@ -412,7 +412,8 @@ def signal_gate(state: dict, direction: str) -> tuple[bool, str]:
 def adaptive_sl_tp(entry: float, atr_value: float | None, side: str,
                    sl_mult: float = 1.5, tp_mult: float = 2.5,
                    sl_min_pct: float = 0.004, tp_min_pct: float = 0.0018,
-                   sl_max_pct: float = 0.02, tp_max_pct: float = 0.03) -> dict:
+                   sl_max_pct: float = 0.02, tp_max_pct: float = 0.03,
+                   min_rr: float = 3.0) -> dict:
     """按 ATR 倍数给出止损/止盈价，并夹到 [min, max] 百分比区间。
 
     固定百分比的问题：低波动时止盈摸不到、高波动时止损被噪声扫掉。
@@ -430,6 +431,10 @@ def adaptive_sl_tp(entry: float, atr_value: float | None, side: str,
     else:
         # 没 ATR 时退回最小百分比
         sl_pct, tp_pct = sl_min_pct, tp_min_pct
+    # 止盈必须与止损联动：旧实现把 sl 夹到 0.4%、tp 夹到 0.18%，rr 只有 0.45，
+    # 数学上就不可能盈利。7 天 / 30 天线上回放（scripts/param_sweep.py）一致显示
+    # rr 越大期望越好，3.0 是扫描网格里最优档，故设下界。
+    tp_pct = max(tp_pct, sl_pct * min_rr)
     if side == "BUY":
         sl = entry * (1 - sl_pct)
         tp = entry * (1 + tp_pct)

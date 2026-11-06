@@ -66,8 +66,10 @@ def _serialized(fn):
 #   v3 SL-0.50%/TP+0.35%：20 笔仍然 0 笔触及止盈，全部超时出场（笔均 -0.16）
 # 结论：3m 周期 45 分钟窗口内，+0.35% 仍然偏高。实测 20 笔中曾出现过的最大浮盈多在
 # +0.10~0.23% 区间，故止盈下调到 +0.18%（约 3m 振幅中位的 2 倍，可稳定触及）。
-SL_PCT = -0.005      # 止损 -0.50%（保持，避免被正常波动扫出）
-TP_PCT = 0.0018      # 止盈 +0.18%（可触及区间，配合超时兜底）
+SL_PCT = -0.005      # 止损 -0.50%
+# 旧值 0.18% 配 0.5% 止损 → rr 0.36，30 天回放每笔期望 -0.915%。
+# 按 scripts/param_sweep.py 的最优 rr 3.0 对齐（静态兜底路径，主链走 ATR 自适应）。
+TP_PCT = 0.015
 MAX_HOLD_MIN = 60    # 超时平仓：持仓超过 60 分钟未触发止盈止损则市价了结，释放槽位
 # 移动止盈（解决"浮盈变浮亏"）：34 笔样本中 24 笔超时出场合计 -4.2，
 # 多数曾有小额浮盈但回落到超时平仓时已转亏。规则：
@@ -88,11 +90,12 @@ AUDIT_SEC = 300      # 自审计间隔 5 分钟
 # 改成按 ATR 倍数给距离，再夹到 [min,max] 百分比区间兜底（ATR 异常时不会失控）。
 USE_ATR_STOPS = True
 ATR_SL_MULT = 1.5        # 止损 = 1.5 × ATR
-ATR_TP_MULT = 2.5        # 止盈 = 2.5 × ATR（盈亏比 1.67）
+ATR_TP_MULT = 4.5        # 止盈 = 4.5 × ATR（rr 3.0，回放最优档）
 SL_MIN_PCT = 0.004       # 止损距离下限 0.40%
 SL_MAX_PCT = 0.020       # 止损距离上限 2.0%
-TP_MIN_PCT = 0.0018      # 止盈距离下限 0.18%
-TP_MAX_PCT = 0.030       # 止盈距离上限 3.0%
+TP_MIN_PCT = 0.012       # 止盈下限 = 3 × 止损下限
+TP_MAX_PCT = 0.060       # 止盈上限（rr 下界优先，允许超过旧的 3%）
+MIN_RR = 3.0             # 盈亏比下界，7/30 天回放一致显示 rr 越大期望越好
 
 # ---- 回撤熔断 ----
 DD_LIMIT_PCT = 0.05      # 账户从峰值回撤超过 5% → 暂停开仓
@@ -1696,6 +1699,13 @@ class QuantEngine:
                 return
             self.stats["signals"] += 1
             direction = hit.get("direction")
+            # 7 天 / 30 天回放一致：做多每笔 -0.185 / -1.231%，做空
+            # +0.071 / +0.389%。默认只做空，可用 quant.decision.allow_long 打开。
+            if direction == "bullish" and not self.decision_cfg.allow_long:
+                self._event("skip", "数据回放显示做多无 edge，当前只做空",
+                            account=self._primary_account(), symbol=symbol,
+                            pattern=hit.get("pattern"))
+                return
             price = (self.price_fn or (lambda s: None))(symbol)
             trace = self._trace_start(hit, price)
             trace["account"] = self._primary_account()
@@ -2310,15 +2320,22 @@ class QuantEngine:
                                     name, a, symbol, price,
                                     f"形态失效(收盘{last_closed.close}穿越{invalidation})")
                                 continue
-                        armed = peak >= self.decision_cfg.trail_arm_atr * atr_now / pos["entry"]
+                        # 低波动时 2×ATR 可能只有 0.1%，吊灯会把止损拉到贴着
+                        # 入场价，正常波动就扫损（线上 DOGE/XRP/ADA 三笔皆如此：
+                        # 止损 0.10/0.13/0.17%，4~15 分钟即被平）。跟踪距离与
+                        # 启用门槛都不小于初始止损距离，防止越收越紧。
+                        min_trail = max(
+                            self.decision_cfg.trail_atr_mult * atr_now,
+                            pos["entry"] * SL_MIN_PCT)
+                        armed = peak >= max(
+                            self.decision_cfg.trail_arm_atr * atr_now,
+                            pos["entry"] * SL_MIN_PCT) / pos["entry"]
                         if armed:
                             if direction_up:
-                                chandelier = float(pos["peakPrice"]) - (
-                                    self.decision_cfg.trail_atr_mult * atr_now)
+                                chandelier = float(pos["peakPrice"]) - min_trail
                                 new_stop = max(float(pos.get("sl") or 0), chandelier)
                             else:
-                                chandelier = float(pos["peakPrice"]) + (
-                                    self.decision_cfg.trail_atr_mult * atr_now)
+                                chandelier = float(pos["peakPrice"]) + min_trail
                                 old_stop = float(pos.get("sl") or 1e30)
                                 new_stop = min(old_stop, chandelier)
                             min_step = max(atr_now * 0.05, pos["entry"] * 0.0002)
@@ -2599,10 +2616,16 @@ class QuantEngine:
                             })
                             changed = True
                     if not self._audit_protection(a, pos):
-                        price = live.get(sym, {}).get("price") or pos.get("entry", 0)
-                        if price:
-                            self._close(name, a, sym, float(price),
-                                        "保护单缺失且补挂失败")
+                        # 旧逻辑补挂失败就立刻市价平仓：线上 13 笔成交里 6 笔是
+                        # 刚开仓就被自己平掉（hold 0 分钟、pnl 0）。交易所保护单
+                        # 缺失并不等于裸奔——本地 pos["sl"] + manage() 每 5 秒的
+                        # 软件止损仍在。降级为软件止损并告警，下轮审计继续重试。
+                        pos["protectionOk"] = False
+                        self._event(
+                            "error",
+                            f"{sym.upper()} 保护单补挂失败，已降级为软件止损"
+                            f"（本地 sl={pos.get('sl')}）",
+                            account=name, symbol=sym)
                 # 豁免登记的仓位在交易所已不存在（未被跟踪故未走上面核销）→ 清理登记，
                 # 否则残留豁免会让量化引擎后续在同账户同币种开的仓绕过止盈止损
                 for (n, sym) in list(self._manual):
@@ -2699,6 +2722,8 @@ class QuantEngine:
             "pattern": advice.get("pattern") or "",
             "patternStats": self.pattern_stats_fn() if self.pattern_stats_fn else {},
             "maxLeverage": advice.get("maxLeverage"),
+            # 与实盘决策链共用同一个方向开关，模拟仓不能再开实盘不会开的仓。
+            "allowLong": self.decision_cfg.allow_long,
             "bars": bars,
         }
 
