@@ -59,7 +59,8 @@ def test_position_stack_is_outside_the_card():
     src = stack.read_text(encoding="utf-8")
     css = (ROOT / "web/src/components/arc/account-card/position-stack.css").read_text(encoding="utf-8")
     assert "pos-stack" in src
-    assert "flex-direction: column" in _rule(css, ".pos-stack")
+    # 竖排由 .pos-stack-list 的 flex-direction 保证（外层是绝对定位容器）
+    assert "flex-direction: column" in _rule(css, ".pos-stack-list")
 
 
 def test_position_fields_are_not_simplified():
@@ -77,14 +78,66 @@ def test_closed_positions_are_tagged_closed():
 
 
 def test_stack_height_is_capped_by_row():
-    """竖排栏高度 = 首行高度，超出内部滚动，不能撑高整行。"""
+    """竖排栏高度 = 首行高度，超出内部滚动，不能撑高整行。
+
+    用 absolute + top/bottom 定位而不是 height:100%：
+    百分比高度在 auto 父级里等于跟随内容，会把整行撑高（线上 197 → 412）。
+    """
     css = (ROOT / "web/src/components/arc/account-card/position-stack.css").read_text(encoding="utf-8")
     body = _rule(css, ".pos-stack")
-    assert "height: 100%" in body
-    assert "overflow-y: auto" in body
+    assert "top: 0" in body and "bottom: 0" in body
+    src = (ROOT / "web/src/components/arc/account-card/position-stack.jsx").read_text(encoding="utf-8")
+    assert 'orientation="vertical"' in src
 
 
 def test_app_renders_stack_beside_card():
     app = (ROOT / "web/src/App.jsx").read_text(encoding="utf-8")
     assert "PositionStack" in app
     assert "positions={account?.positions" in app
+
+
+# ---------- 仓位竖排栏必须内部滚动，且不影响首行高度 ----------
+#
+# 用户原话："仓位竖滚动盒子啊，你他妈自己看看现在成啥样了？傻逼吧，
+# 滚动盒子也要统一的，权益里数据条也都挤压了啊"
+# 线上实测：row 197 → 412（被仓位撑高）、card 236 → 193（被仓位列挤窄）、
+# 概览的 +74.83 和 +91.27 重叠。
+
+def test_stack_is_absolutely_positioned():
+    """必须脱离文档流：height:100% 在 auto 父级里等于跟随内容，会撑高整行。"""
+    css = (ROOT / "web/src/components/arc/account-card/position-stack.css").read_text(encoding="utf-8")
+    body = _rule(css, ".pos-stack")
+    assert "position: absolute" in body, body
+    assert "top: 0" in body and "bottom: 0" in body
+    # 不能再靠 height:100% 撑（那是上一版出问题的写法）
+    assert "height: 100%" not in body.split("pointer-events")[0]
+
+
+def test_stack_uses_shared_scroll_area():
+    """滚动条要走页面统一的 ScrollArea，不是裸 overflow:auto。"""
+    src = (ROOT / "web/src/components/arc/account-card/position-stack.jsx").read_text(encoding="utf-8")
+    assert "ScrollArea" in src
+    assert "orientation=\"vertical\"" in src
+
+
+def test_stack_width_leaves_room_for_card():
+    """仓位列宽度要收敛，否则权益卡被挤到 193px、指标重叠。"""
+    css = (ROOT / "web/src/components/arc/account-card/position-stack.css").read_text(encoding="utf-8")
+    body = _rule(css, ".pos-stack")
+    assert "clamp(" in body, body
+
+
+def test_card_reserves_stack_width():
+    """权益卡要主动让出仓位列的宽度，否则两者重叠。"""
+    css = (ROOT / "web/src/styles.css").read_text(encoding="utf-8")
+    assert '.wallet-zone > [aria-label="账户"]' in css
+    idx = css.index('.wallet-zone > [aria-label="账户"]')
+    block = css[idx:idx + 260]
+    assert "calc(100% - clamp(" in block, block
+
+
+def test_pattern_zone_leaves_room_for_wallet():
+    """形态区不能占 66%——钱包区要同时容纳权益卡和仓位列。"""
+    css = (ROOT / "web/src/styles.css").read_text(encoding="utf-8")
+    body = _rule(css, ".pattern-zone")
+    assert "flex: 0 0 60%" in body, body

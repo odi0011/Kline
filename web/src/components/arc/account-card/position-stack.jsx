@@ -1,17 +1,31 @@
-/* 第一行右侧的仓位竖排栏。
+/* 第一行右侧的仓位竖排栏：贴在账户卡右边，占满 wallet-zone 的剩余宽度。
 
-为什么独立成一列：账户卡本身只有 ~236px 宽，两个仓位横排时每张只剩
-113px，必须裁掉开仓/强平/保证金才塞得下——而用户明确不要裁
-（"仓位还给我简化了，需要你简化吗？竖着排绝对够了啊"）。
-竖排后每张卡占满整列宽度，字段一个不省；高度上限由 wallet-zone 决定，
-超出滚动，不会把整行撑高。
+## 为什么必须绝对定位
 
-同一个列表里也放最近已平仓位（状态标签写「已平」）——
-用户原话："历史仓位可以放，多空那里就写已平不就可以"。
-已平仓没有方向，所以标签用中性灰，不用多/空的涨跌色。
+上一版写 `height: 100%`，而父容器 `.wallet-zone` 高度是 auto，
+百分比在 auto 父级里等于"跟随内容"——4 张仓位卡把这一列撑到 412px，
+再把整行（连同形态区）一起拉高，首行等高彻底崩掉（线上实测
+row 197 → 412）。
+
+`.pos-stack` 现在 `position: absolute; top/bottom: 0`：完全脱离文档流，
+它的高度由 wallet-zone 决定，内容再多也只在自己内部滚动，
+**永远不可能撑高首行**。
+
+## 宽度
+
+`clamp(128px, 38%, 168px)`：wallet 越窄这一列越窄，把宽度让给权益卡。
+固定 168px 会把 361px 的 wallet 挤得只剩 193px，概览的四个指标
+直接叠在一起（线上截图里 `+74.83` 和 `+91.27` 重叠成一串）。
+
+## 滚动条
+
+用页面统一的 ScrollArea 组件，而不是裸 `overflow-y:auto`——
+滚动条样式、边缘渐隐、键盘滚动行为全站一致（用户要求"滚动盒子也要统一"）。
 */
 import { useMemo } from "react"
+import { ScrollArea } from "@/components/arc/scroll-area/scroll-area"
 import CoinAvatar from "@/components/ui/coin-avatar"
+import "./position-stack.css"
 
 const fmtPrice = (v) => {
   const n = Number(v) || 0
@@ -33,7 +47,7 @@ function Row({ p, closed, chartColors }) {
   const pct = Number(p.unrealized_pct)
   const base = String(p.symbol || "").replace(/usdt$/i, "").toUpperCase()
   const tone = pnl > 0 ? chartColors.up : pnl < 0 ? chartColors.down : "rgba(16,24,40,0.5)"
-  // 已平仓显示 平仓价，持仓显示 强平价/保证金
+  // 已平仓显示 平仓价/持有时间，持仓显示 强平价/保证金
   const details = isClosed
     ? [
         ["数量", fmtNum(Math.abs(Number(p.qty) || 0))],
@@ -82,8 +96,8 @@ function Row({ p, closed, chartColors }) {
 
 export default function PositionStack({ positions = [], trades = [], chartColors }) {
   const open = Array.isArray(positions) ? positions : []
-  // 已平仓只补到"总数不超过 4 条"：这块高度有限，先在屏的仓优先。
   const closed = useMemo(() => {
+    // 持仓优先占位；剩余名额补最近已平仓
     const room = Math.max(0, 4 - open.length)
     return (Array.isArray(trades) ? trades : []).slice(0, room)
   }, [trades, open.length])
@@ -91,13 +105,16 @@ export default function PositionStack({ positions = [], trades = [], chartColors
   if (!open.length && !closed.length) return null
 
   return (
-    <div className="pos-stack" role="region" aria-label="仓位">
-      {open.map((p) => (
-        <Row key={`o-${p.symbol}`} p={p} chartColors={chartColors} />
-      ))}
-      {closed.map((t, i) => (
-        <Row key={`c-${t.id ?? i}`} p={t} closed chartColors={chartColors} />
-      ))}
-    </div>
+    <ScrollArea className="pos-stack" viewportClassName="pos-stack-viewport"
+      orientation="vertical" fade={10} scrollbars="auto" label="仓位">
+      <div className="pos-stack-list">
+        {open.map((p) => (
+          <Row key={`o-${p.symbol}`} p={p} chartColors={chartColors} />
+        ))}
+        {closed.map((t, i) => (
+          <Row key={`c-${t.id ?? i}`} p={t} closed chartColors={chartColors} />
+        ))}
+      </div>
+    </ScrollArea>
   )
 }

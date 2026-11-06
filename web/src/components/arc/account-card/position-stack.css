@@ -1,31 +1,46 @@
-/* 第一行右侧的仓位竖排栏：贴在账户卡右边，占满 wallet-zone 的剩余宽度。
+/* 仓位竖排栏：绝对定位贴在 wallet-zone 右侧，内部滚动。
 
-为什么用全局样式而不是 CSS Module：这个列表要跨组件（App 渲染它，
-卡片只管自己），用一套短类名更好读，也避免和卡片内部的 .prow/.pcard
-命名撞车。
+## 关键约束：绝不能影响首行高度
 
-高度约束：整列高度 = wallet-zone 高度（197px @ 1080p），
-超出部分内部滚动，绝不撑高首行——首行一旦不等高整排就参差
-（线上出过"有了仓位后高度就超了"的反馈）。
+首行是等高栅格（形态区固定 192px）。这个列一旦参与文档流、又按内容
+撑高，就会把整行顶到 400+（线上实测 197 → 412），形态区跟着被拉长，
+一整排全乱。
+
+所以定位用 `position: absolute; top: 0; bottom: 0`：
+高度由 wallet-zone 决定，内容超出只在自己内部滚动。
+
+## 宽度让位给权益卡
+
+wallet-zone 只有 361px（1920 视口）。固定 168px 会把权益卡挤到 193px，
+概览四个指标直接重叠。改成 `clamp(128px, 38%, 168px)`：
+wallet 越窄这一列越窄，权益卡始终有足够宽度放四列指标。
 */
 .pos-stack {
-  flex: 0 0 168px;
-  min-width: 0;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: clamp(128px, 38%, 168px);
+  /* 覆盖 wallet-zone 的 14px 间隙：让这一列紧贴权益卡右缘 */
+  z-index: 1;
+  pointer-events: auto;
+}
+/* ScrollArea 的根与视口都要撑满这一列，否则内部滚动算不出高度 */
+.pos-stack,
+.pos-stack :global([class*="viewport"]) {
   height: 100%;
+  min-height: 0;
+}
+.pos-stack-viewport {
+  height: 100%;
+  min-height: 0;
+}
+
+.pos-stack-list {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  /* 自定义滚动条太细会看不清，但默认条在窄列里又占宽——用极细的自定义条 */
-  scrollbar-width: thin;
-  scrollbar-color: rgba(28, 35, 51, 0.18) transparent;
-  padding-right: 2px;
-}
-.pos-stack::-webkit-scrollbar { width: 4px; }
-.pos-stack::-webkit-scrollbar-thumb {
-  background: rgba(28, 35, 51, 0.18);
-  border-radius: 2px;
+  gap: 6px;
+  padding-bottom: 2px;
 }
 
 /* 一张仓位卡：和账户卡同一套浅色材质，字段完整（用户明确不要简化） */
@@ -33,16 +48,16 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  padding: 6px 8px 7px;
+  padding: 5px 7px 6px;
   border-radius: 10px;
   background: #fff;
   border: 1px solid rgba(28, 35, 51, 0.09);
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.03);
   font-variant-numeric: tabular-nums;
 }
-/* 已平仓：整卡降一档视觉权重，颜色在中性灰那一档，不抢"还在仓"的注意力 */
+/* 已平仓：整卡降一档视觉权重，虚线边框表示"已经结束" */
 .stack-card[data-closed] {
-  background: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.66);
   border-style: dashed;
 }
 
@@ -92,33 +107,38 @@
   display: flex;
   align-items: baseline;
   gap: 5px;
-  margin-top: 2px;
-  font-size: 13px;
+  margin-top: 1px;
+  font-size: 12.5px;
   font-weight: 700;
   line-height: 1.15;
   white-space: nowrap;
 }
-.stack-pct { font-size: 9.5px; font-weight: 600; opacity: 0.85; }
+.stack-pct { font-size: 9px; font-weight: 600; opacity: 0.85; }
 
 .stack-sep {
   height: 1px;
   background: rgba(28, 35, 51, 0.07);
-  margin: 4px 0 3px;
+  margin: 3px 0 2px;
 }
 
 .stack-rows {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 0;
 }
 .stack-row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 6px;
-  font-size: 8.8px;
-  line-height: 1.2;
+  gap: 5px;
+  font-size: 8.5px;
+  line-height: 1.25;
   white-space: nowrap;
 }
 .stack-key { flex: none; color: rgba(16, 24, 40, 0.4); }
-.stack-val { color: rgba(28, 35, 51, 0.78); }
+.stack-val {
+  min-width: 0;
+  color: rgba(28, 35, 51, 0.78);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

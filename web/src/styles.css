@@ -130,7 +130,9 @@ body {
 
 /* 192 = 网格顶部留白 2 + 形态卡 186 + 底部呼吸 4；横向滚动用右上角箭头（scrollButtons），无底部滚动条 */
 .pattern-zone {
-  flex: 0 0 66%;
+  /* 66% → 60%：钱包区要同时放权益卡 + 仓位竖排栏，
+     给少了权益卡会被挤到 193px，概览四个指标直接重叠。 */
+  flex: 0 0 60%;
   min-width: 0;
   /* 与 wallet-zone 一起被最高内容撑开，两者顶部对齐 */
   min-height: 192px;
@@ -148,6 +150,14 @@ body {
   position: relative;
   z-index: 40;
   display: flex;
+}
+
+/* 仓位竖排栏是 wallet-zone 的绝对定位子元素（见 position-stack.css），
+   所以权益卡必须主动给它让出宽度，否则两者会重叠。
+   clamp 必须和那一列的 width 完全一致：128~168px，中间按 38% 算。 */
+.wallet-zone > [aria-label="账户"] {
+  width: calc(100% - clamp(128px, 38%, 168px) - 10px);
+  flex: none;
 }
 
 /* 量化交易区：删掉第二行账户面板后填满剩余高度 */

@@ -62,11 +62,11 @@ const closedTrades = [
 ]
 
 const cases = [
-  ["无仓位", [], 470],
-  ["两个仓位（线上同形）", twoPositions, 470],
+  ["无仓位", [], 400],
+  ["两个仓位（线上同形）", twoPositions, 400],
   ["四个仓位", [...twoPositions,
     position("btcusdt", 0.012, 80300, 80410, 1.2, 0.14, 5, 66000, 190, 964),
-    position("solusdt", 8.4, 96.7, 96.4, -2.1, -0.28, 3, 68, 270, 810)], 470],
+    position("solusdt", 8.4, 96.7, 96.4, -2.1, -0.28, 3, 68, 270, 810)], 400],
 ]
 
 function App() {
@@ -76,7 +76,7 @@ function App() {
       {cases.map(([label, positions, width]) => (
         <div key={label} style={{ width, flex: "none" }}>
           <div style={{ font: "600 12px system-ui", marginBottom: 6 }}>{label}（{width}px）</div>
-          <div style={{ display: "flex", gap: 14, alignItems: "stretch", height: 197 }}>
+          <div style={{ position: "relative", display: "flex", gap: 14, alignItems: "stretch", height: 197 }}>
             <AccountCard account={account(positions)} series={account(positions).series}
               chartColors={chartColors} accent="#f0b90b" overview={overview} />
             <PositionStack positions={positions} trades={closedTrades}
