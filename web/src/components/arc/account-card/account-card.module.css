@@ -8,6 +8,10 @@
      回撤/夏普就是这么没的）。改成"至少 188，内容多就撑开"。 */
   min-height: 188px;
   height: 100%;
+  /* **必须撑满 wallet-zone 的宽度**：卡片是 flex 子项，默认 flex:0 1 auto
+     会按内容宽度收缩，右侧就空出一条（线上实测 wallet 296px、
+     卡片只有 237px，空 59px）。撑满后这块空间才能用来放平仓记录。 */
+  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -63,7 +67,14 @@
 .eqPnl [class*="symbol"] { color: inherit; }
 
 /* ---------- 持仓：横向滚动的卡片 ---------- */
-.posArea { flex: 1 1 auto; min-height: 0; margin: 0 -2px; position: relative; }
+.posArea {
+  flex: 1 1 auto; min-height: 0; margin: 0 -2px; position: relative;
+  /* 常驻纵向 flex：下半区是 lowerRow（概览 + 最近平仓）左右分栏，
+     有仓位时上面再加一条持仓条。没有仓位时也要能正确分配高度。 */
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 .posScroll { height: 100%; }
 .posViewport { height: 100%; }
 /* 横向翻页用玻璃箭头，隐藏原生滚动条轨道 */
@@ -274,4 +285,87 @@
   flex: 1 1 auto;
   min-height: 0;
   /* 不再 overflow:hidden：内容超了要让卡片长高，而不是把回撤/夏普裁掉 */
+}
+
+/* ---------- 下半区左右分栏：概览 | 最近平仓 ----------
+   卡片撑满 wallet 宽度后，右侧会多出 ~125px（1920 视口实测）。
+   那块原本纯白，现在放已平仓的仓位——用户原话："右侧空了一部分空间？
+   仓位可以放在这里啊，历史仓位可以放，多空那里就写已平不就可以"。 */
+.lowerRow {
+  display: flex;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+/* 概览吃掉剩余宽度；最近平仓固定一列，宽度够放
+   「图标 + 币种 + 已平 + 盈亏」四个元素 */
+.closedArea {
+  flex: 0 0 108px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: stretch;
+  gap: 3px;
+  padding: 2px 0 0;
+  border-left: 1px solid rgba(28, 35, 51, 0.07);
+  padding-left: 6px;
+}
+.closedTitle {
+  flex: none;
+  font-size: 8.5px;
+  font-weight: 700;
+  color: rgba(16, 24, 40, 0.5);
+  letter-spacing: 0.02em;
+}
+.closedEmpty {
+  font-size: 9.5px;
+  color: var(--text-muted, #8b949e);
+}
+.closedList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow: hidden;
+}
+.closedRow {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  font-size: 8.8px;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  /* 一行放不下时宁可压缩币种名，也不让盈亏数字换行——
+     "-0.16" 被拆成两行比截断更糟（线上截图里就出现了）。 */
+  overflow: hidden;
+}
+.closedSym {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 8.8px;
+  font-weight: 700;
+  color: #1c2333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 「已平」用中性灰：它既不是多也不是空，别用方向色去暗示方向 */
+.closedTag {
+  flex: none;
+  font-size: 7.5px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 3px;
+  background: rgba(28, 35, 51, 0.07);
+  color: rgba(28, 35, 51, 0.55);
+}
+.closedPnl {
+  flex: none;
+  margin-left: auto;
+  font-weight: 700;
+  white-space: nowrap;
 }

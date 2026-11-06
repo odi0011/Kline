@@ -90,3 +90,50 @@ def test_position_row_hiding_keeps_quantity():
     block = jsx.split('className={styles.prows}')[1].split("{rows.map")[0]
     assert "数量" in block, block[:200]
 
+
+
+# ---------- 右侧空白要用起来：最近平仓 ----------
+#
+# 用户原话："我看目前第一行，右侧空了一部分空间？仓位可以放在这里啊，
+# 历史仓位可以放，多空那里就写已平不就可以？"
+# 实测：1920 视口下 wallet 361px、账户卡只有 236px，右侧空 125px。
+
+def test_card_fills_wallet_width():
+    """卡片必须撑满 wallet-zone，否则右边永远空一条。
+
+    根因：卡片是 flex 子项，默认 flex:0 1 auto 会按内容收缩。
+    """
+    css = (ROOT / "web/src/components/arc/account-card/account-card.module.css").read_text(encoding="utf-8")
+    body = _rule(css, ".card")
+    assert "width: 100%" in body, body
+
+
+def test_closed_positions_column_exists():
+    """下半区左右分栏：左边概览、右边最近平仓。"""
+    css = (ROOT / "web/src/components/arc/account-card/account-card.module.css").read_text(encoding="utf-8")
+    assert ".lowerRow" in css
+    assert ".closedArea" in css
+    jsx = CARD_JSX.read_text(encoding="utf-8")
+    assert "<ClosedList" in jsx
+    assert "最近平仓" in jsx
+
+
+def test_closed_tag_says_closed_not_direction():
+    """状态标签写「已平」，不是多/空——已平仓没有方向可言。"""
+    jsx = CARD_JSX.read_text(encoding="utf-8")
+    block = jsx.split("function ClosedList")[1].split("export default")[0]
+    assert "已平" in block
+    assert "做多" not in block and "做空" not in block
+
+
+def test_closed_pnl_never_wraps():
+    """盈亏数字不能换行：'-0.16' 被拆成两行比截断更糟。"""
+    css = (ROOT / "web/src/components/arc/account-card/account-card.module.css").read_text(encoding="utf-8")
+    body = _rule(css, ".closedPnl")
+    assert "white-space: nowrap" in body, body
+
+
+def test_app_passes_closed_trades():
+    """App 要把已平仓数据传进来，否则这个区块永远是「暂无」。"""
+    app = (ROOT / "web/src/App.jsx").read_text(encoding="utf-8")
+    assert "trades={quantTrades}" in app

@@ -47,12 +47,24 @@ const overview = {
          maxDrawdown: -45.65, sharpe: -0.01, realTrades: 58, paperTrades: 1942 },
 }
 
+/* 已平仓：字段形状与线上 quant_trades 一致 */
+const closedTrades = [
+  { id: 16, symbol: "xrpusdt", side: "SELL", qty: 119.8, entry: 1.2165, exit: 1.2178,
+    pnl: -0.16, movePct: -0.11, reason: "止损", holdMin: 4.6 },
+  { id: 15, symbol: "dogeusdt", side: "SELL", qty: 2034, entry: 0.07212, exit: 0.07222,
+    pnl: -0.2, movePct: -0.14, reason: "止损", holdMin: 5.2 },
+  { id: 14, symbol: "adausdt", side: "SELL", qty: 793, entry: 0.185, exit: 0.1854,
+    pnl: -0.32, movePct: -0.22, reason: "止损", holdMin: 14.5 },
+  { id: 13, symbol: "solusdt", side: "BUY", qty: 8.4, entry: 96.4, exit: 96.9,
+    pnl: 1.42, movePct: 0.52, reason: "止盈", holdMin: 21 },
+]
+
 const cases = [
-  ["无仓位", [], 230],
-  ["两个仓位（线上同形）", twoPositions, 230],
+  ["无仓位", [], 361],
+  ["两个仓位（线上同形）", twoPositions, 361],
   ["四个仓位", [...twoPositions,
     position("btcusdt", 0.012, 80300, 80410, 1.2, 0.14, 5, 66000, 190, 964),
-    position("solusdt", 8.4, 96.7, 96.4, -2.1, -0.28, 3, 68, 270, 810)], 230],
+    position("solusdt", 8.4, 96.7, 96.4, -2.1, -0.28, 3, 68, 270, 810)], 361],
 ]
 
 function App() {
@@ -63,7 +75,8 @@ function App() {
         <div key={label} style={{ width, flex: "none" }}>
           <div style={{ font: "600 12px system-ui", marginBottom: 6 }}>{label}（{width}px）</div>
           <AccountCard account={account(positions)} series={account(positions).series}
-            chartColors={chartColors} accent="#f0b90b" overview={overview} />
+            chartColors={chartColors} accent="#f0b90b" overview={overview}
+            trades={closedTrades} />
         </div>
       ))}
     </div>

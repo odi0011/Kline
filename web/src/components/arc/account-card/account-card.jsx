@@ -64,7 +64,54 @@ function PositionCard({ p, chartColors }) {
   )
 }
 
-export default function AccountCard({ account, series, chartColors, accent = "#f0b90b", overview }) {
+/* 最近平仓：已平掉的仓位，占着原来空着的那条右侧空间。
+   和持仓卡同一套视觉语言（图标 + 币种 + 状态标签 + 盈亏），
+   区别只是状态写「已平」而不是「多/空」——用户原话就是这个意思：
+   "多空那里就写已平不就可以"。
+
+   为什么不做成可滚动列表：这块高度只有 ~96px（要和左侧概览齐平），
+   塞 4 行刚好；再多就要抢概览的位置。完整历史有专门的仓位历史面板。 */
+function ClosedList({ trades = [], chartColors }) {
+  const recent = (Array.isArray(trades) ? trades : []).slice(0, 4)
+  if (!recent.length) {
+    return (
+      <div className={styles.closedArea}>
+        <span className={styles.closedTitle}>最近平仓</span>
+        <span className={styles.closedEmpty}>暂无</span>
+      </div>
+    )
+  }
+  return (
+    <div className={styles.closedArea}>
+      <span className={styles.closedTitle}
+        title={`最近 ${recent.length} 笔已平仓（完整历史见「仓位历史」）`}>
+        最近平仓
+      </span>
+      <div className={styles.closedList}>
+        {recent.map((t) => {
+          const pnl = Number(t.pnl) || 0
+          const base = String(t.symbol || "").replace(/usdt$/i, "").toUpperCase()
+          return (
+            <div key={t.id ?? `${t.symbol}-${t.ts}`} className={styles.closedRow}
+              title={`${base} ${t.side === "BUY" ? "多" : "空"} ${t.qty} · `
+                + `开 ${t.entry} → 平 ${t.exit} · ${t.reason || ""} · `
+                + `持有 ${Math.round(Number(t.holdMin) || 0)} 分钟`}>
+              <CoinAvatar symbol={t.symbol} size={11} />
+              <b className={styles.closedSym}>{base}</b>
+              <span className={styles.closedTag}>已平</span>
+              <span className={styles.closedPnl}
+                style={{ color: pnl > 0 ? chartColors.up : pnl < 0 ? chartColors.down : "rgba(16,24,40,0.45)" }}>
+                {(pnl > 0 ? "+" : "") + pnl.toFixed(2)}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+export default function AccountCard({ account, series, chartColors, accent = "#f0b90b", overview, trades }) {
   const [hoverS, setHoverS] = useState(null)
   const [edges, setEdges] = useState({ left: false, right: false })
   const viewportRef = useRef(null)
@@ -146,12 +193,14 @@ export default function AccountCard({ account, series, chartColors, accent = "#f
         ) : account.error ? (
           <span className={styles.posEmpty} role="alert">数据获取失败</span>
         ) : null}
-        {/* 无仓位时这里就是市场概览；有仓位时仓位卡优先，概览退到下面
-            （仓位是更紧急的信息，但情绪/战绩也不该被完全藏起来）。
-            原来的权益热力图已去掉：它只回答"哪天赚了多少"，
-            而这块空间该回答"现在市场什么状态、我的策略在这些窗口里打得怎么样"。 */}
-        <div className={styles.overviewArea}>
-          <MarketOverview overview={overview} positions={positions} />
+        {/* 下半区左右分栏：左边市场概览（情绪 + 三个时间窗口），
+            右边最近平仓。卡片撑满 wallet 宽度后右边多出来的空间
+            原本是空的（线上实测 125px 全白），正好放已平的仓位。 */}
+        <div className={styles.lowerRow}>
+          <div className={styles.overviewArea}>
+            <MarketOverview overview={overview} positions={positions} />
+          </div>
+          <ClosedList trades={trades} chartColors={chartColors} />
         </div>
         {scrollable && (
           <div className={styles.posNav}>
