@@ -210,9 +210,11 @@ def main() -> int:
     for k, v in series.items():
         print(f"  {k:38s} {len(v):>7d} 条", flush=True)
 
-    times = [b.open_time for b in bars]
     horizons = [int(x) for x in args.horizons.split(",")]
     step = max(1, args.sample_hours)
+    # 时间轴只抽一次。原来每个事件、每个特征都重建一遍完整时间列表，
+    # 5 特征 × 2 万事件 × 20 万条 metrics = O(n²)，实机 15 分钟都跑不完。
+    indexed = {k: (seq, [x[0] for x in seq]) for k, seq in series.items()}
     events: list[dict] = []
     for i in range(40, len(bars) - max(horizons) - 1, step):
         t = bars[i].open_time
@@ -220,8 +222,7 @@ def main() -> int:
         if c <= 0:
             continue
         row = {"ts": t}
-        for k, seq in series.items():
-            ks = [x[0] for x in seq]
+        for k, (seq, ks) in indexed.items():
             j = bisect.bisect_right(ks, t) - 1
             row[k] = seq[j][1] if j >= 0 else None
         for h in horizons:
