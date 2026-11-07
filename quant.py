@@ -1693,6 +1693,14 @@ class QuantEngine:
             symbol = hit.get("symbol")
             if not symbol:
                 return
+            # 关键数据必须在「信号产生那一刻」落库，且覆盖所有信号。
+            # 下面有演示行情 / 展示范围 / 只做空 / 影子模式 / 中性形态 /
+            # 无报价等多个提前 return；原先只有走到评分或质量门的信号才写
+            # signal_features，实机 3 小时 161 条 hits 只落了 1 条特征，
+            # 样本严重偏向「放行的」，任何拦截效果复盘都失真。
+            feature_state = {"done": False}
+            self._persist_intake_features(hit, symbol, hit.get("direction"),
+                                          feature_state)
             # 行情非真实（演示/降级数据）→ 一律不下单：随机游走产生的形态没有交易意义
             if self.feed_is_live_fn is not None and not self.feed_is_live_fn():
                 self._event("skip", "当前为演示行情（非真实数据），不下单",
@@ -1839,11 +1847,11 @@ class QuantEngine:
                                 account=self._primary_account(), symbol=symbol,
                                 pattern=hit.get("pattern"), score=signal_score.score,
                                 gap=signal_score.gap)
-                    # 被评分拦下的信号也要留特征快照，否则样本只剩"放行的"，
-                    # 以后无法复盘"被拦掉的是不是其实更好"。
-                    self._persist_signal_features(
-                        hit, symbol, direction, price, st, features,
-                        signal_score, bars, None)
+                    # 入口已落过完整快照；只有入口写入失败时才在这里兜底。
+                    if not feature_state["done"]:
+                        self._persist_signal_features(
+                            hit, symbol, direction, price, st, features,
+                            signal_score, bars, None)
                     self._finish_trace(trace, "blocked", "评分未通过", why,
                                        score=trace["score"])
                     return
@@ -1888,9 +1896,10 @@ class QuantEngine:
                 gap=signal_score.gap if signal_score else None,
                 now_ms=_now_ms(),
             )
-            self._persist_signal_features(
-                hit, symbol, direction, price, st, features,
-                signal_score, bars, quality)
+            if not feature_state["done"]:
+                self._persist_signal_features(
+                    hit, symbol, direction, price, st, features,
+                    signal_score, bars, quality)
             if not quality.allowed:
                 why = "；".join(quality.reasons) or "质量门拒绝"
                 self._append_gate({
@@ -1931,16 +1940,59 @@ class QuantEngine:
             self.stats["errors"] += 1
             self._event("error", f"信号处理异常: {e}")
 
+    def _persist_intake_features(self, hit, symbol, direction, state) -> None:
+        """信号刚进入决策链就落一条完整快照，覆盖所有被提前拦下的分支。
+
+        不依赖后面才算出的评分/质量门结果：指标来自 refresh_indicators 的
+        实时快照，评分来自页面同一份 live_evaluations，质量门本来就是纯函数，
+        三者在入口都能取到。若入口写入失败，后面评分/质量门处会兜底重写。
+        """
+        if not getattr(self, "feature_storage_fn", None):
+            return
+        try:
+            from types import SimpleNamespace
+
+            from decision.quality import evaluate_quality
+
+            bars = self.bars_fn(symbol) if self.bars_fn else []
+            st = self.indicators.get(symbol) or {}
+            if not st and len(bars) >= 30:
+                st = IND.market_state(bars)
+                self.indicators[symbol] = st
+            price = (self.price_fn or (lambda s: None))(symbol)
+            live = self.live_evaluations.get(symbol) or {}
+            score_obj = None
+            if live:
+                score_obj = SimpleNamespace(
+                    score=live.get("score"), gap=live.get("gap"),
+                    grade=live.get("grade"), confidence=live.get("confidence"))
+            quality = evaluate_quality(
+                cfg=self.decision_cfg,
+                direction=direction or "",
+                pattern=str(hit.get("pattern") or ""),
+                regime=str((st or {}).get("regime") or "unknown"),
+                atr_pct=(st or {}).get("atrPct"),
+                bars=bars or (),
+                score=score_obj.score if score_obj else None,
+                gap=score_obj.gap if score_obj else None,
+                now_ms=_now_ms(),
+            )
+            if self._persist_signal_features(
+                    hit, symbol, direction, price, st, {}, score_obj, bars, quality):
+                state["done"] = True
+        except Exception as e:
+            self._event("error", f"信号入口特征落库失败: {e}", symbol=symbol)
+
     def _persist_signal_features(self, hit, symbol, direction, price, st,
-                                 features, signal_score, bars, quality) -> None:
+                                 features, signal_score, bars, quality) -> bool:
         """信号产生那一刻的实时特征快照，永久落库、不依赖事后重算历史K线。
 
         以前复盘只能拿 hits + candle_archive 现场算 regime/噪声，需要前置
         30 根K线；滚动数据一过期就凑不够，回放样本只剩几天。这里把当时
         已经算好的指标直接记下来，之后任何分析都用这份"当时的事实"。
         """
-        if not self.feature_storage_fn:
-            return
+        if not getattr(self, "feature_storage_fn", None):
+            return False
         try:
             from decision.quality import noise_ratio
             mark = st or {}
@@ -1967,8 +2019,10 @@ class QuantEngine:
                 if row["quality_reason"]:
                     row["quality_reason"] = row["quality_reason"][:250]
             self.feature_storage_fn(row)
+            return True
         except Exception as e:
             self._event("error", f"信号特征落库失败: {e}", symbol=symbol)
+            return False
 
     def _decide_open(self, name, a, symbol, side, direction, price, hit,
                      features=None, signal_score=None, bars=None, trace=None,
