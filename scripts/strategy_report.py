@@ -151,10 +151,13 @@ def collect(conn, days: int) -> dict:
     row = q("SELECT COUNT(*), COALESCE(SUM(pnl),0), SUM(pnl>0) "
             "FROM quant_trades WHERE ts>=%s", (since,))[0]
     out["live"] = {"trades": _i(row[0]), "pnl": _f(row[1]), "wins": _i(row[2])}
+    # 明细必须和主数字用同一个时间窗。以前这里漏了 WHERE ts>=%s，
+    # "近 1 天"报表里会混进全表历史（例如修复前那 6 笔保护单补挂失败），
+    # 看起来像新代码还在犯老毛病。
     out["live_reasons"] = [
         {"reason": str(r[0]), "count": _i(r[1])}
-        for r in q("SELECT reason, COUNT(*) FROM quant_trades "
-                   "GROUP BY reason ORDER BY COUNT(*) DESC LIMIT 10")
+        for r in q("SELECT reason, COUNT(*) FROM quant_trades WHERE ts>=%s "
+                   "GROUP BY reason ORDER BY COUNT(*) DESC LIMIT 10", (since,))
     ]
 
     row = q("SELECT COUNT(*), MIN(open_time), MAX(open_time) FROM candle_archive")[0]
