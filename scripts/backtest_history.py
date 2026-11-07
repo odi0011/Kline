@@ -35,7 +35,8 @@ def _ts(ms: int) -> str:
 
 
 def load(store: Storage, symbol: str, interval: str) -> list[Candle]:
-    rows = store.candle_history_range(symbol, interval, 0, 2**62, 500_000)
+    # 分页读全量：3m 九年 ≈158 万根，单次 LIMIT 50 万会被悄悄截断
+    rows = store.candle_history_all(symbol, interval, 0, 2**62)
     out = []
     for r in rows:
         out.append(Candle(

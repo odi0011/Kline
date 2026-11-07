@@ -32,7 +32,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbols", nargs="+", default=["btcusdt"])
     ap.add_argument("--interval", default="1h")
-    ap.add_argument("--from", dest="since", default="2017-08")
+    ap.add_argument("--from", dest="since", default="2017-08",
+                    help="起始年月 YYYY-MM；对合约段同样生效")
+    ap.add_argument("--to", dest="until", default="",
+                    help="结束年月 YYYY-MM，默认当前月")
+    ap.add_argument("--futures-only", action="store_true",
+                    help="只导合约段，跳过现货补前段（短周期省一半下载量）")
     ap.add_argument("--config", default="/opt/kline-monitor/config.yaml")
     args = ap.parse_args()
 
@@ -48,29 +53,38 @@ def main() -> int:
 
     sy, sm = (int(x) for x in args.since.split("-"))
     today = time.gmtime()
-    end = (today.tm_year, today.tm_mon)
+    if args.until:
+        uy, um = (int(x) for x in args.until.split("-"))
+        end = (uy, um)
+    else:
+        end = (today.tm_year, today.tm_mon)
+    # 合约 2020-01 才上线；--since 更晚时不要白跑 40 个月的 404
+    fut_start = max((sy, sm), FUTURES_FIRST)
+    if args.interval not in H.IV_MS:
+        print(f"未知周期 {args.interval}（可用：{', '.join(H.IV_MS)}）")
+        return 2
 
     for raw_sym in args.symbols:
         sym = raw_sym.lower()
-        print(f"\n=== {sym} {args.interval} 从 {args.since}")
+        print(f"\n=== {sym} {args.interval} 从 {args.since} 到 {end[0]}-{end[1]:02d}")
         t0 = time.time()
 
-        # 1) 合约段（月频，到上个月；本月用日频补）
+        # 1) 合约段（月频；本月月频通常还没归档，404 自动跳过）
         fut_rows = H.download_monthly(sym, args.interval, "futures",
-                                      FUTURES_FIRST, end,
-                                      progress=lambda s: print("  合约", s))
-        print(f"  合约月度合计 {len(fut_rows)} 根，{time.time()-t0:.1f}s")
+                                      fut_start, end,
+                                      progress=lambda s: print("  合约", s, flush=True))
+        print(f"  合约月度合计 {len(fut_rows)} 根，{time.time()-t0:.1f}s", flush=True)
         if not fut_rows:
             print("  合约段为空，跳过（该币可能还没上线）")
             continue
 
         # 2) 现货段（只取合约上线前，省流量）
         spot_rows = []
-        if (sy, sm) < FUTURES_FIRST:
+        if not args.futures_only and (sy, sm) < FUTURES_FIRST:
             spot_rows = H.download_monthly(sym, args.interval, "spot",
                                            (sy, sm), FUTURES_FIRST,
-                                           progress=lambda s: print("  现货", s))
-            print(f"  现货月度合计 {len(spot_rows)} 根")
+                                           progress=lambda s: print("  现货", s, flush=True))
+            print(f"  现货月度合计 {len(spot_rows)} 根", flush=True)
 
         # 3) 后复权拼接
         merged, info = H.back_adjust(spot_rows, fut_rows)

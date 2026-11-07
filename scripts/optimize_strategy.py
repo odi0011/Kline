@@ -46,7 +46,8 @@ def ts(ms: int) -> str:
 
 
 def load(store: Storage, symbol: str, interval: str) -> list[Candle]:
-    rows = store.candle_history_range(symbol, interval, 0, 2**62, 500_000)
+    # 分页读全量，避免短周期历史被单次 LIMIT 截断
+    rows = store.candle_history_all(symbol, interval, 0, 2**62)
     out = [Candle(open_time=int(r["t"]), open=float(r["o"]), high=float(r["h"]),
                   low=float(r["l"]), close=float(r["c"]), volume=float(r["v"]),
                   trades=int(r["trades"] or 0), interval=interval, closed=True)

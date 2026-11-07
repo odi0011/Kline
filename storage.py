@@ -1268,7 +1268,11 @@ class Storage:
         src = str(source or "futures")[:10]
         if not sym or not iv:
             return 0
-        payload = []
+        sql = ("REPLACE INTO candle_history(symbol,`interval`,open_time,open,high,low,"
+               "close,volume,trades,buy_vol,sell_vol,source) "
+               "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)")
+        payload: list[tuple] = []
+        written = 0
         for r in rows:
             t = _safe_int(r.get("t"), 0)
             if t <= 0:
@@ -1278,13 +1282,40 @@ class Storage:
                             _safe_float(r.get("v")), _safe_int(r.get("trades"), 0),
                             _safe_float(r.get("buyVol")), _safe_float(r.get("sellVol")),
                             src))
-        if not payload:
-            return 0
-        self._qmany(
-            "REPLACE INTO candle_history(symbol,`interval`,open_time,open,high,low,"
-            "close,volume,trades,buy_vol,sell_vol,source) "
-            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", payload)
-        return len(payload)
+            # 9 年 3m 约 158 万根，一次 executemany 会撑爆
+            # max_allowed_packet（默认 64MB）且占几百 MB 内存；分块写。
+            if len(payload) >= 20_000:
+                self._qmany(sql, payload)
+                written += len(payload)
+                payload = []
+        if payload:
+            self._qmany(sql, payload)
+            written += len(payload)
+        return written
+
+    def candle_history_all(self, symbol: str, interval: str,
+                           start_ms: int = 0, end_ms: int = 2**62,
+                           page: int = 100_000) -> list[dict]:
+        """分页读全量历史，突破 candle_history_range 单次 50 万行上限。
+
+        短周期（3m 九年 ≈158 万根）必须走这里；直接带大 limit 调用
+        candle_history_range 会被夹到 50 万，且 ORDER BY ASC 只返回最早的
+        一段，回测会悄悄跑在错误的时间区间上。
+        """
+        page = max(1, min(100_000, _safe_int(page, 100_000)))
+        out: list[dict] = []
+        cursor = _safe_int(start_ms, 0)
+        while True:
+            batch = self.candle_history_range(symbol, interval, cursor, end_ms, page)
+            if not batch:
+                break
+            out.extend(batch)
+            if len(batch) < page:
+                break
+            cursor = int(batch[-1]["t"]) + 1
+            if cursor > _safe_int(end_ms, 2**62):
+                break
+        return out
 
     def candle_history_range(self, symbol: str, interval: str, start_ms: int,
                              end_ms: int, limit: int = 200_000) -> list[dict]:
