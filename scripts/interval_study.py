@@ -61,9 +61,10 @@ def ts(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
-def load(store: Storage, symbol: str, interval: str, max_bars: int) -> list[Candle]:
+def load(store: Storage, symbol: str, interval: str, max_bars: int,
+         start_ms: int = 0) -> list[Candle]:
     # 分页读：3m 九年 ≈158 万根，candle_history_range 单次上限 50 万
-    rows = store.candle_history_all(symbol, interval, 0, 2**62)
+    rows = store.candle_history_all(symbol, interval, start_ms, 2**62)
     if max_bars > 0 and len(rows) > max_bars:
         rows = rows[-max_bars:]
     bars = [Candle(open_time=int(r["t"]), open=float(r["o"]), high=float(r["h"]),
@@ -153,6 +154,8 @@ def main() -> int:
     ap.add_argument("--bars", type=int, default=120_000,
                     help="每个周期取最近多少根；0=全量")
     ap.add_argument("--train", type=float, default=0.7)
+    ap.add_argument("--start", default="",
+                    help="起始日期 YYYY-MM-DD；让多周期在同一日历区间对照")
     ap.add_argument("--hold-hours", type=float, default=0,
                     help="固定持仓时长（小时）；0=引擎默认 20 根")
     ap.add_argument("--fee-grid", default="0,4,8")
@@ -179,6 +182,7 @@ def main() -> int:
     ]
     report: dict = {"generatedAt": datetime.now(timezone.utc).isoformat(),
                     "symbol": args.symbol, "bars": args.bars,
+                    "start": args.start,
                     "holdHours": args.hold_hours, "train": args.train,
                     "intervals": {}}
 
@@ -187,7 +191,9 @@ def main() -> int:
             print(f"跳过未知周期 {iv}")
             continue
         t0 = time.time()
-        bars = load(store, args.symbol, iv, args.bars)
+        start_ms = (int(datetime.strptime(args.start, "%Y-%m-%d").replace(
+            tzinfo=timezone.utc).timestamp() * 1000) if args.start else 0)
+        bars = load(store, args.symbol, iv, args.bars, start_ms)
         if len(bars) < 2000:
             print(f"\n=== {iv}: 只有 {len(bars)} 根，先跑 import_history.py 导入")
             continue
