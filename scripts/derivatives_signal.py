@@ -265,13 +265,13 @@ def main() -> int:
             # 训练段定方向，验证段看是否保持（这是唯一有意义的判据）
             direction = 1 if ic_tr >= 0 else -1
             hold = ic_va * direction
-            qs = sorted(a for a, _ in pairs)
-            edges = [qs[int(len(qs) * q / 5)] for q in (1, 2, 3, 4)]
+            # 按排序后的**位置**等分，不按数值边界过滤：资金费率长期固定在
+            # 0.0001，值边界会大量重合，出现某一分位 n=0 的空组。
+            ordered = sorted(pairs, key=lambda x: x[0])
             groups = []
             for g in range(5):
-                lo = -float("inf") if g == 0 else edges[g - 1]
-                hi = float("inf") if g == 4 else edges[g]
-                vals = [b for a, b in pairs if lo <= a < hi or (g == 4 and a >= lo)]
+                seg = ordered[len(ordered) * g // 5:len(ordered) * (g + 1) // 5]
+                vals = [b for _, b in seg]
                 groups.append({"n": len(vals),
                                "meanPct": round(statistics.mean(vals) * 100, 4)
                                if vals else 0})
