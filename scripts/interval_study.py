@@ -158,6 +158,10 @@ def main() -> int:
                     help="起始日期 YYYY-MM-DD；让多周期在同一日历区间对照")
     ap.add_argument("--hold-hours", type=float, default=0,
                     help="固定持仓时长（小时）；0=引擎默认 20 根")
+    ap.add_argument("--sl-min-pct", type=float, default=0.0,
+                    help="止损下限（小数，如 0.004=0.4%）；0=不夹紧（历史基线口径）")
+    ap.add_argument("--min-rr", type=float, default=0.0,
+                    help="盈亏比下界（如 3.0）；0=不约束。与生产对齐用 0.004 / 3.0")
     ap.add_argument("--fee-grid", default="0,4,8")
     ap.add_argument("--config", default="/opt/kline-monitor/config.yaml")
     ap.add_argument("--json", default="")
@@ -184,6 +188,7 @@ def main() -> int:
                     "symbol": args.symbol, "bars": args.bars,
                     "start": args.start,
                     "holdHours": args.hold_hours, "train": args.train,
+                    "slMinPct": args.sl_min_pct, "minRr": args.min_rr,
                     "intervals": {}}
 
     for iv in [x.strip() for x in args.intervals.split(",") if x.strip()]:
@@ -208,6 +213,8 @@ def main() -> int:
         print(f"    双边 4bps 手续费 ≈ ATR 的 {fee_ratio*100:.2f}%  "
               f"| 20 根持仓 = {20*IV_MS[iv]/3_600_000:.1f} 小时，"
               f"本次用 {hb} 根 = {hb*IV_MS[iv]/3_600_000:.1f} 小时")
+        print(f"    止损口径: 下限 {args.sl_min_pct*100:.2f}% / rr≥{args.min_rr or 0:.1f} "
+              f"（生产为 0.40% / 3.0；本组为 0 时结果偏悲观）")
         entry: dict = {"rows": len(bars), "from": ts(bars[0].open_time),
                        "to": ts(bars[-1].open_time), "atrProfile": profile,
                        "feeVsAtr": round(fee_ratio, 4),
@@ -217,7 +224,7 @@ def main() -> int:
         print(f"\n  [A] 全形态基线 / 手续费敏感度（{len(pats)} 个形态）")
         for fee in fees:
             r = run_backtest(bars, pats, dcfg, symbol=args.symbol,
-                             fee_bps=fee, max_hold_bars=hb)
+                             fee_bps=fee, max_hold_bars=hb, stop_min_pct=args.sl_min_pct, min_rr=args.min_rr)
             s = summarize(r)
             entry["fees"][str(fee)] = s
             print(f"    fee {fee:>4.1f}bps  {s['trades']:>6d} 笔  "
@@ -233,9 +240,9 @@ def main() -> int:
               f"{'验证胜率':>10}")
         for label, thr, fn in variants:
             rt = run_backtest(train, pats4, dcfg, symbol=args.symbol,
-                              max_hold_bars=hb, signal_filter=fn)
+                              max_hold_bars=hb, stop_min_pct=args.sl_min_pct, min_rr=args.min_rr, signal_filter=fn)
             rv = run_backtest(valid, pats4, dcfg, symbol=args.symbol,
-                              max_hold_bars=hb, signal_filter=fn)
+                              max_hold_bars=hb, stop_min_pct=args.sl_min_pct, min_rr=args.min_rr, signal_filter=fn)
             st, sv = summarize(rt), summarize(rv)
             entry["filters"][label] = {"threshold": thr, "train": st, "valid": sv,
                                        "sampleOutPositive": sv["expectancy"] > 0

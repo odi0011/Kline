@@ -12,6 +12,10 @@
 
 任何一项不过关，结论都是"观察到了，但不足以改生产"。
 
+口径说明：本脚本用回测引擎默认的 ATR 止损（不夹紧）。1h 上 ATR/价格
+中位 0.79%，生产的 0.4% 下限影响有限；若要严格对齐生产规则，用
+interval_study.py --sl-min-pct 0.004 --min-rr 3.0 复核短周期。
+
 用法：
     venv/bin/python scripts/trend_robustness.py --interval 1h
     ... --interval 15m --json /tmp/trend_15m.json

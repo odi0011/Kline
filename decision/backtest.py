@@ -85,6 +85,8 @@ def run_backtest(
     max_hold_bars: int = 20,
     warmup: int = 40,
     signal_filter: Callable[[Sequence[Any], int, Any], bool] | None = None,
+    stop_min_pct: float = 0.0,
+    min_rr: float = 0.0,
 ) -> BacktestResult:
     cfg = config or DecisionConfig()
     trades: list[BacktestTrade] = []
@@ -129,6 +131,13 @@ def run_backtest(
         entry = raw_entry * (1 + side_sign * slippage_bps / 10_000)
         stop_distance = atr * cfg.watch_sl_atr_mult
         target_distance = atr * cfg.watch_tp_atr_mult
+        # 生产里的 watch_plan 会把止损夹到 [0.4%, 2.0%] 并保证 rr>=3.0；
+        # 回测默认不夹紧（保持历史基线可比）。短周期 ATR 小，不夹紧会把
+        # 止损压到 0.1% 档，结果比实盘悲观；用 stop_min_pct/min_rr 对齐。
+        if stop_min_pct > 0:
+            stop_distance = max(stop_distance, float(raw_entry) * stop_min_pct)
+        if min_rr > 0:
+            target_distance = max(target_distance, stop_distance * min_rr)
         stop = entry - side_sign * stop_distance
         target = entry + side_sign * target_distance
         if stop <= 0 or target <= 0:
