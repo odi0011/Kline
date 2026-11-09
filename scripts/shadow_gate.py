@@ -154,7 +154,11 @@ def group_stats(rows: list[dict], base: float = 1000.0) -> dict:
             "expectancyPct": round(sum(r["ret_pct"] for r in rows) / len(rows), 4)
             if rows else 0.0,
             "pnl": round(sum(r["pnl"] for r in rows), 2),
-            "maxDDPct": dd["maxPct"]}
+            "avgPnl": round(sum(r["pnl"] for r in rows) / len(rows), 4)
+            if rows else 0.0,
+            # 逐笔独立名义仓位的累计曲线：只反映「这组一共回吐了多少」，
+            # 不是账户权益回撤，且组大小不同时不可跨组比较。
+            "cumDrawdownPctVsNotional": dd["maxPct"]}
 
 
 def reason_bucket(reason: str) -> str:
@@ -266,13 +270,15 @@ def main() -> int:
           f"rr {args.rr:.1f} / 最多 {args.hold_min} 根 / 双边 "
           f"{args.fee_bps:.0f}bps + 滑点 {args.slip_bps:.0f}bps / 名义 "
           f"{args.notional:.0f} USDT")
-    print(f"    {'分组':<16}{'笔数':>7}{'胜率':>9}{'期望%':>10}{'总盈亏':>11}{'回撤%':>9}")
+    print(f"    {'分组':<16}{'笔数':>7}{'胜率':>9}{'期望%':>10}{'均盈亏':>10}{'总盈亏':>11}")
+    print("    （逐笔独立名义仓位，不是账户权益曲线；账户真实回撤见 "
+          "strategy_report [6]）")
     stats = lambda rows: group_stats(rows, args.notional)  # noqa: E731
     ga, gb = stats(allowed), stats(blocked)
     for label, g in (("闸门放行", ga), ("闸门拦截", gb)):
         wr = f"{g['winrate']:.1f}%" if g["winrate"] is not None else "-"
         print(f"    {label:<16}{g['n']:>7}{wr:>9}{g['expectancyPct']:>+10.4f}"
-              f"{g['pnl']:>+11.2f}{g['maxDDPct']:>9.4f}")
+              f"{g['avgPnl']:>+10.4f}{g['pnl']:>+11.2f}")
     gain = round(ga["expectancyPct"] - gb["expectancyPct"], 4)
     killed = decided_win_rate(gb["wins"], gb["losses"])
     print(f"\n    放行增益(放行期望 - 拦截期望) = {gain:+.4f} 个百分点/笔")

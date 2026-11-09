@@ -99,7 +99,8 @@ def test_group_stats_uses_notional_as_equity_base():
     assert g["n"] == 2 and g["wins"] == 1 and g["losses"] == 1
     assert g["winrate"] == 50.0
     # 1000 -> 1010 -> 990：回撤相对峰值 1010，是 20/1010
-    assert g["maxDDPct"] == 1.9802, g
+    assert g["cumDrawdownPctVsNotional"] == 1.9802, g
+    assert g["avgPnl"] == -5.0, g
 
 
 def test_reason_bucket():
