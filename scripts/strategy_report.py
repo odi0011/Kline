@@ -26,6 +26,8 @@ try:
 except ImportError as exc:
     sys.exit(f"缺少依赖 {exc.name}：pip install pyyaml pymysql")
 
+from decision.metrics import decided_win_rate, equity_curve, max_drawdown  # noqa: E402
+
 
 def db_config(path: Path) -> dict:
     cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -127,11 +129,19 @@ def collect(conn, days: int) -> dict:
     out["paper_all"] = {"trades": _i(row[0]), "pnl": _f(row[1]),
                         "wins": _i(row[2]), "removed": _i(row[3])}
 
-    row = q("SELECT COUNT(*), COALESCE(SUM(pnl),0), SUM(pnl>0) FROM paper_trades "
+    # 胜率统一用 decision.metrics.decided_win_rate：分母只算有明确输赢的
+    # 交易。旧实现用 wins/全部笔数，把平价离场算进分母，系统性偏低
+    # （线上全量 12.6% vs 正确 52.2%），与前端 paper._db_summary 也对不上。
+    row = q("SELECT COUNT(*), COALESCE(SUM(pnl),0), SUM(pnl>0), SUM(pnl<0), "
+            "SUM(pnl=0) FROM paper_trades "
             "WHERE closed_ts>=%s AND reason<>'removed'", (since,))[0]
-    out["paper_real"] = {"trades": _i(row[0]), "pnl": _f(row[1]),
-                         "wins": _i(row[2]),
-                         "winrate": round(_i(row[2]) / _i(row[0]), 4) if _i(row[0]) else 0.0}
+    n, w, l, flat = _i(row[0]), _i(row[2]), _i(row[3]), _i(row[4])
+    out["paper_real"] = {
+        "trades": n, "pnl": _f(row[1]),
+        "wins": w, "losses": l, "flat": flat, "decided": w + l,
+        "winrate": (decided_win_rate(w, l) or 0.0) / 100,
+        "naiveWinrate": round(w / n, 4) if n else 0.0,
+    }
 
     out["paper_by_reason"] = [
         {"reason": str(r[0]), "trades": _i(r[1]), "pnl": _f(r[2]), "wins": _i(r[3])}
@@ -148,9 +158,12 @@ def collect(conn, days: int) -> dict:
             "GROUP BY grade ORDER BY COUNT(*) DESC", (since,))
     ]
 
-    row = q("SELECT COUNT(*), COALESCE(SUM(pnl),0), SUM(pnl>0) "
-            "FROM quant_trades WHERE ts>=%s", (since,))[0]
-    out["live"] = {"trades": _i(row[0]), "pnl": _f(row[1]), "wins": _i(row[2])}
+    row = q("SELECT COUNT(*), COALESCE(SUM(pnl),0), SUM(pnl>0), SUM(pnl<0), "
+            "SUM(pnl=0) FROM quant_trades WHERE ts>=%s", (since,))[0]
+    n, w, l, flat = _i(row[0]), _i(row[2]), _i(row[3]), _i(row[4])
+    out["live"] = {"trades": n, "pnl": _f(row[1]),
+                   "wins": w, "losses": l, "flat": flat, "decided": w + l,
+                   "winrate": (decided_win_rate(w, l) or 0.0) / 100}
     # 明细必须和主数字用同一个时间窗。以前这里漏了 WHERE ts>=%s，
     # "近 1 天"报表里会混进全表历史（例如修复前那 6 笔保护单补挂失败），
     # 看起来像新代码还在犯老毛病。
@@ -163,6 +176,46 @@ def collect(conn, days: int) -> dict:
     row = q("SELECT COUNT(*), MIN(open_time), MAX(open_time) FROM candle_archive")[0]
     out["archive"] = {"bars": _i(row[0]), "from_ms": int(row[1] or 0),
                       "to_ms": int(row[2] or 0)}
+
+    # ---- 最大回撤：三条独立曲线，都用 decision.metrics 同一算法 ----
+    # paper/live 用名义本金 10000 起算（与回测 initial_equity 对齐），
+    # 真实账户直接用 equity.bal 采样绝对值。
+    def _pnls(sql):
+        return [float(r[0] or 0) for r in q(sql, (since,))]
+
+    paper_pnls = _pnls(
+        "SELECT pnl FROM paper_trades WHERE closed_ts>=%s AND reason<>'removed' "
+        "ORDER BY closed_ts ASC, id ASC")
+    live_pnls = _pnls(
+        "SELECT pnl FROM quant_trades WHERE ts>=%s ORDER BY ts ASC, id ASC")
+    acct = q("SELECT MIN(acct) FROM equity WHERE ts>=%s", (since,))[0][0]
+    eq_curve = []
+    if acct:
+        eq_curve = [float(r[0] or 0) for r in q(
+            "SELECT bal FROM equity WHERE acct=%s AND ts>=%s ORDER BY ts ASC",
+            (acct, since))]
+    out["drawdown"] = {
+        "paper": max_drawdown(equity_curve(paper_pnls, 10_000.0)),
+        "live": max_drawdown(equity_curve(live_pnls, 10_000.0)),
+        "account": max_drawdown(eq_curve) if eq_curve else {},
+        "accountPoints": len(eq_curve),
+        "accountStart": eq_curve[0] if eq_curve else None,
+        "accountEnd": eq_curve[-1] if eq_curve else None,
+    }
+
+    # ---- 近 7 天趋势：按天看胜率/净盈亏是否恶化 ----
+    trend_since = now - 7 * 86_400_000
+    out["trend"] = [
+        {"day": str(r[0]), "trades": _i(r[1]), "wins": _i(r[2]),
+         "losses": _i(r[3]), "pnl": _f(r[4]),
+         "winrate": decided_win_rate(_i(r[2]), _i(r[3]))}
+        for r in q(
+            "SELECT DATE(FROM_UNIXTIME(closed_ts/1000)), COUNT(*), SUM(pnl>0), "
+            "SUM(pnl<0), COALESCE(SUM(pnl),0) FROM paper_trades "
+            "WHERE closed_ts>=%s AND reason<>'removed' "
+            "GROUP BY DATE(FROM_UNIXTIME(closed_ts/1000)) ORDER BY 1 DESC LIMIT 7",
+            (trend_since,))
+    ]
     return out
 
 
@@ -199,6 +252,9 @@ def render(d: dict) -> None:
           f"盈 {pa['wins']:>6} 笔  （其中 removed {pa['removed']} 笔）")
     print(f"    剔除 removed {pr['trades']:>7} 笔  净 {pr['pnl']:>10.2f}  "
           f"盈 {pr['wins']:>6} 笔  胜率 {pr['winrate']:.1%}")
+    print(f"    胜率口径: 胜/(胜+负) = {pr['wins']}/{pr['decided']} "
+          f"（平价 {pr['flat']} 笔不计入）；旧口径 胜/全部 = "
+          f"{pr['naiveWinrate']:.1%}，与前端不一致，已弃用")
     print("    按平仓原因：")
     for r in d["paper_by_reason"][:8]:
         print(f"      {r['reason']:<14}{r['trades']:>7} 笔  净 {r['pnl']:>10.2f}  盈 {r['wins']:>6}")
@@ -208,9 +264,38 @@ def render(d: dict) -> None:
 
     lv = d["live"]
     print("\n[5] 真实成交（测试网账户）")
-    print(f"    {lv['trades']} 笔  净 {lv['pnl']:.2f}  盈 {lv['wins']} 笔")
+    print(f"    {lv['trades']} 笔  净 {lv['pnl']:.2f}  盈 {lv['wins']} 笔  "
+          f"胜率 {lv['winrate']:.1%}（{lv['wins']}/{lv['decided']}）")
     for r in d["live_reasons"][:6]:
         print(f"      {r['reason'][:34]:<36}{r['count']:>5}")
+
+    dd = d.get("drawdown") or {}
+    print("\n[6] 最大回撤（统一口径：权益曲线从历史峰值回落，正数 = 跌了多少）")
+    for key, label in (("paper", "模拟仓(名义本金10000)"),
+                       ("live", "实盘成交(同上)"),
+                       ("account", "真实账户(equity采样)")):
+        x = dd.get(key) or {}
+        if not x:
+            continue
+        print(f"    {label:<26} 最大 {x['maxPct']:>7.4f}% ({x['maxAbs']:>9.2f})  "
+              f"当前 {x['currentPct']:>7.4f}% ({x['currentAbs']:>8.2f})  "
+              f"峰值 {x['peak']:.2f}")
+    if dd.get("accountStart") is not None:
+        print(f"    账户权益 {dd['accountStart']:.2f} → {dd['accountEnd']:.2f}"
+              f"（{dd['accountPoints']} 个采样点）")
+
+    trend = list(reversed(d.get("trend") or []))
+    print("\n[7] 近 7 天趋势（模拟仓，剔除 removed；累计从 0 起）")
+    if not trend:
+        print("    无样本")
+    else:
+        cum = 0.0
+        print(f"    {'日期':<12}{'笔数':>7}{'胜率':>9}{'当日净':>11}{'累计净':>11}")
+        for t in trend:
+            cum += t["pnl"]
+            wr = f"{t['winrate']:.1f}%" if t["winrate"] is not None else "-"
+            print(f"    {t['day']:<12}{t['trades']:>7}{wr:>9}"
+                  f"{t['pnl']:>+11.2f}{cum:>+11.2f}")
     print()
 
 

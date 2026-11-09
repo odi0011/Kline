@@ -52,6 +52,8 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field, fields
 
+from .metrics import equity_curve, max_drawdown
+
 # 一个模拟仓的自检周期：每 3 分钟按当时的数据判一次成败
 CHECK_MS = 3 * 60 * 1000
 # 兼容旧名字：这个常量现在表示"两次自检之间的间隔"，不再是"到期时间"
@@ -600,18 +602,25 @@ class PaperBook:
                 flips += 1
             elif verdict == "hold":
                 holds += 1
-        # 累计盈亏曲线（按 closedAt 升序）→ 最大回撤、当前回撤
-        ordered = sorted(rows, key=lambda r: int(_num(r.get("closedAt")) or 0))
-        equity = 0.0
-        peak = 0.0
-        max_dd = 0.0
-        curve = []
-        for r in ordered:
-            equity += _num(r.get("pnl")) or 0.0
-            peak = max(peak, equity)
-            dd = (equity - peak) if peak > 0 else 0.0
-            max_dd = min(max_dd, dd)
-            curve.append(round(equity, 4))
+        # 累计盈亏曲线：优先用存储层「全量、升序、剔除 removed」的 pnl 序列。
+        # 旧实现拿 paper_trades() 的最近 2000 条（倒序）来算，而线上 93% 的
+        # 流水是 removed 零盈亏噪音，曲线几乎全平；并且 peak 从 0 起算，
+        # 开局连亏时 peak>0 不成立，那段亏损被整段漏掉。
+        pnls: list[float] = []
+        if self.store is not None and not self._store_suspended:
+            try:
+                pnls = self.store.paper_pnl_series(0, True) or []
+            except Exception:
+                pnls = []
+        if not pnls:
+            ordered = sorted(rows, key=lambda r: int(_num(r.get("closedAt")) or 0))
+            pnls = [_num(r.get("pnl")) or 0.0 for r in ordered
+                    if str(r.get("reason") or "") != "removed"]
+        curve = equity_curve(pnls, 0.0)
+        # 加一个正的名义权益基准：金额回撤不受平移影响，但能让 peak>0 恒成立，
+        # 百分比口径也与回测的 initial_equity=10000 对齐。
+        dd = max_drawdown(equity_curve(pnls, 10_000.0))
+        peak_pnl = max(curve) if curve else 0.0
         judged = wins + losses
         return {
             "checks": wins + losses + flips + holds,
@@ -620,14 +629,15 @@ class PaperBook:
             "flipChecks": flips,
             "holdChecks": holds,
             "checkWinrate": round(wins / judged * 100, 1) if judged else None,
-            "netPnl": round(equity, 4),
-            # 回撤是金额（和权益同单位），不是百分比——模拟仓的名义本金固定，
-            # 用"赚了多少又回吐多少"更容易看懂
-            "maxDrawdown": round(max_dd, 4),
-            "currentDrawdown": round(equity - peak, 4) if peak > 0 else 0.0,
-            "peakPnl": round(peak, 4),
-            "curve": curve[-120:],
-            "samples": len(rows),
+            "netPnl": round(curve[-1], 4),
+            # 金额口径保持负数（和权益同单位）；另给统一口径的正数百分比
+            "maxDrawdown": round(-dd["maxAbs"], 4),
+            "maxDrawdownPct": dd["maxPct"],
+            "currentDrawdown": round(-dd["currentAbs"], 4),
+            "peakPnl": round(peak_pnl, 4),
+            # 保持旧语义：curve 是「每笔平仓后的累计盈亏」，不含起点 0
+            "curve": [round(x, 4) for x in curve[1:][-120:]],
+            "samples": len(pnls),
         }
 
     def _db_summary(self, agg: dict, symbols: list, open_count: int,

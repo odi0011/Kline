@@ -992,6 +992,26 @@ class Storage:
             out.append(item)
         return out
 
+    def paper_pnl_series(self, since_ms: int = 0, exclude_removed: bool = True,
+                         limit: int = 200_000) -> list[float]:
+        """按时间升序返回已平仓盈亏，供权益曲线 / 最大回撤使用。
+
+        paper_trades() 是「最近 N 条、倒序」且上限 2000，而线上 93% 的
+        流水是 reason='removed' 的零盈亏噪音——拿它算回撤，曲线几乎全平。
+        这里直接取全量 pnl 序列，只做一件事、不构造大字典。
+        """
+        if not self.enabled:
+            return []
+        where = ["closed_ts>=%s"]
+        args: list = [_safe_int(since_ms, 0)]
+        if exclude_removed:
+            where.append("reason<>'removed'")
+        limit = max(1, min(500_000, _safe_int(limit, 200_000)))
+        sql = ("SELECT pnl FROM paper_trades WHERE " + " AND ".join(where) +
+               " ORDER BY closed_ts ASC, id ASC LIMIT %s")
+        args.append(limit)
+        return [_safe_float(r[0]) for r in self._qall(sql, tuple(args))]
+
     def paper_trade_stats(self, days: int = 0) -> dict:
         """模拟仓平仓汇总。days=0 统计全部，否则只看最近 days 天的 closed_ts。"""
         sql = ("SELECT COUNT(*), "

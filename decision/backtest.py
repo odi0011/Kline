@@ -17,6 +17,7 @@ from typing import Any, Callable, Sequence
 from analysis import indicators as IND
 from .config import DecisionConfig
 from .features import atr_series, clamp
+from .metrics import decided_win_rate, equity_curve, max_drawdown
 
 
 @dataclass
@@ -49,24 +50,23 @@ def _metrics(trades: list[BacktestTrade], initial_equity: float) -> dict:
     losses = [t for t in trades if t.pnl < 0]
     gross_win = sum(t.pnl for t in wins)
     gross_loss = -sum(t.pnl for t in losses)
-    equity = initial_equity
-    peak = equity
-    max_dd = 0.0
-    for trade in trades:
-        equity += trade.pnl
-        peak = max(peak, equity)
-        if peak > 0:
-            max_dd = min(max_dd, (equity - peak) / peak)
+    # 口径统一走 decision.metrics：peak 从初始权益起算（旧实现从 0 起算，
+    # 开局连亏会被漏掉），胜率只用有明确输赢的交易当分母。
+    dd = max_drawdown(equity_curve((t.pnl for t in trades), initial_equity))
+    wr = decided_win_rate(len(wins), len(losses))
     expectancy = sum(t.pnl for t in trades) / len(trades) if trades else 0.0
     return {
         "trades": len(trades),
         "wins": len(wins),
         "losses": len(losses),
-        "winRate": round(len(wins) / len(trades), 4) if trades else 0.0,
+        "winRate": round((wr or 0.0) / 100, 4),
         "pnl": round(sum(t.pnl for t in trades), 4),
         "expectancy": round(expectancy, 4),
         "profitFactor": round(gross_win / gross_loss, 4) if gross_loss > 0 else None,
-        "maxDrawdownPct": round(max_dd * 100, 4),
+        # 保留负号字段（既有报表按 -xx% 打印），另给正数金额口径
+        "maxDrawdownPct": -dd["maxPct"],
+        "maxDrawdownAbs": dd["maxAbs"],
+        "currentDrawdownPct": dd["currentPct"],
         "avgHoldBars": round(sum(t.bars_held for t in trades) / len(trades), 2) if trades else 0.0,
         "avgReturnPct": round(sum(t.return_pct for t in trades) / len(trades), 4) if trades else 0.0,
     }

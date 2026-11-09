@@ -56,8 +56,32 @@ def test_all_quant_trades_queries_share_the_days_window():
         assert before - 86_400_000 <= since <= after - 86_400_000, (since, before)
 
 
+class WinrateCursor(FakeCursor):
+    """模拟 100 笔里 40 胜 / 30 负 / 30 平价。"""
+
+    def fetchall(self):
+        if "SUM(pnl=0)" in self.last_sql and "reason<>'removed'" in self.last_sql:
+            return [(100, 0.0, 40, 30, 30)]
+        return super().fetchall()
+
+
+def test_paper_winrate_uses_decided_denominator():
+    conn = FakeConn()
+    conn.cur = WinrateCursor()
+    data = SR.collect(conn, days=1)
+    pr = data["paper_real"]
+    assert pr["decided"] == 70
+    assert pr["flat"] == 30
+    assert pr["winrate"] == 0.5714, pr          # 40/70
+    assert pr["naiveWinrate"] == 0.4, pr        # 旧口径 40/100
+
+
 def test_collect_returns_live_reasons():
     conn = FakeConn()
     data = SR.collect(conn, days=7)
     assert "live_reasons" in data
-    assert data["live"] == {"trades": 0, "pnl": 0.0, "wins": 0}
+    assert data["live"]["trades"] == 0
+    assert data["live"]["wins"] == 0
+    assert data["live"]["decided"] == 0
+    assert data["live"]["winrate"] == 0.0
+    assert "drawdown" in data and "trend" in data
