@@ -114,7 +114,9 @@ def test_middle_zone_flips_on_strong_opposite_signal():
 
     反手是先平掉原仓（记 check_flip），再用**新方向**开一仓。
     """
-    book = PaperBook()
+    # 这两个用例专门验证「强反向会反手」这条路径，显式关闭最小持有抑制；
+    # 抑制行为本身由 test_paper_flip_hold.py 覆盖。
+    book = PaperBook(flip_min_hold_ms=0)
     book.tick("btcusdt", ctx(price=100.0))
     _age(book)
     pos = book.tick("btcusdt", ctx(price=100.02, direction="bearish",
@@ -228,7 +230,8 @@ def test_check_stats_empty_is_safe():
 
 
 def test_flip_recorded_in_stats():
-    book = PaperBook()
+    # 同上：显式关闭最小持有抑制，专测反手统计路径
+    book = PaperBook(flip_min_hold_ms=0)
     book.tick("btcusdt", ctx(price=100.0))
     _age(book)
     book.tick("btcusdt", ctx(price=100.02, direction="bearish", score=70, gap=25))

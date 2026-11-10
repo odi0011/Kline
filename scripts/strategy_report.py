@@ -133,14 +133,23 @@ def collect(conn, days: int) -> dict:
     # 交易。旧实现用 wins/全部笔数，把平价离场算进分母，系统性偏低
     # （线上全量 12.6% vs 正确 52.2%），与前端 paper._db_summary 也对不上。
     row = q("SELECT COUNT(*), COALESCE(SUM(pnl),0), SUM(pnl>0), SUM(pnl<0), "
-            "SUM(pnl=0) FROM paper_trades "
+            "SUM(pnl=0), AVG(CASE WHEN pnl>0 THEN pnl END), "
+            "AVG(CASE WHEN pnl<0 THEN pnl END) FROM paper_trades "
             "WHERE closed_ts>=%s AND reason<>'removed'", (since,))[0]
     n, w, l, flat = _i(row[0]), _i(row[2]), _i(row[3]), _i(row[4])
+    avg_win, avg_loss = _f(row[5]), _f(row[6])
+    # 胜率本身不能判断好坏：payout 决定打平线。名义 rr3 若实际只兑现
+    # 到 1.07，打平胜率就会从 25% 抬到 48%，45% 的胜率必然是亏的。
+    payout = round(avg_win / abs(avg_loss), 3) if avg_loss else None
+    break_even = (round(abs(avg_loss) / (avg_win + abs(avg_loss)) * 100, 2)
+                  if (avg_win + abs(avg_loss)) else None)
     out["paper_real"] = {
         "trades": n, "pnl": _f(row[1]),
         "wins": w, "losses": l, "flat": flat, "decided": w + l,
         "winrate": (decided_win_rate(w, l) or 0.0) / 100,
         "naiveWinrate": round(w / n, 4) if n else 0.0,
+        "avgWin": avg_win, "avgLoss": avg_loss,
+        "payout": payout, "breakEvenWinrate": break_even,
     }
 
     out["paper_by_reason"] = [
@@ -150,6 +159,13 @@ def collect(conn, days: int) -> dict:
             "WHERE closed_ts>=%s AND reason<>'removed' "
             "GROUP BY reason ORDER BY COUNT(*) DESC", (since,))
     ]
+    # 反手是模拟仓最大的纯磨损项，单独标出来便于按天监控
+    out["paper_real"]["flipTrades"] = next(
+        (r["trades"] for r in out["paper_by_reason"]
+         if r["reason"] == "check_flip"), 0)
+    out["paper_real"]["flipPnl"] = next(
+        (r["pnl"] for r in out["paper_by_reason"]
+         if r["reason"] == "check_flip"), 0.0)
     out["paper_by_grade"] = [
         {"grade": str(r[0]), "trades": _i(r[1]), "pnl": _f(r[2]), "wins": _i(r[3])}
         for r in q(
@@ -255,6 +271,16 @@ def render(d: dict) -> None:
     print(f"    胜率口径: 胜/(胜+负) = {pr['wins']}/{pr['decided']} "
           f"（平价 {pr['flat']} 笔不计入）；旧口径 胜/全部 = "
           f"{pr['naiveWinrate']:.1%}，与前端不一致，已弃用")
+    payout = pr.get("payout")
+    be = pr.get("breakEvenWinrate")
+    pay_text = f"{payout:.3f}" if payout is not None else "-"
+    be_text = f"{be:.1f}%" if be is not None else "-"
+    print(f"    盈亏比口径: 均盈 {pr['avgWin']:+.3f} / 均亏 {pr['avgLoss']:+.3f} "
+          f"→ payout {pay_text}  打平胜率 {be_text}"
+          f"（当前 {pr['winrate']:.1%}）")
+    flips = pr.get("flipTrades", 0)
+    print(f"    反手 {flips} 笔 ({flips / pr['trades']:.1%})  "
+          f"合计 {pr.get('flipPnl', 0.0):+.2f} —— 短持有反手是主要磨损")
     print("    按平仓原因：")
     for r in d["paper_by_reason"][:8]:
         print(f"      {r['reason']:<14}{r['trades']:>7} 笔  净 {r['pnl']:>10.2f}  盈 {r['wins']:>6}")

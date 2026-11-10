@@ -109,6 +109,12 @@ class DecisionConfig:
     # 影子模式：False = 只记录信号/模拟仓，不下真实单。回放显示除"只做空"外
     # 所有组合都是负期望，实盘也出现连续几分钟被扫损；需要时可以一键停手。
     auto_trade_enabled: bool = True
+    # 模拟仓反手最小持有时间（分钟）。0 = 恢复旧行为（中间地带立刻反手）。
+    # 实机 7 天：check_flip 992 笔、合计 -248.70，71% 在 10 分钟内、
+    # 41.7% 在 5 分钟内，中位 6 分钟；剔除反手后其余交易胜率 56.9%
+    # （含反手为 49.0%）。文件头设计第 5 条本来就写着「方向翻转不提前
+    # 离场」，实现却在第一次自检就允许反手，属于实现与设计不符。
+    paper_flip_min_hold_min: float = 15.0
     # 信号质量门（scripts/signal_quality.py 回放，1904 笔 / 前后半样本外验证）。
     # 注意：没有任何组合能两段都转正，这个门只负责剔除"稳定更差"的条件。
     quality_enabled: bool = True
@@ -238,6 +244,8 @@ class DecisionConfig:
         return cls(
             enabled=bool(d.get("enabled", True)),
             auto_trade_enabled=bool(d.get("auto_trade_enabled", True)),
+            paper_flip_min_hold_min=max(0.0, _number(
+                d.get("paper_flip_min_hold_min"), 15.0)),
             quality_enabled=bool(d.get("quality_enabled", True)),
             quality_blackouts=tuple(
                 SessionWindow.parse(str(item))

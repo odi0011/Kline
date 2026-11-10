@@ -264,7 +264,11 @@ class QuantEngine:
         # 仓位与平仓记录都落 MySQL（paper_positions / paper_trades）：
         # 重启后从库里恢复，统计口径也不再是"进程启动以来"。
         # main 注入 storage；单元测试传 None 时退回纯内存。
-        self.paper = PaperBook(store=paper_store)
+        self.paper = PaperBook(
+            store=paper_store,
+            flip_min_hold_ms=int(
+                getattr(self.decision_cfg, "paper_flip_min_hold_min", 15.0)
+                * 60_000))
         self.calc_storage_fn = None     # main 注入：rows -> None（写库，只留 1 分钟）
         self.calc_read_fn = None        # main 注入：(seconds) -> rows（冷启动补最近数据）
         self.dd_state = {"paused_until": 0, "current": 0.0, "max": 0.0, "peak": 0.0}

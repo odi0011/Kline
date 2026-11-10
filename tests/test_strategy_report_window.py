@@ -29,7 +29,8 @@ class FakeCursor:
         # 其余查询用 r[0..2]，多给几列不影响。
         if "quant_events" in self.last_sql and "GROUP BY reason" in self.last_sql:
             return [(0, 0)]
-        return [(0, 0, 0, 0, 0)]
+        # paper_real 现在取 7 列（含均盈/均亏），多给几列不影响其余查询
+        return [(0, 0, 0, 0, 0, 0, 0)]
 
 
 class FakeConn:
@@ -61,7 +62,7 @@ class WinrateCursor(FakeCursor):
 
     def fetchall(self):
         if "SUM(pnl=0)" in self.last_sql and "reason<>'removed'" in self.last_sql:
-            return [(100, 0.0, 40, 30, 30)]
+            return [(100, 0.0, 40, 30, 30, 2.0, -2.0)]
         return super().fetchall()
 
 
@@ -74,6 +75,9 @@ def test_paper_winrate_uses_decided_denominator():
     assert pr["flat"] == 30
     assert pr["winrate"] == 0.5714, pr          # 40/70
     assert pr["naiveWinrate"] == 0.4, pr        # 旧口径 40/100
+    assert pr["payout"] == 1.0, pr              # 均盈 2 / 均亏 2
+    assert pr["breakEvenWinrate"] == 50.0, pr
+    assert "flipTrades" in pr and "flipPnl" in pr
 
 
 def test_collect_returns_live_reasons():

@@ -33,6 +33,9 @@
    纸上交易要验证的假设是"按信号方向持有，直到自检判出胜负"。
    每 3 分钟自检：跌够判亏、涨够判赢、中间地带看信号是否强烈反向。
    风险仍由止损兜底，不需要用"翻向就跑"来控风险。
+   即便满足强反向，也要先持有满 `flip_min_hold_ms`（默认 15 分钟）：
+   实机 7 天里 71% 的反手发生在 10 分钟内、41.7% 在 5 分钟内，
+   合计 -248.70，属于噪声级反复翻向，不是方向判断。
 
 6. **账本必须进数据库，不能只在内存**
    2026-11 之前这里是纯内存账本：仓位、平仓记录、累计统计全在
@@ -80,6 +83,9 @@ CHECK_LOSS_PCT = CHECK_LOSS_RATIO
 CHECK_WIN_PCT = CHECK_WIN_RATIO
 # 中间地带：|涨跌| < 阈值时，看当轮数据决定"继续持有"还是"反手"
 CHECK_FLIP_MIN_GAP = 18.0    # 反手要求的多空分离度（比开仓线的 15 更严）
+# 反手最小持有时间：默认 15 分钟（5 次自检），0 = 关闭抑制。
+# 由 DecisionConfig.paper_flip_min_hold_min 注入，见 __init__。
+CHECK_FLIP_MIN_HOLD_MS = 15 * 60 * 1000
 CHECK_FLIP_MIN_SCORE = 58.0  # 反手要求的共鸣分
 # 保险丝：中间地带可以一直持有，但不能无限期挂着（数据断流/行情死寂时
 # 仓位会永远不动，账本上留一个永不结算的仓）。这只是兜底，不是策略。
@@ -261,7 +267,9 @@ class PaperBook:
     落库失败只打一次日志、绝不让 5 秒一轮的推演中断；内存账本照常跑。
     """
 
-    def __init__(self, store=None):
+    def __init__(self, store=None, flip_min_hold_ms: int | None = None):
+        self.flip_min_hold_ms = (CHECK_FLIP_MIN_HOLD_MS if flip_min_hold_ms is None
+                                 else max(0, int(flip_min_hold_ms)))
         self._lock = threading.RLock()
         self.positions: dict[str, PaperPosition] = {}
         self.history: list[dict] = []
@@ -843,6 +851,16 @@ class PaperBook:
         gap = _num(ctx.get("gap")) or 0.0
         if (new_dir == want and score >= CHECK_FLIP_MIN_SCORE
                 and gap >= CHECK_FLIP_MIN_GAP):
+            # 刚开仓就被反向信号打掉，是噪声不是判断：线上 7 天 992 笔
+            # 反手里 71% 在 10 分钟内。持有不足下限时改为继续持有，
+            # 仍由止损/判亏兜底，并留下 flipSuppressed 供复盘。
+            held_ms = now - int(_num(pos.entry_ts) or now)
+            if held_ms < self.flip_min_hold_ms:
+                detail["verdict"] = "hold"
+                detail["flipSuppressed"] = True
+                pos.last_verdict = "hold"
+                pos.last_move_pct = round(move * 100, 4)
+                return None
             detail["verdict"] = "flip"
             detail["flipTo"] = "short" if want == "bearish" else "long"
             # 反手：先按现价平掉这一仓（记 flip），tick 随后会用
