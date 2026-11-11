@@ -119,12 +119,19 @@ def _volume_scores(features: dict) -> tuple[float, float]:
 
 
 def _structure_scores(state: dict, features: dict, pattern_stats: dict | None,
-                      pattern: str | None) -> tuple[float, float]:
+                      pattern: str | None,
+                      obi_scale: float = 50.0) -> tuple[float, float]:
+    """结构分项。OBI 是 10 档挂单的秒级快照，乘数由配置控制。
+
+    旧实现写死 250：bias 只要 ±0.2 就把本项打满 0/100，于是一个瞬时
+    挂单快照在权重 1.0 下能单独压过趋势+动能，把 1h 方向判反
+    （2026-11-11 ETH 用户反馈，实机 43.5% 结构取值处于极值）。
+    """
     bull = bear = 50.0
     obi = features.get("obi") or {}
     bias = float(obi.get("bias") or 0.0) if obi.get("valid") else 0.0
-    bull += bias * 250.0
-    bear -= bias * 250.0
+    bull += bias * obi_scale
+    bear -= bias * obi_scale
     oi = features.get("oi") or {}
     oi_bias = oi.get("bias")
     oi_strength = float(oi.get("strength") or 0.0) * 12.0
@@ -187,7 +194,9 @@ def score_signal(
     trend_bull, trend_bear = _trend_scores(state, features)
     mom_bull, mom_bear = _momentum_scores(state, features)
     vol_bull, vol_bear = _volume_scores(features)
-    struct_bull, struct_bear = _structure_scores(state, features, pattern_stats, pattern)
+    struct_bull, struct_bear = _structure_scores(
+        state, features, pattern_stats, pattern,
+        float(getattr(config, "structure_obi_scale", 50.0)))
     regime = state.get("regime") if state.get("regime") in REGIME_WEIGHTS else "unknown"
     weights = REGIME_WEIGHTS[regime]
     total_weight = sum(weights.values())

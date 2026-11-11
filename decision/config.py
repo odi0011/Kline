@@ -203,6 +203,13 @@ class DecisionConfig:
     maker_max_reposts: int = 1
     stale_trade_sec: float = 90.0
     stale_depth_sec: float = 15.0
+    # 「结构」分项里订单簿失衡(OBI)的乘数。旧值 250 让 10 档挂单只要
+    # 偏 ±0.2 就把结构分打满 0/100：实机 1380 条带 breakdown 的决策里
+    # 43.5% 的结构取值落在两个极值，多空结构差中位 77.8（趋势差仅 39.2），
+    # 把结构置中性会让 11.0% 的方向判定翻转 —— 一个秒级盘口因子不该
+    # 在 1h 决策里压过趋势+动能。50 与同分项其它因子(±8~14)同量级。
+    # 设 250 可恢复旧行为，设 0 等于完全不用 OBI。
+    structure_obi_scale: float = 50.0
     liquidation_window_sec: int = 300
     liquidation_min_events: int = 5
     liquidation_min_notional: float = 1_000_000.0
@@ -335,6 +342,8 @@ class DecisionConfig:
             maker_max_reposts=max(0, _integer(d.get("maker_max_reposts"), 1)),
             stale_trade_sec=max(1.0, _number(d.get("stale_trade_sec"), 90.0)),
             stale_depth_sec=max(1.0, _number(d.get("stale_depth_sec"), 15.0)),
+            structure_obi_scale=min(250.0, max(0.0, _number(
+                d.get("structure_obi_scale"), 50.0))),
             liquidation_window_sec=max(30, _integer(d.get("liquidation_window_sec"), 300)),
             liquidation_min_events=max(1, _integer(d.get("liquidation_min_events"), 5)),
             liquidation_min_notional=max(
