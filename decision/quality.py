@@ -96,9 +96,13 @@ def evaluate_quality(
             {**tags, "blocked": "session"})
 
     # --- 影线噪声：两端都差，高噪声最稳定 ---
+    # 2026-11-11：影子对照显示被这条硬拒拦下的信号反而更好，默认改为关闭。
+    # quality_noise_reject >= 1.0 视为「不硬拒」：noise_ratio 上界就是 1.0，
+    # 若只判 nr >= 1.0，极端全影线 K 线仍会被拒，关不干净。
     nr = noise_ratio(bars)
     tags["noiseRatio"] = round(nr, 4) if nr is not None else None
-    if nr is not None and nr >= cfg.quality_noise_reject:
+    if (cfg.quality_noise_reject < 1.0 and nr is not None
+            and nr >= cfg.quality_noise_reject):
         return QualityVerdict(
             False, 0.0,
             [f"影线噪声 {nr:.3f} ≥ {cfg.quality_noise_reject:.3f}，"

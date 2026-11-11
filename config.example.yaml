@@ -19,9 +19,17 @@ symbols:
   - adausdt
 
 # K线周期（支持 1s 5s 15s 30s 1m 3m 5m 15m 30m 1h 2h 4h 1d）
+# 第一个 = 默认周期（前端默认选中 / 量化引擎取价 / Agent 读K线）。
+# 为什么默认 1h：9 年跨周期回放（scripts/interval_study.py）显示
+#   ATR/价格   1h 0.790% / 15m 0.286% / 3m 0.103%
+#   双边4bps占ATR 10% / 28% / 77%
+# 3m 上手续费吃掉 ATR 的 77%，短周期不是「更快」而是「更贵」。
+# 注意：换周期不能把负期望变正（fee=0 时三周期仍全负），它只降低成本结构。
 intervals:
-  - 1m
+  - 1h
+  - 30m
   - 3m
+  - 1m
 
 # 数据源
 feed:
@@ -116,8 +124,13 @@ storage:
   # Agent 任务/对话/摘要进 MySQL；聊天记录保留天数，0 = 永久。
   # 内存里始终只保留最近 40 条对话，更早的只在库里可查。
   agent_chat_days: 0
-  # 胜率判定：出现形态后10分钟内，价格先向形态方向走满 0.15% → 胜；先反向走满 → 负；都没走到 → 不计
+  # 胜率判定：出现形态后 eval_minutes 分钟内，价格先向形态方向走满
+  # 0.15% → 胜；先反向走满 → 负；都没走到 → 不计。
+  # eval_min_bars 是长周期下限：窗口至少覆盖这么多根该周期的 K 线，
+  # 否则 1h 信号在固定 10 分钟里一根 K 线都没有，全被误判成 no_data。
+  # 1m/3m 仍按 10 分钟；30m→90 分钟、1h→3 小时。
   eval_minutes: 10
+  eval_min_bars: 3
   eval_threshold: 0.0015
 
 # 交易账户（系统里的「实盘账户」：真正下单、真正有权益与持仓的那一个）。
@@ -234,15 +247,21 @@ quant:
     # 首选分支，不夹紧的话低波动时止损只剩 0.1~0.2%，几分钟就被噪声扫掉。
     watch_sl_min_pct: 0.004
     watch_sl_max_pct: 0.020
-    # 信号质量门（scripts/signal_quality.py，1904 笔 / 前后半样本外验证）。
-    # 结论：没有任何组合能两段都转正，所以这里只剔除"稳定更差"的条件。
-    # UTC 12-18 两段 -0.190/-0.267；高影线噪声两段 -0.139/-0.157；
-    # trend 两段 -0.131/-0.109（range 最好）；score>=55 / gap>=30 反向。
+    # 信号质量门：2026-11-11 按影子对照（824 笔、四组参数一致）调过。
+    # 放行组 -0.1076%/笔 vs 拦截组 -0.0961%，闸门是反向的；按原因拆
+    # 高影线噪声 -0.0880、UTC 12-18 -0.0864 都优于放行组，只有
+    # 形态黑名单 -0.1406 确实更差。11-09 复核又发现 trend 前后半翻转。
+    # 因此关掉两条硬拒与趋势降仓，只保留黑名单；要回滚旧规则就填：
+    #   quality_blackouts_utc: ["12:00-18:00"]
+    #   quality_noise_reject: 0.45
+    #   quality_trend_size_factor: 0.5
+    # 注意这些依据来自 1m/3m 信号，默认周期改 1h 后请用
+    # scripts/shadow_gate.py 重新积累 1h 样本复核，别直接当成 1h 结论。
     quality_enabled: true
-    quality_blackouts_utc: ["12:00-18:00"]
-    quality_noise_reject: 0.45      # 影线占比 q75，硬拒
+    quality_blackouts_utc: []
+    quality_noise_reject: 1.0       # >=1.0 = 不硬拒（仍可降仓）
     quality_noise_low: 0.36         # q33，只降仓
-    quality_trend_size_factor: 0.5
+    quality_trend_size_factor: 1.0  # 前后半翻转，不再默认降仓
     quality_extreme_vol_size_factor: 0.7
     quality_high_score_size_factor: 0.8
     quality_high_gap: 30

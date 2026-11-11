@@ -28,6 +28,7 @@ class FakeStore(Storage):
 
     def __init__(self, hits, archive, eval_batch: int = 50):
         self.eval_ms = EVAL_MS
+        self.eval_min_bars = 3
         self.eval_threshold = 0.0015
         self.eval_batch = eval_batch
         self.hit_ms = 90 * 86_400_000
@@ -137,3 +138,34 @@ def test_save_hit_keeps_judgeable_pending():
     s = FakeStore([], WIN_BARS)
     s.save_hit(_hit("confirmed", "bullish"))
     assert s.updates[-1][1][-1] == "pending"
+
+
+def _hits_select_args(store):
+    return [args for sql, args in store.selects if "FROM hits" in sql][-1]
+
+
+def test_short_interval_keeps_ten_minute_window():
+    """1m/3m 行为不变：仍是 10 分钟到期。"""
+    s = FakeStore([], WIN_BARS)
+    s.eval_outcomes("BTCUSDT", "1m", 60_000, None)
+    assert _hits_select_args(s)[3] == NOW - EVAL_MS
+
+
+def test_long_interval_expands_window_to_min_bars():
+    """1h 信号固定 10 分钟窗口里一根 K 线都没有，须放宽到至少 3 根。"""
+    s = FakeStore([], WIN_BARS)
+    s.eval_outcomes("BTCUSDT", "1h", 3_600_000, None)
+    assert _hits_select_args(s)[3] == NOW - 3 * 3_600_000
+
+
+def test_30m_interval_expands_window():
+    s = FakeStore([], WIN_BARS)
+    s.eval_outcomes("BTCUSDT", "30m", 1_800_000, None)
+    assert _hits_select_args(s)[3] == NOW - 3 * 1_800_000
+
+
+def test_eval_min_bars_is_configurable():
+    s = FakeStore([], WIN_BARS)
+    s.eval_min_bars = 5
+    s.eval_outcomes("BTCUSDT", "1h", 3_600_000, None)
+    assert _hits_select_args(s)[3] == NOW - 5 * 3_600_000

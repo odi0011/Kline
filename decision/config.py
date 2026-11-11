@@ -118,11 +118,17 @@ class DecisionConfig:
     # 信号质量门（scripts/signal_quality.py 回放，1904 笔 / 前后半样本外验证）。
     # 注意：没有任何组合能两段都转正，这个门只负责剔除"稳定更差"的条件。
     quality_enabled: bool = True
-    quality_blackouts: tuple[SessionWindow, ...] = field(
-        default_factory=lambda: (SessionWindow.parse("12:00-18:00"),))
-    quality_noise_reject: float = 0.45      # 影线占比 q75，两段 -0.139 / -0.157
+    # 2026-11-09 影子对照（scripts/shadow_gate.py，824 笔、四组参数一致）：
+    # 闸门放行组期望 -0.1076%/笔，拦截组 -0.0961%，放行增益 -0.0115pp
+    # —— 被硬拒的信号反而更好。按原因拆：高影线噪声 -0.0880、
+    # UTC 12-18 -0.0864 都优于放行组，只有形态黑名单 -0.1406 确实更差。
+    # 因此默认关掉前两条硬拒与趋势降仓（trend 前半最差 / 后半最好，
+    # 依据翻转），只保留黑名单；降仓系数设 1.0 = 不额外缩仓。
+    # 依据来自 1m/3m 信号，默认周期改 1h 后需用影子对照重新复核。
+    quality_blackouts: tuple[SessionWindow, ...] = field(default_factory=tuple)
+    quality_noise_reject: float = 1.0       # >=1.0 = 不硬拒（噪声仍可降仓）
     quality_noise_low: float = 0.36         # q33，低噪声只降仓不拒
-    quality_trend_size_factor: float = 0.5  # trend 两段 -0.131 / -0.109
+    quality_trend_size_factor: float = 1.0  # 前后半翻转，不再默认降仓
     quality_extreme_vol_size_factor: float = 0.7
     quality_high_score_size_factor: float = 0.8   # 评分反向，只降仓不 veto
     quality_high_gap: float = 30.0
@@ -247,16 +253,19 @@ class DecisionConfig:
             paper_flip_min_hold_min=max(0.0, _number(
                 d.get("paper_flip_min_hold_min"), 15.0)),
             quality_enabled=bool(d.get("quality_enabled", True)),
+            # 空列表必须能真的关掉黑窗：以前 `or ["12:00-18:00"]` 会把
+            # 显式配置的 [] 又填回默认时段，用户以为关了其实没关。
             quality_blackouts=tuple(
                 SessionWindow.parse(str(item))
-                for item in (d.get("quality_blackouts_utc") or ["12:00-18:00"])
+                for item in (d.get("quality_blackouts_utc")
+                             if d.get("quality_blackouts_utc") is not None else [])
                 if str(item).strip()),
             quality_noise_reject=min(1.0, max(0.0, _number(
-                d.get("quality_noise_reject"), 0.45))),
+                d.get("quality_noise_reject"), 1.0))),
             quality_noise_low=min(1.0, max(0.0, _number(
                 d.get("quality_noise_low"), 0.36))),
             quality_trend_size_factor=min(1.0, max(0.0, _number(
-                d.get("quality_trend_size_factor"), 0.5))),
+                d.get("quality_trend_size_factor"), 1.0))),
             quality_extreme_vol_size_factor=min(1.0, max(0.0, _number(
                 d.get("quality_extreme_vol_size_factor"), 0.7))),
             quality_high_score_size_factor=min(1.0, max(0.0, _number(

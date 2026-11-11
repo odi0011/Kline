@@ -68,10 +68,12 @@ DEFAULT_CONFIG: dict = {
     "web_port": 8000,
     "ws_port": 8765,
     "symbols": list(DEFAULT_SYMBOLS),
-    "intervals": ["1m", "3m"],
+    # 第一个周期是默认周期：前端默认选中、量化引擎取价、Agent 读 K 线都用它。
+    # 1h 放首位（手续费占 ATR 仅 10%，3m 高达 77%），30m/3m/1m 可手动切换。
+    "intervals": ["1h", "30m", "3m", "1m"],
     "feed": {"mode": "auto", "proxy": "", "backfill_bars": 300},
     "patterns": {"enabled": "all", "live_preview": True},
-    "storage": {"minutes": 30, "eval_minutes": 10},
+    "storage": {"minutes": 30, "eval_minutes": 10, "eval_min_bars": 3},
     "accounts": [],
     "quant": {"enabled": True, "decision": {}},
     "notify": {},
@@ -338,11 +340,12 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     print(f"[engine] 已启用形态 {len(enabled)} 个")
 
     symbols = [str(x).lower() for x in (cfg.get("symbols") or DEFAULT_SYMBOLS)]
-    intervals = [str(x) for x in (cfg.get("intervals") or ["1m", "3m"])]
+    intervals = [str(x) for x in (cfg.get("intervals")
+                                  or ["1h", "30m", "3m", "1m"])]
     if not symbols:
         symbols = list(DEFAULT_SYMBOLS)
     if not intervals:
-        intervals = ["1m", "3m"]
+        intervals = ["1h", "30m", "3m", "1m"]
     qcfg = cfg.get("quant", {})
     decision_cfg = DecisionConfig.from_dict(qcfg.get("decision", {}))
     watch_intervals = [
@@ -378,6 +381,7 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
     scfg = cfg.get("storage", {})
     storage = Storage(cfg.get("mysql", {}), keep_minutes=int(scfg.get("minutes", 30)),
                       eval_minutes=int(scfg.get("eval_minutes", 10)),
+                      eval_min_bars=int(scfg.get("eval_min_bars", 3) or 3),
                       eval_threshold=float(scfg.get("eval_threshold", 0.0015)),
                       stats_days=decision_cfg.pattern_window_days,
                       stats_alpha=decision_cfg.pattern_winrate_alpha,

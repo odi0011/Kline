@@ -43,10 +43,12 @@ const MIN_SYMBOLS = 4
 // 可选池是全市场 U 本位永续；同时展示的卡片数留个上限——
 // 每张卡是一个独立的 lightweight-charts 实例，几百张会拖垮页面。
 const MAX_SYMBOLS = 24
-const SETTINGS_VERSION = 2
+const SETTINGS_VERSION = 3
 const DEFAULT_SETTINGS = {
   v: SETTINGS_VERSION,
-  interval: '3m', visibleBars: 70, showVolume: true, showGrid: true,
+  // 默认 1h：3m 上双边手续费占 ATR 77%，1h 只有 10%（9 年跨周期回放）。
+  // 列表顺序与服务端 config.intervals 保持一致，切换周期仍由用户自己决定。
+  interval: '1h', visibleBars: 70, showVolume: true, showGrid: true,
   // 空数组 = 尚未选择 → 自动取服务端监控池的前 MIN_SYMBOLS 个。
   // 不再硬编码币种名：换项目/换配置时旧的默认值会与实际池不符。
   // 池 = 配置里的监控币种 ∪ 币安全部 U 本位永续（可临时加看任意合约）。
@@ -60,9 +62,11 @@ const DEFAULT_UI = {
 function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}
-    // 版本不一致：旧结构（硬编码币种、旧字段语义）直接丢弃，用新默认值
+    // 版本不一致：只重置默认周期（v3 起默认 1h），其余用户设置
+    // （币种、可见根数、音量/网格、外观）保留，别因为改默认值清空选择。
     if (saved.v !== SETTINGS_VERSION) {
-      return { ...DEFAULT_SETTINGS }
+      const { v, interval, ...rest } = saved
+      return { ...DEFAULT_SETTINGS, ...rest }
     }
     return { ...DEFAULT_SETTINGS, ...saved }
   } catch {
@@ -754,7 +758,7 @@ export default function App() {
       id: 'g-interval',
       items: [{
         id: 'interval', label: 'K线周期', icon: <Clock3 size={14} />, shortcut: defaultIv,
-        items: (meta?.intervals || ['1m', '3m']).map((iv) => ({
+        items: (meta?.intervals || ['1h', '30m', '3m', '1m']).map((iv) => ({
           id: `iv:${iv}`, label: iv, icon: <Clock3 size={14} />, checked: settings.interval === iv, keepOpen: true,
         })),
       }],

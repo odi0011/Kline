@@ -180,7 +180,12 @@ def _noise_bars(body: float, span: float, n: int = 30):
 def test_quality_gate_rejects_noise_session_and_pattern():
     from decision.config import DecisionConfig
     from decision.quality import evaluate_quality
-    cfg = DecisionConfig()
+    # 影子对照后默认已关掉时段/噪声硬拒；这里显式打开旧规则，
+    # 验证质量门本身仍然能工作（回滚路径可用）。
+    cfg = DecisionConfig.from_dict({
+        "quality_blackouts_utc": ["12:00-18:00"],
+        "quality_noise_reject": 0.45,
+    })
     common = dict(cfg=cfg, direction="bearish", regime="range", atr_pct=50)
     v = evaluate_quality(**common, pattern="bearish_engulfing", now_ms=_utc_ms(13),
                          bars=_noise_bars(0.6, 1.0))
@@ -193,16 +198,52 @@ def test_quality_gate_rejects_noise_session_and_pattern():
     assert not v.allowed and "形态" in v.reasons[0]
 
 
-def test_quality_gate_downsizes_trend_and_high_score():
+def test_quality_gate_defaults_follow_shadow_control():
+    """影子对照后：时段/噪声不再硬拒，趋势不降仓，黑名单仍生效。"""
     from decision.config import DecisionConfig
     from decision.quality import evaluate_quality
+    cfg = DecisionConfig()
+    assert cfg.quality_blackouts == ()
+    assert cfg.quality_noise_reject >= 1.0
+    assert cfg.quality_trend_size_factor == 1.0
+    common = dict(cfg=cfg, direction="bearish", regime="trend", atr_pct=50)
+    # 13 点 + 高噪声：旧默认会被硬拒，新默认必须放行
+    v = evaluate_quality(**common, pattern="bearish_engulfing",
+                         now_ms=_utc_ms(13), bars=_noise_bars(0.0, 2.0))
+    assert v.allowed, v.reasons
+    assert v.size_factor == 1.0, v.size_factor
+    # 形态黑名单是唯一有正向依据的硬拒，保留
+    v2 = evaluate_quality(**common, pattern="hammer", now_ms=_utc_ms(3),
+                          bars=_noise_bars(0.6, 1.0))
+    assert not v2.allowed and "形态" in v2.reasons[0]
+
+
+def test_empty_blackouts_config_really_disables_them():
+    from decision.config import DecisionConfig
+    assert DecisionConfig.from_dict(
+        {"quality_blackouts_utc": []}).quality_blackouts == ()
+    assert len(DecisionConfig.from_dict(
+        {"quality_blackouts_utc": ["12:00-18:00"]}).quality_blackouts) == 1
+
+
+def test_quality_gate_downsizes_trend_and_high_score():
+    """降仓链路本身仍能工作：显式传旧系数，验证乘法叠加。"""
+    from decision.config import DecisionConfig
+    from decision.quality import evaluate_quality
+    cfg = DecisionConfig.from_dict({"quality_trend_size_factor": 0.5})
     v = evaluate_quality(
-        cfg=DecisionConfig(), direction="bearish", pattern="bearish_engulfing",
+        cfg=cfg, direction="bearish", pattern="bearish_engulfing",
         regime="trend", atr_pct=50, bars=_noise_bars(0.6, 1.0),
         score=70.0, gap=10.0, now_ms=_utc_ms(3))
     assert v.allowed
     assert v.size_factor == round(0.5 * 0.8, 4)
     assert v.tags["sizeFactor"] == v.size_factor
+    # 新默认不再按 trend 降仓，只剩高分降仓
+    v2 = evaluate_quality(
+        cfg=DecisionConfig(), direction="bearish", pattern="bearish_engulfing",
+        regime="trend", atr_pct=50, bars=_noise_bars(0.6, 1.0),
+        score=70.0, gap=10.0, now_ms=_utc_ms(3))
+    assert v2.allowed and v2.size_factor == 0.8
 
 
 def test_quality_gate_can_be_disabled():

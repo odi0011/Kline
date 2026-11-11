@@ -77,6 +77,7 @@ class Storage:
     def __init__(self, mysql: dict, keep_minutes: int = 30,
                  hit_days: int = 0, eval_minutes: int = 10,
                  eval_threshold: float = 0.0015, eval_batch: int = 50,
+                 eval_min_bars: int = 3,
                  stats_days: int = 7, stats_alpha: float = 0.94,
                  paper_keep_days: int = 0,
                  quant_trade_days: int = 0, quant_event_days: int = 0,
@@ -91,6 +92,9 @@ class Storage:
         self.hit_ms = hit_days * 86400 * 1000
         self.hit_days = hit_days                # 形态命中保留天数（默认 90）
         self.eval_ms = eval_minutes * 60_000    # 命中后10分钟的走势判定胜负
+        # 长周期必须按 K 线根数放宽窗口：固定 10 分钟对 1h 信号一根 K 线
+        # 都取不到，会把所有命中误判成 no_data。至少覆盖 eval_min_bars 根。
+        self.eval_min_bars = max(1, _safe_int(eval_min_bars, 3))
         self.eval_threshold = eval_threshold    # 窗口内有效波动门槛（先触及判定）
         # 每根收线最多补判多少条历史命中：1m×多币的高频回调不能每次全表扫描。
         self.eval_batch = max(1, min(500, _safe_int(eval_batch, 50)))
@@ -1473,23 +1477,27 @@ class Storage:
         """
         self._mark_non_judged_hits()
         now = int(time.time() * 1000)
+        # 判定窗口按周期自适应：1m/3m 仍用 10 分钟，30m→90 分钟、
+        # 1h→3 小时（各 3 根）。iv_ms 由 on_evt 传入，不能再用固定墙钟。
+        iv = max(1, _safe_int(iv_ms, 60_000))
+        eval_ms = max(self.eval_ms, iv * self.eval_min_bars)
         cutoff = now - self.hit_ms if self.hit_ms else 0
         rows = self._qall(
             "SELECT id, direction, price, bar_open_time FROM hits "
             "WHERE symbol=%s AND `interval`=%s AND mode='confirmed' "
             "AND outcome='pending' AND direction IN ('bullish','bearish') "
             "AND ts>=%s AND ts<=%s ORDER BY ts DESC LIMIT %s",
-            (symbol, interval, cutoff, now - self.eval_ms, self.eval_batch))
+            (symbol, interval, cutoff, now - eval_ms, self.eval_batch))
         for hit_id, direction, price, bar_open_time in rows:
             bar_open_time = int(bar_open_time)
-            if bar_open_time + self.eval_ms > now:
+            if bar_open_time + eval_ms > now:
                 continue        # 还没走完判定窗口
             price = float(price)
             wrows = self._qall(
                 "SELECT high, low, close FROM candle_archive "
                 "WHERE symbol=%s AND `interval`=%s AND open_time>%s AND open_time<=%s "
                 "ORDER BY open_time",
-                (symbol, interval, bar_open_time, bar_open_time + self.eval_ms))
+                (symbol, interval, bar_open_time, bar_open_time + eval_ms))
             if len(wrows) < 3:
                 # 归档也没有这段行情（例如辅助周期未归档）：明确记账，
                 # 不再留 pending 反复重试、也不占用后续批次的名额。
