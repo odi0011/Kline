@@ -9,12 +9,20 @@ structure 落在 0/100 极值，多空结构差中位 77.8（趋势差仅 39.2�
 """
 from __future__ import annotations
 
+import time
+
 from decision.config import DecisionConfig
+from decision.features import order_book_imbalance
 from decision.scoring import _structure_scores, score_signal
 
 
 def _features(bias: float) -> dict:
     return {"obi": {"valid": True, "bias": bias}}
+
+
+def _depth(bids, asks):
+    now = int(time.time() * 1000)
+    return {"ts": now, "bids": bids, "asks": asks}, now
 
 
 def test_default_scale_and_config_rollback():
@@ -35,6 +43,29 @@ def test_obi_no_longer_saturates_structure():
     # 极端挂单也不能打满 0/100
     bull, bear = _structure_scores({}, _features(0.42), None, None)
     assert 0.0 < bear < 100.0 and 0.0 < bull < 100.0
+
+
+def test_one_sided_depth_is_not_a_valid_signal():
+    """只推了一侧挂单时 bias=±1，是数据不完整，不是"卖压极大"。"""
+    d, now = _depth([], [[100.0, 5.0]])
+    out = order_book_imbalance(d, now_ms=now)
+    assert out["valid"] is False and out["bias"] == 0.0
+
+    d2, now2 = _depth([[99.0, 5.0]], [])
+    out2 = order_book_imbalance(d2, now_ms=now2)
+    assert out2["valid"] is False and out2["bias"] == 0.0
+
+    d3, now3 = _depth([[99.0, 2.0]], [[100.0, 8.0]])
+    out3 = order_book_imbalance(d3, now_ms=now3)
+    assert out3["valid"] is True and out3["bias"] < 0
+
+    feats = {"obi": out}
+    assert _structure_scores({}, feats, None, None) == (50.0, 50.0)
+
+
+def test_extreme_bias_cannot_saturate_structure():
+    assert _structure_scores({}, _features(1.0), None, None) == (80.0, 20.0)
+    assert _structure_scores({}, _features(-1.0), None, None) == (20.0, 80.0)
 
 
 def test_old_behavior_is_restorable():

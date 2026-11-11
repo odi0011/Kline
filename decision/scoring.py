@@ -130,6 +130,9 @@ def _structure_scores(state: dict, features: dict, pattern_stats: dict | None,
     bull = bear = 50.0
     obi = features.get("obi") or {}
     bias = float(obi.get("bias") or 0.0) if obi.get("valid") else 0.0
+    # 瞬时挂单墙 / 数据不完整会给出接近 ±1 的失衡，不该让单个秒级快照
+    # 把结构分打满。双向都有的真实卖压保留方向，但幅度限在同量级。
+    bias = clamp(bias, -0.6, 0.6)
     bull += bias * obi_scale
     bear -= bias * obi_scale
     oi = features.get("oi") or {}

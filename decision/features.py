@@ -241,8 +241,13 @@ def order_book_imbalance(
     ask = sum(float(row[1]) for row in asks[:levels] if len(row) >= 2)
     total = bid + ask
     ratio = bid / ask if ask > 1e-12 else (999.0 if bid > 0 else 1.0)
+    # 数据源只推了一侧挂单时 bias 会是 ±1，经结构分项放大后能单独把
+    # 1h 方向判反（2026-11-11 ETH 事故）。这不是"卖压极大"，是数据不完整。
+    if bid <= 0 or ask <= 0:
+        return {"valid": False, "ratio": ratio, "bias": 0.0,
+                "bid": bid, "ask": ask}
     bias = (bid - ask) / total if total > 1e-12 else 0.0
-    return {"valid": bool(total > 0), "ratio": ratio, "bias": bias, "bid": bid, "ask": ask}
+    return {"valid": True, "ratio": ratio, "bias": bias, "bid": bid, "ask": ask}
 
 
 def open_interest_bias(oi_change_pct: float, price_change_pct: float, strength_scale: float = 10.0) -> dict:
