@@ -941,6 +941,9 @@ def test_close_missing_on_scope_change(make_store, clock, tmp_path):
 
     # quant.manage 接线：symbol_filter 收窄 -> 范围外的模拟仓被按 mark 平掉
     engine = QuantEngine({"list": []}, str(tmp_path / "q.json"), paper_store=store)
+    # 显式开启范围收尾（生产默认关闭：展示勾选不该平掉模拟仓）
+    from dataclasses import replace
+    engine.decision_cfg = replace(engine.decision_cfg, paper_scope_cleanup=True)
     assert set(engine.paper.positions) == {"btcusdt"}
     engine.paper.tick("ethusdt", _ctx(100.0))
     engine.symbol_filter = {"btcusdt"}

@@ -714,6 +714,8 @@ async def run(cfg: dict, config_path: str = "config.yaml") -> None:
         print(f"[paper] 模拟仓已从 MySQL 恢复：未平仓 {_paper_info.get('positions', 0)} 个，"
               f"累计平仓 {_paper_info.get('closed', 0)} 条")
     quant.enabled = bool(qcfg.get("enabled", True))
+    # 模拟仓按配置池常驻，不随前端展示勾选增减（设计契约：时时刻刻有单）
+    quant.paper_pool = set(symbols)
     # 假数据防护：demo 模式下引擎拒绝一切新开仓（形态来自随机游走，没有交易意义）
     quant.feed_is_live_fn = lambda: hub.mode != "demo"
     quant.pattern_stats_fn = storage.pattern_stats

@@ -275,6 +275,9 @@ class QuantEngine:
         # 交易范围：只处理前端实际展示的币种（None/空 = 不限制）。
         # 否则引擎会在用户没看K线的币上开仓，持仓出现"凭空冒出来"的仓位。
         self.symbol_filter: set[str] | None = None
+        # 配置里的监控池，由 main 注入。模拟仓靠它保证「时时刻刻有单」，
+        # 与前端展示勾选（symbol_filter）彻底解耦。
+        self.paper_pool: set[str] = set()
         self._err_dedupe: dict[str, int] = {}
         self._mark_cache: dict[str, tuple] = {}
         self._unsupported: set[str] = set()   # 未开通合约权限的币种（如 TradFi 需签协议）
@@ -881,6 +884,12 @@ class QuantEngine:
         # 没持仓、最近也没有信号的那个币永远算不出指标。
         if self.symbol_filter:
             syms.update(self.symbol_filter)
+        # 模拟仓是「每个监控币常驻一单」：即使前端页面全断开、没有任何
+        # 展示勾选，配置池里的币也必须持续 tick，否则平仓后再没人给它
+        # 重开，持仓会慢慢空掉。展示勾选只负责多加几个币，不负责减。
+        pool = getattr(self, "paper_pool", None)
+        if pool:
+            syms.update(pool)
         # 也把最近有过信号的币纳入（未展示币的持仓风控仍需指标）
         for ev in list(self.events)[-20:]:
             s = ev.get("symbol")
@@ -2398,9 +2407,9 @@ class QuantEngine:
         if not self.enabled:
             return
         self.refresh_indicators()
-        # 监控范围收窄（用户把币删出展示列表）→ 清掉范围外的模拟仓，
-        # 否则 paper_positions 会留下永不 tick 的残行（P2-5）。
-        # 启动初期 symbol_filter=None 不动账本（范围还没确定）；异常不能打断 manage。
+        # 范围收尾默认关闭：展示勾选不是交易池，拿它平仓会把虚拟仓清光。
+        # 仅当显式配置 paper_scope_cleanup=true 时才执行（P2-5 残行场景）。
+        # 异常不能打断 5 秒一轮的 manage。
         try:
             self._settle_paper_out_of_scope()
         except Exception:
@@ -2870,18 +2879,33 @@ class QuantEngine:
             "pattern": advice.get("pattern") or "",
             "patternStats": self.pattern_stats_fn() if self.pattern_stats_fn else {},
             "maxLeverage": advice.get("maxLeverage"),
-            # 与实盘决策链共用同一个方向开关，模拟仓不能再开实盘不会开的仓。
-            "allowLong": self.decision_cfg.allow_long,
+            # 模拟仓是「每个监控币常驻一单」的对照账本，按当前评估方向记录
+            # 全方向样本。实盘 allow_long=False 只约束真实下单：若让它拦住
+            # 模拟仓，评估偏多时 5 个币只开得出 2 个，其余长期空仓，
+            # 虚拟仓位整块消失（2026-11-11 实机）。
+            # paper_follow_live_gate=true 可恢复旧口径（同规则、无对照）。
+            "allowLong": (self.decision_cfg.allow_long
+                          if getattr(self.decision_cfg, "paper_follow_live_gate", False)
+                          else True),
             "bars": bars,
         }
 
     def _settle_paper_out_of_scope(self) -> list[str]:
-        """清理已不在监控范围（symbol_filter）内的模拟仓，返回处理的币种。
+        """（仅显式开启时）清理已不在展示范围内的模拟仓，返回处理的币种。
 
-        交给 PaperBook.close_missing：有 mark 的按 mark 平仓并记
-        reason="removed" 的正常流水，没有可用价格的只删未平仓行。
-        symbol_filter 为空时不动账本；异常只记事件，不能打断 5 秒一轮的 manage。
+        模拟仓的设计契约是「每个监控币常驻一单、平仓即重开」。前端
+        symbol_filter 只是展示勾选，不是交易池：页面重连、多页面同时开
+        会让它反复变化（实机 10:36~13:03 共 7 次），拿它平仓会直接把
+        虚拟仓清光 —— 2026-11-11 线上 paper_positions 从 4 个变 0 个，
+        10:41 ethusdt 被记成 reason='removed' 就是这么来的。
+
+        因此默认 paper_scope_cleanup=False：展示范围变化绝不动账本。
+        只有显式开启才交给 PaperBook.close_missing 收尾（有 mark 记
+        removed 流水、没价格只删行），异常不能打断 5 秒一轮的 manage。
         """
+        cfg = getattr(self, "decision_cfg", None)
+        if cfg is None or not getattr(cfg, "paper_scope_cleanup", False):
+            return []
         keep = self.symbol_filter
         if not keep:
             return []

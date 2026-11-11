@@ -115,6 +115,18 @@ class DecisionConfig:
     # （含反手为 49.0%）。文件头设计第 5 条本来就写着「方向翻转不提前
     # 离场」，实现却在第一次自检就允许反手，属于实现与设计不符。
     paper_flip_min_hold_min: float = 15.0
+    # 模拟仓的设计契约：每个监控币常驻一单、平仓即按当下评估重开，
+    # 「持有多久 / 怎么开」由自检与评估契机决定，不能空仓。
+    # 2026-11-11 实机事故：前端 symbol_filter 只是展示勾选，页面重连 /
+    # 多页面会让它在 5 币↔4 币间反复横跳，旧逻辑每次都 close_missing
+    # 平掉范围外的仓；叠加只做空后整个模拟仓被清成 0 行。
+    # 默认永远不因展示范围变化平仓；只有显式开启才做范围收尾。
+    paper_scope_cleanup: bool = False
+    # 实盘 allow_long=False 只约束真实下单。模拟仓要保留全方向样本，
+    # 否则评估方向偏多时一个仓都开不出来（探针：5 个币只开出 2 个），
+    # 而且影子对照已证明闸门/方向过滤没有正向区分力，正需要两组对照。
+    # 设 true 可恢复「模拟仓与实盘同规则」的旧口径。
+    paper_follow_live_gate: bool = False
     # 信号质量门（scripts/signal_quality.py 回放，1904 笔 / 前后半样本外验证）。
     # 注意：没有任何组合能两段都转正，这个门只负责剔除"稳定更差"的条件。
     quality_enabled: bool = True
@@ -252,6 +264,8 @@ class DecisionConfig:
             auto_trade_enabled=bool(d.get("auto_trade_enabled", True)),
             paper_flip_min_hold_min=max(0.0, _number(
                 d.get("paper_flip_min_hold_min"), 15.0)),
+            paper_scope_cleanup=bool(d.get("paper_scope_cleanup", False)),
+            paper_follow_live_gate=bool(d.get("paper_follow_live_gate", False)),
             quality_enabled=bool(d.get("quality_enabled", True)),
             # 空列表必须能真的关掉黑窗：以前 `or ["12:00-18:00"]` 会把
             # 显式配置的 [] 又填回默认时段，用户以为关了其实没关。

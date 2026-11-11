@@ -250,7 +250,12 @@ def test_close_missing_noop_when_all_in_scope():
 # ---------- D. QuantEngine 接线：按 symbol_filter 清理 ----------
 
 def _engine(tmp_path):
-    return QuantEngine({"list": []}, str(tmp_path / "q.json"))
+    eng = QuantEngine({"list": []}, str(tmp_path / "q.json"))
+    # 这一组用例测的是「显式开启时的范围收尾」；生产默认已改为永不因
+    # 展示勾选平仓（见 tests/test_paper_scope.py）。DecisionConfig 是 frozen。
+    from dataclasses import replace
+    eng.decision_cfg = replace(eng.decision_cfg, paper_scope_cleanup=True)
+    return eng
 
 
 def test_quant_engine_settles_paper_out_of_scope(tmp_path):
